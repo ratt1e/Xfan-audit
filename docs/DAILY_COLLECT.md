@@ -142,6 +142,41 @@ python3 scripts/daily_collect.py \
 父帖和对话 ID 覆盖率、能连上的往返链数（`links_reply_to_other_side`：回复的父帖在表里且是对方方向；
 `substantive_rounds`：其中两边都不是问候的）、两个方向的时间窗和对齐窗口、全部警告。
 
+## 多天一起分析
+
+如果文件已经整理为下面的结构，可以直接分析整个根目录：
+
+```text
+~/x-data/
+  YYYY-MM-DD/private/interactions.csv
+  YYYY-MM-DD/daily/snapshot.json
+```
+
+这里只读取日期目录下的主 `private/interactions.csv`。日期目录没有 `private/` 时，才回退读取该日期根下的 `interactions.csv`。不会递归读取补采子目录，也不读取快照或原始 JSON；快照位于日期根目录还是 `daily/` 不影响分析。`notes/`、`bad-name/`、`_分析结果/` 和无效日期目录都会跳过。
+
+```bash
+# 默认按 config 的窗口（30 天）分析
+python3 audit.py --data-root ~/x-data/ --lists ~/x-lists/ --me me_demo
+
+# 指定窗口和一个新的输出目录
+python3 audit.py --data-root ~/x-data/ --days 30 --out ~/x-reports/month/
+
+# 用全部互动；与上一次输出分开，避免覆盖
+python3 audit.py --data-root ~/x-data/ --all-days --out ~/x-reports/all/
+
+# 也可以用环境变量；显式 --data 会使用旧的单目录模式
+FAN_AUDIT_DATA_ROOT=~/x-data/ python3 audit.py --lists ~/x-lists/
+```
+
+- `--data-root` 不与 `--data` 同用。每日模式用 `--lists` 指定可选关系表，**只读 `following.csv` 和 `followers.csv`**，不会读取该目录中的 `replies.csv`、`interactions.csv`、`profiles.csv` 或 `likes.csv`。每日表内的点赞仍按原有规则计分。
+- 关系表用于互关和沉睡互关判断。关系表的导出日期与每日数据是否一致，统一提示“待核实”；文件修改日期不能证明导出日期。少一张表时明确提示暂时算不出互关，不编名单。
+- 合并先按 `id` 去重，空 `id` 退回 `tweet_id`；点赞没有这两项时用 `account + post_id`。不同日期重复时取**较晚日期的整行**，同一天重复取最后一行；不把多个版本的字段拼起来。没有可靠标识的行单独保留并提示待核实。
+- 默认窗口与旧用法相同。`--all-days` 按配置时区，从全部互动时间（包括点赞的帖子时间和首次观察时间）的最早日期到最晚日期；没有互动时间时用采集日期。它不与 `--days`、`--end` 同用。
+- 默认输出在 `数据根目录/_分析结果/截止日期/`，包含 `accounts.csv`、两个看板和 `名单.md`。名单含账号和建议，只供本机查看；终端只打印覆盖情况与分层人数。建议只是文字，工具不会执行任何操作。
+- 输出路径会解析符号链接；仓库内、日期输入目录和已有同名输出都拒绝写入。多次运行或切换窗口请换一个 `--out`。旧的 `--data sample_data` 用法仍可写到仓库内的默认 `output/`。
+- 终端会显示读到的采集日期、分析区间内缺文件的日期、每日行数合并前后变化，以及全部去重回复缺父帖 ID 的比例。**缺采集文件不等于没有互动**：一天的文件也可能包含历史补采。
+- `conversation_id`、`parent_kind` 缺失或未确认时提示“待核实”，不从其他信息编造。合并时将 `conversation_id` 的“待核实”等占位视为空值，不把它当成所有记录共享的对话；往返仍只由 `in_reply_to_status_id` 指向的实际反向实质回复确认。打分公式和星级门槛不变。
+
 ## 测试
 
 ```bash

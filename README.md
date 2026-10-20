@@ -36,7 +36,9 @@ python3 audit.py
 | `dashboard_public.html` | 同一个看板的打码版，账号名换成「账号#01」，不列单向和沉睡名单，可以截图分享 |
 | `accounts.csv` | 每个账号一行：分层、星级、分数、各项明细 |
 
-常用参数：`--data 目录`、`--out 目录`、`--days 30`、`--end 2026-10-19`、`--me 你的用户名`（排除自己回自己）、`--config config.json`。
+常用参数：`--data 目录`、`--out 目录`、`--days 30`、`--all-days`（全部互动日期）、`--end 2026-10-19`、`--me 你的用户名`（排除自己回自己）、`--config config.json`。
+
+已有每日采集目录时，用 `--data-root ~/x-data/` 合并多天；可加 `--lists ~/x-lists/`，只读取关注表和粉丝表，不混入该目录的回复。也可设置环境变量 `FAN_AUDIT_DATA_ROOT`，显式 `--data` 仍保持原来的单目录用法。每日模式的结果必须在仓库外，并多输出一份私有的 `名单.md`；已有同名结果时会拒绝覆盖。用法与覆盖情况说明见 [多天一起分析](docs/DAILY_COLLECT.md#多天一起分析)。
 
 ## 星级怎么算（大白话）
 

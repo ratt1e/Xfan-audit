@@ -21,6 +21,7 @@ from datetime import date, datetime, timedelta, timezone
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "scripts"))
 import relationship_stars as rs  # noqa: E402
+from daily_root import load_daily_root, check_output, coverage_lines, write_roster  # noqa: E402
 
 try:
     from zoneinfo import ZoneInfo
@@ -165,7 +166,7 @@ def action(x):
     return "；".join(parts)
 
 
-def analyze(data, conf, cfg, end=None, days=None):
+def analyze(data, conf, cfg, end=None, days=None, all_days=False):
     win = conf.get("window", {})
     tz = ZoneInfo(win.get("timezone", "America/Los_Angeles")) if ZoneInfo else timezone.utc
     g = conf.get("greetings", {})
@@ -178,6 +179,12 @@ def analyze(data, conf, cfg, end=None, days=None):
     e = (max(dts) if dts else date.today()) if end == "auto" else date.fromisoformat(end)
     days = days or win.get("days", 30)
     s = e - timedelta(days=days - 1)
+    if all_days:
+        dates = [r[field].date() for r in prep for field in ("dt", "post_dt", "obs_dt") if r.get(field)]
+        if not dates and data.get("coverage"):
+            dates = [date.fromisoformat(d) for d in data["coverage"]["read_days"]]
+        s, e = (min(dates), max(dates)) if dates else (e, e)
+        days = (e - s).days + 1
     by = defaultdict(list)
     for r in prep:
         by[r["account"]].append(r)
@@ -334,30 +341,72 @@ def write_csv(res, path):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="fan-audit：从 CSV 生成互动关系星级看板（离线、只读）")
-    ap.add_argument("--data", default="data", help="输入目录，默认 data/")
-    ap.add_argument("--out", default="output", help="输出目录，默认 output/")
+    ap.add_argument("--data", help="单目录输入，默认 data/；不与 --data-root 同用")
+    ap.add_argument("--data-root", help="每日数据根目录；也可用 FAN_AUDIT_DATA_ROOT")
+    ap.add_argument("--lists", help="每日模式可选关系表目录，只读 following.csv 和 followers.csv")
+    ap.add_argument("--out", help="输出目录；每日模式默认在数据根目录的 _分析结果/截止日期/")
     ap.add_argument("--config", default=rs.CONFIG_PATH)
     ap.add_argument("--end", help="截止日 YYYY-MM-DD，默认取 config（auto=数据里最晚一天）")
-    ap.add_argument("--days", type=int, help="区间天数，默认取 config")
+    period = ap.add_mutually_exclusive_group()
+    period.add_argument("--days", type=int, help="区间天数，默认取 config")
+    period.add_argument("--all-days", action="store_true", help="按本地时区从最早互动到最晚互动")
     ap.add_argument("--me", help="你自己的用户名（自己回自己的串推会被排除），也可以写进 config.json 的 me")
     a = ap.parse_args(argv)
+    root = a.data_root or (os.environ.get("FAN_AUDIT_DATA_ROOT") if not a.data else None)
+    if a.data_root and a.data:
+        ap.error("--data 与 --data-root 不同用；关系表请使用 --lists")
+    if a.lists and not root:
+        ap.error("--lists 只用于 --data-root")
+    if a.days is not None and a.days < 1:
+        ap.error("--days 必须大于 0")
+    if a.all_days and a.end:
+        ap.error("--all-days 不与 --end 同用")
     conf, cfg = rs.load_config(a.config)
     if a.me:
         conf["me"] = a.me
-    data = load_inputs(a.data)
-    res, meta = analyze(data, conf, cfg, a.end, a.days)
+    if root:
+        try:
+            if a.out:
+                check_output(a.out, HERE, root)
+            data = load_daily_root(root, a.lists)
+            # 空文件或只有点赞时，默认截止日期仍有确定来源。
+            daily_conf = dict(conf, window=dict(conf.get("window", {})))
+            if not any(r.get("ts") for r in data["rows"]) and daily_conf["window"].get("end", "auto") == "auto":
+                daily_conf["window"]["end"] = data["coverage"]["read_days"][-1]
+            try:
+                res, meta = analyze(data, daily_conf, cfg, a.end, a.days, a.all_days)
+            except (ValueError, TypeError, KeyError, OverflowError):
+                raise ValueError("每日数据的时间或字段格式无效，请在本机核对；具体值未打印") from None
+            from pathlib import Path
+            target = a.out or Path(root).expanduser() / "_分析结果" / meta["end"]
+            a.out = str(check_output(target, HERE, root))
+        except (ValueError, OSError) as exc:
+            # OSError 的路径可能带账号；不把原始异常内容输出。
+            ap.error(str(exc) if isinstance(exc, ValueError) else "每日数据或输出目录无法访问")
+    else:
+        data = load_inputs(a.data or "data")
+        res, meta = analyze(data, conf, cfg, a.end, a.days, a.all_days)
+        a.out = a.out or "output"
     os.makedirs(a.out, exist_ok=True)
     write_csv(res, os.path.join(a.out, "accounts.csv"))
     with open(os.path.join(a.out, "dashboard.html"), "w", encoding="utf-8") as f:
         f.write(render(res, meta, public=False))
     with open(os.path.join(a.out, "dashboard_public.html"), "w", encoding="utf-8") as f:
         f.write(render(res, meta, public=True))
+    if root:
+        coverage = coverage_lines(data, meta, conf.get("me", ""), conf.get("exclude_accounts", []))
+        write_roster(Path(a.out) / "名单.md", res, meta, data, coverage, stars_txt)
+        for line in coverage:
+            print(line)
     for w in meta["warnings"]:
         print("⚠", w)
     c = Counter(x["tier"] for x in res)
     print(f"区间 {meta['start']} ~ {meta['end']}，{len(res)} 个账号：" + "，".join(f"{t} {c.get(t, 0)}" for t in TIERS))
-    print(f"看板：{os.path.join(a.out, 'dashboard.html')}（含账号名，只给自己看）")
-    print(f"对外打码版：{os.path.join(a.out, 'dashboard_public.html')}；明细：{os.path.join(a.out, 'accounts.csv')}")
+    if root:
+        print("已在仓库外写出 accounts.csv、dashboard.html、dashboard_public.html、名单.md（私有名单不在终端展示）")
+    else:
+        print(f"看板：{os.path.join(a.out, 'dashboard.html')}（含账号名，只给自己看）")
+        print(f"对外打码版：{os.path.join(a.out, 'dashboard_public.html')}；明细：{os.path.join(a.out, 'accounts.csv')}")
     return 0
 
 
