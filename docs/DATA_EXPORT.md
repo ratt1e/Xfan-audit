@@ -65,7 +65,7 @@ python3 adapters/twitter_web_exporter.py replies tweets_export.json --owner <你
 说明：
 - 转换脚本靠父推文 ID（`in_reply_to`）判断方向；如果父推文不在导出里，又没有 `in_reply_to_screen_name` 字段，就会跳过，并打印跳过了多少条。所以**最好把你自己的帖子和别人的回复一起导出**。
 - 2026-10-20 对「正在关注」「关注者」「用户推文」三份 JSON 做了结构抽样核对，每份查看前 200 项。三份根节点都是记录数组，已确认的字段见下表。本次导出所用脚本版本尚未提供，不能据此确认所有版本的格式。
-- 推文样本有 `created_at`，类型是字符串；只检查了结构，日期格式和空字符串比例尚未验证。`conversation_id`、`conversation_id_str`、`in_reply_to_screen_name` 在本次样本中均未出现，不代表所有记录或其他导出都没有。
+- 推文样本有 `created_at`，类型是字符串；随后已用本次真实导出在本地转换并运行完整分析，输出回复的时间字段均非空，现有时间解析器能读取。`conversation_id`、`conversation_id_str`、`in_reply_to_screen_name` 在结构样本中均未出现，不代表所有记录或其他导出都没有。
 - 「用户推文」导出不能保证包含父帖或两个方向的回复。如果缺少父帖作者信息，转换器会跳过对应回复；不能把“成功导出文件”当成“回复采集完整”。
 
 本次结构核对与现有适配器的字段映射：
@@ -80,7 +80,7 @@ python3 adapters/twitter_web_exporter.py replies tweets_export.json --owner <你
 | 推文 | `in_reply_to` | `in_reply_to_status_id`；样本中有字符串和 null |
 | 推文 | `quoted_status`、`retweeted_status` | 样本存在这两个字段；适配器不据此生成引用或转帖互动 |
 
-`direction` 和 `account` 由回复双方推导，不是导出的同名字段。以上只确认字段结构；真实文件的转换成功率、输出非空率尚未验证。假数据测试覆盖已有父帖时的双向回复判断，以及父帖缺失时的跳过行为。
+`direction` 和 `account` 由回复双方推导，不是导出的同名字段。2026-10-20 已完成三份真实 JSON 的本地转换和输出非空检查：用户表的 `handle`，以及输出回复的 `tweet_id`、`created_at`、`direction`、`account`、`text`、`in_reply_to_status_id` 均非空；本次输出的 `conversation_id`、`parent_kind` 均为空。具体计数仅保存在本机验收记录中。字段非空不代表采集完整，也不代表每条输入推文都会被转换成回复。假数据测试覆盖已有父帖时的双向回复判断，以及父帖缺失时的跳过行为。
 
 ### 4. 点赞（可选）→ likes.csv
 

@@ -6,6 +6,7 @@
 columns-tweet.tsx，核对于 2026-10-19，对应 v1.4.3）。上游改版后字段可能变化。
 2026-10-20 对三份用户导出的 JSON 做结构抽样核对：关注、粉丝和用户推文均为
 记录数组，主要字段与下方读法一致；本次导出所用脚本版本尚未确认。
+同日完成三份 JSON 的本地转换、关键输出字段非空检查及 audit.py 全流程验证。
 
 用法：
   # 1) 用户列表（Following / Followers / Verified Followers / Retweeters 页导出的 JSON 或 CSV）
