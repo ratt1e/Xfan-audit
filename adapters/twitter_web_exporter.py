@@ -4,6 +4,8 @@
 
 字段名依据该项目源码中的 exportKey（src/components/table/columns-user.tsx、
 columns-tweet.tsx，核对于 2026-10-19，对应 v1.4.3）。上游改版后字段可能变化。
+2026-10-20 对三份用户导出的 JSON 做结构抽样核对：关注、粉丝和用户推文均为
+记录数组，主要字段与下方读法一致；本次导出所用脚本版本尚未确认。
 
 用法：
   # 1) 用户列表（Following / Followers / Verified Followers / Retweeters 页导出的 JSON 或 CSV）
@@ -118,7 +120,8 @@ def cmd_engagement(a):
 def cmd_replies(a):
     """推文导出 -> replies.csv（audit.py 的标准输入）。
     字段：id、created_at、full_text、screen_name、in_reply_to（父推文 id），conversation_id 和
-    in_reply_to_screen_name 如果有就用（上游字段名待核实）。父推文也在导出里时，用它的作者判断方向。"""
+    in_reply_to_screen_name 如果有就用（兼容其他输入；本次结构样本未见这两个字段）。
+    父推文也在导出里时，用它的作者判断方向；无法确定时跳过，不猜方向。"""
     owner = norm(a.owner)
     recs, seen = [], set()
     for path in a.inputs:

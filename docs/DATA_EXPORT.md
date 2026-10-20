@@ -64,7 +64,23 @@ python3 adapters/twitter_web_exporter.py replies tweets_export.json --owner <你
 
 说明：
 - 转换脚本靠父推文 ID（`in_reply_to`）判断方向；如果父推文不在导出里，又没有 `in_reply_to_screen_name` 字段，就会跳过，并打印跳过了多少条。所以**最好把你自己的帖子和别人的回复一起导出**。
-- `created_at`、`conversation_id` 等字段在上游的确切名字**待核实**，导出后用 `--show-columns` 看看（见下面「用别的工具」）。
+- 2026-10-20 对「正在关注」「关注者」「用户推文」三份 JSON 做了结构抽样核对，每份查看前 200 项。三份根节点都是记录数组，已确认的字段见下表。本次导出所用脚本版本尚未提供，不能据此确认所有版本的格式。
+- 推文样本有 `created_at`，类型是字符串；只检查了结构，日期格式和空字符串比例尚未验证。`conversation_id`、`conversation_id_str`、`in_reply_to_screen_name` 在本次样本中均未出现，不代表所有记录或其他导出都没有。
+- 「用户推文」导出不能保证包含父帖或两个方向的回复。如果缺少父帖作者信息，转换器会跳过对应回复；不能把“成功导出文件”当成“回复采集完整”。
+
+本次结构核对与现有适配器的字段映射：
+
+| 导出类型 | 样本字段 | 转换后的列 / 用途 |
+|---|---|---|
+| 关注 / 粉丝 | `screen_name`、`name`、`description` | `handle`、`name`、`bio` |
+| 关注 / 粉丝 | `is_blue_verified`、`following`、`followed_by` | 同名保留；样本类型为布尔值 |
+| 关注 / 粉丝 | `followers_count`、`friends_count` | 同名保留；样本类型为数字 |
+| 关注 / 粉丝 | `verified_type` | 同名保留；本次样本均为 null，输出空值 |
+| 推文 | `id`、`screen_name`、`full_text`、`created_at` | 回复 ID、作者、正文、时间 |
+| 推文 | `in_reply_to` | `in_reply_to_status_id`；样本中有字符串和 null |
+| 推文 | `quoted_status`、`retweeted_status` | 样本存在这两个字段；适配器不据此生成引用或转帖互动 |
+
+`direction` 和 `account` 由回复双方推导，不是导出的同名字段。以上只确认字段结构；真实文件的转换成功率、输出非空率尚未验证。假数据测试覆盖已有父帖时的双向回复判断，以及父帖缺失时的跳过行为。
 
 ### 4. 点赞（可选）→ likes.csv
 
@@ -102,12 +118,14 @@ python3 adapters/x_archive.py 解压目录/data/tweets.js -o data/replies_out.cs
 
 ## 方式三：用别的工具导出
 
-只要最后的 CSV 列名对上就能跑。不知道原文件有哪些列，先看一下：
+只要最后的 CSV 列名对上就能跑。不知道原文件有哪些列，先看一下。下面的 `--show-columns` 只适用于 CSV，不接受 JSON，也不是 twitter-web-exporter 适配器的参数：
 
 ```bash
 python3 adapters/generic_csv.py 你的导出.csv --show-columns
 python3 adapters/generic_csv.py 你的导出.csv -o data/followers.csv --handle-col username --name-col name --bio-col description
 ```
+
+如果 CSV 的用户名列叫 `screen_name`，把 `--handle-col username` 换成 `--handle-col screen_name`。本次只核对了 JSON，CSV 的实际导出字段尚未验证。
 
 `replies.csv` 可以用 Excel 或 Numbers 手动改列名，然后存成 UTF-8 CSV。
 
