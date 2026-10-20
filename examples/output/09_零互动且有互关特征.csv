@@ -1,0 +1,13 @@
+﻿handle,name,follows_me,i_follow,likes,replies,quotes,reposts,total,keyword_hits,asked_mutual,mutual_flag,bio
+@user_007,示例用户007,True,True,0,0,0,0,0,有关必回|必回,False,True,示例账号：有关必回
+@user_014,示例用户014,True,True,0,0,0,0,0,互关|诚信,False,True,示例账号：诚信互关
+@user_017,示例用户017,True,True,0,0,0,0,0,follow back,False,True,Example account: follow back 100%
+@user_021,示例用户021,True,True,0,0,0,0,0,follow back,False,True,Example account: follow back 100%
+@user_030,示例用户030,True,True,0,0,0,0,0,follow back,False,True,Example account: follow back 100%
+@user_040,示例用户040,True,True,0,0,0,0,0,有关必回|必回,False,True,示例账号：有关必回
+@user_045,示例用户045,True,False,0,0,0,0,0,浇朋友|蓝v互|蓝v互|互助,False,True,示例账号：浇朋友，蓝V互助
+@user_052,示例用户052,True,True,0,0,0,0,0,,True,True,示例账号：喜欢写代码
+@user_054,示例用户054,True,True,0,0,0,0,0,互关|诚信,True,True,示例账号：诚信互关
+@user_059,示例用户059,True,True,0,0,0,0,0,,True,True,示例账号：喜欢写代码
+@user_064,示例用户064,True,False,0,0,0,0,0,,True,True,Example account: indie dev
+@user_079,示例用户079,True,True,0,0,0,0,0,浇朋友|蓝v互|蓝v互|互助,False,True,示例账号：浇朋友，蓝V互助

@@ -1,0 +1,32 @@
+{
+  "_说明": "fan-audit 打分配置。所有数值都是初始值、待校准（见 docs/SPEC_relationship_stars.md 第 11 节）。改完直接重跑即可。",
+  "window": {
+    "days": 30,
+    "end": "auto",
+    "timezone": "America/Los_Angeles",
+    "_end说明": "auto = 用数据里最晚的一天作为截止日；也可以写 2026-10-19"
+  },
+  "weights": {"persistence": 0.40, "bidirectional": 0.35, "rounds": 0.25},
+  "persistence": {"alpha": 0.30, "greet_day": 0.2, "greet_day_cap": 1.0},
+  "greeting_cap": {"share": 0.8, "max_score": 39.9},
+  "likes": {"points_each": 0.5, "cap": 5.0, "time_mode": "strict"},
+  "insufficient": {"min_raw": 3, "min_days": 2},
+  "stars": {"5": 80, "4": 60, "3": 40, "2": 20},
+  "tiers": {
+    "gold": {"min_score": 55, "min_rounds": 3, "min_each_side": 3, "max_greet_share": 0.5, "min_sub_days": 2},
+    "silver": {"min_score": 40, "min_rounds": 2},
+    "one_way": {"min_from_one_side": 3, "max_from_other_side": 1},
+    "priority_bonus": {"mutual": 5, "verified": 5, "followers_log10_max": 5}
+  },
+  "greetings": {
+    "max_core_len": 15,
+    "_规则": "去掉 @ 和链接、标点、表情后不超过 max_core_len 个字，且包含下列任一词，就算问候/水评。以 ^ 开头的词只在开头匹配；英文词按单词边界匹配。",
+    "words": ["早安", "早上好", "午安", "晚安", "互关", "回关", "互粉", "浇水", "浇朋友", "浇浇", "打卡", "新朋友",
+              "gm", "gn", "follow back", "^来了", "^你好",
+              "来咯", "来啦", "串门", "互一互", "互动互动", "早早早", "出摊"]
+  },
+  "me": "",
+  "_me说明": "你自己的用户名（不带 @），自己回自己的串推不参与打分",
+  "exclude_accounts": ["grok"],
+  "_exclude说明": "这些账号（比如自动回复机器人）不参与打分"
+}

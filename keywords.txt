@@ -1,0 +1,35 @@
+# 互关 / 互粉类关键词，每行一个，不区分大小写，按「包含」匹配
+# 以 # 开头的是注释。可以自己增删。
+# 注意：honest / sincere 这类词误判率高，默认注释掉了，需要时再打开。
+互关
+互粉
+互回
+回关
+有关必回
+必回
+秒回
+浇水
+浇朋友
+浇蓝
+浇给
+浇友
+蓝V互
+蓝v互
+互助
+交朋友
+交友
+诚信
+互赞
+互评
+互推
+涨粉
+follow back
+followback
+follow-back
+mutual
+f4f
+watering
+water friends
+# honest
+# sincere
+# reciprocal

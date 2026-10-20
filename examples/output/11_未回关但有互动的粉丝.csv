@@ -1,0 +1,6 @@
+﻿handle,name,follows_me,i_follow,likes,replies,quotes,reposts,total,keyword_hits,asked_mutual,mutual_flag,bio
+@user_078,示例用户078,True,False,5,4,0,0,9,,False,False,示例账号：喜欢写代码
+@user_001,示例用户001,True,False,5,1,0,0,6,,False,False,示例账号：喜欢写代码
+@user_058,示例用户058,True,False,2,4,0,0,6,,False,False,示例账号：读书笔记
+@user_027,示例用户027,True,False,3,1,0,0,4,,False,False,示例账号：喜欢写代码
+@user_033,示例用户033,True,False,0,2,0,0,2,,False,False,示例账号：读书笔记

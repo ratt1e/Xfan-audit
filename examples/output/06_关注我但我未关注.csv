@@ -1,0 +1,12 @@
+﻿handle,name,follows_me,i_follow,likes,replies,quotes,reposts,total,keyword_hits,asked_mutual,mutual_flag,bio
+@user_078,示例用户078,True,False,5,4,0,0,9,,False,False,示例账号：喜欢写代码
+@user_001,示例用户001,True,False,5,1,0,0,6,,False,False,示例账号：喜欢写代码
+@user_058,示例用户058,True,False,2,4,0,0,6,,False,False,示例账号：读书笔记
+@user_027,示例用户027,True,False,3,1,0,0,4,,False,False,示例账号：喜欢写代码
+@user_033,示例用户033,True,False,0,2,0,0,2,,False,False,示例账号：读书笔记
+@user_013,示例用户013,True,False,0,0,0,0,0,,False,False,示例账号：摄影和旅行
+@user_036,示例用户036,True,False,0,0,0,0,0,,False,False,示例账号：摄影和旅行
+@user_045,示例用户045,True,False,0,0,0,0,0,浇朋友|蓝v互|蓝v互|互助,False,True,示例账号：浇朋友，蓝V互助
+@user_061,示例用户061,True,False,0,0,0,0,0,,False,False,示例账号：读书笔记
+@user_064,示例用户064,True,False,0,0,0,0,0,,True,True,Example account: indie dev
+@user_072,示例用户072,True,False,0,0,0,0,0,,False,False,示例账号：读书笔记

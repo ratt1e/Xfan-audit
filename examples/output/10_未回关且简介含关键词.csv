@@ -1,0 +1,7 @@
+﻿handle,name,follows_me,i_follow,likes,replies,quotes,reposts,total,keyword_hits,asked_mutual,mutual_flag,bio
+@user_048,示例用户048,False,True,5,3,0,0,8,follow back,False,True,Example account: follow back 100%
+@user_042,示例用户042,False,True,4,3,0,0,7,互关|诚信,False,True,示例账号：诚信互关
+@user_031,示例用户031,False,True,0,1,0,0,1,follow back,False,True,Example account: follow back 100%
+@user_003,示例用户003,False,True,0,0,0,0,0,有关必回|必回,False,True,示例账号：有关必回
+@user_016,示例用户016,False,True,0,0,0,0,0,浇朋友|蓝v互|蓝v互|互助,False,True,示例账号：浇朋友，蓝V互助
+@user_075,示例用户075,False,True,0,0,0,0,0,follow back,False,True,Example account: follow back 100%

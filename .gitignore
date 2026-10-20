@@ -1,0 +1,34 @@
+# ---- 真实数据和报告：永远不要提交 ----
+data/
+private/
+daily/
+/output/
+/output*/
+*.xlsx
+!examples/output/*.xlsx
+*.zip
+*.js
+!docs/**/*.js
+# 常见导出文件名（twitter-web-exporter、X 归档等）
+*export*.json
+*export*.csv
+twitter-*.zip
+tweets.js
+follower.js
+following.js
+interactions.csv
+!examples/relationship/interactions.csv
+accounts.csv
+dashboard*.html
+gold_users*
+notes.csv
+# 密钥
+.env
+*.env
+*cookie*
+*token*
+secrets*
+# Python
+__pycache__/
+*.pyc
+.DS_Store

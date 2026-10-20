@@ -1,0 +1,30 @@
+﻿handle,name,follows_me,i_follow,likes,replies,quotes,reposts,total,keyword_hits,asked_mutual,mutual_flag,bio
+@user_002,示例用户002,True,True,0,0,0,0,0,,False,False,示例账号：AI 爱好者
+@user_004,示例用户004,True,True,0,0,0,0,0,,False,False,示例账号：读书笔记
+@user_007,示例用户007,True,True,0,0,0,0,0,有关必回|必回,False,True,示例账号：有关必回
+@user_008,示例用户008,True,True,0,0,0,0,0,,False,False,
+@user_009,示例用户009,True,True,0,0,0,0,0,,False,False,示例账号：读书笔记
+@user_014,示例用户014,True,True,0,0,0,0,0,互关|诚信,False,True,示例账号：诚信互关
+@user_015,示例用户015,True,True,0,0,0,0,0,,False,False,示例账号：摄影和旅行
+@user_017,示例用户017,True,True,0,0,0,0,0,follow back,False,True,Example account: follow back 100%
+@user_021,示例用户021,True,True,0,0,0,0,0,follow back,False,True,Example account: follow back 100%
+@user_023,示例用户023,True,True,0,0,0,0,0,,False,False,示例账号：摄影和旅行
+@user_024,示例用户024,True,True,0,0,0,0,0,,False,False,
+@user_029,示例用户029,True,True,0,0,0,0,0,,False,False,示例账号：摄影和旅行
+@user_030,示例用户030,True,True,0,0,0,0,0,follow back,False,True,Example account: follow back 100%
+@user_032,示例用户032,True,True,0,0,0,0,0,,False,False,
+@user_035,示例用户035,True,True,0,0,0,0,0,,False,False,示例账号：AI 爱好者
+@user_040,示例用户040,True,True,0,0,0,0,0,有关必回|必回,False,True,示例账号：有关必回
+@user_041,示例用户041,True,True,0,0,0,0,0,,False,False,Example account: indie dev
+@user_046,示例用户046,True,True,0,0,0,0,0,,False,False,
+@user_052,示例用户052,True,True,0,0,0,0,0,,True,True,示例账号：喜欢写代码
+@user_054,示例用户054,True,True,0,0,0,0,0,互关|诚信,True,True,示例账号：诚信互关
+@user_057,示例用户057,True,True,0,0,0,0,0,,False,False,Example account: indie dev
+@user_059,示例用户059,True,True,0,0,0,0,0,,True,True,示例账号：喜欢写代码
+@user_060,示例用户060,True,True,0,0,0,0,0,,False,False,示例账号：喜欢写代码
+@user_066,示例用户066,True,True,0,0,0,0,0,,False,False,示例账号：AI 爱好者
+@user_067,示例用户067,True,True,0,0,0,0,0,,False,False,示例账号：喜欢写代码
+@user_071,示例用户071,True,True,0,0,0,0,0,,False,False,示例账号：AI 爱好者
+@user_073,示例用户073,True,True,0,0,0,0,0,,False,False,示例账号：读书笔记
+@user_079,示例用户079,True,True,0,0,0,0,0,浇朋友|蓝v互|蓝v互|互助,False,True,示例账号：浇朋友，蓝V互助
+@user_080,示例用户080,True,True,0,0,0,0,0,,False,False,示例账号：读书笔记

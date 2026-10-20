@@ -1,0 +1,12 @@
+﻿id,screen_name,name,description,followers_count,friends_count,location,verified_type,is_blue_verified,following,followed_by,protected
+"9001","user_001","示例用户001","示例账号",101,91,,,true,true,true,false
+"9002","user_002","示例用户002","示例账号",102,92,,,true,true,true,false
+"9004","user_004","示例用户004","示例账号",104,94,,,true,true,true,false
+"9005","user_005","示例用户005","Example account: follow back",105,95,,,true,true,true,false
+"9007","user_007","示例用户007","示例账号",107,97,,,true,true,true,false
+"9008","user_008","示例用户008","示例账号",108,98,,,true,true,true,false
+"9010","user_010","示例用户010","Example account: follow back",110,100,,,true,true,true,false
+"9011","user_011","示例用户011","示例账号",111,101,,,true,true,true,false
+"9013","user_013","示例用户013","示例账号",113,103,,,true,false,true,false
+"9014","user_014","示例用户014","示例账号",114,104,,,true,false,true,false
+"9015","user_015","示例用户015","Example account: follow back",115,105,,,true,false,true,false

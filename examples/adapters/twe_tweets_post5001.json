@@ -1,0 +1,38 @@
+[
+ {
+  "id": "5001",
+  "screen_name": "demo_owner",
+  "in_reply_to": null,
+  "full_text": "示例主帖 A"
+ },
+ {
+  "id": "5002",
+  "screen_name": "user_002",
+  "in_reply_to": "5001",
+  "full_text": "示例回复"
+ },
+ {
+  "id": "5003",
+  "screen_name": "user_013",
+  "in_reply_to": "5001",
+  "full_text": "示例回复：互关"
+ },
+ {
+  "id": "5004",
+  "screen_name": "user_005",
+  "in_reply_to": "5002",
+  "full_text": "楼中楼"
+ },
+ {
+  "id": "5005",
+  "screen_name": "demo_owner",
+  "in_reply_to": "5002",
+  "full_text": "作者回复"
+ },
+ {
+  "id": "5002",
+  "screen_name": "user_002",
+  "in_reply_to": "5001",
+  "full_text": "重复抓到的同一条"
+ }
+]
