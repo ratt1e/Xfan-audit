@@ -20,7 +20,7 @@
 
 两份数据分开准备，最后由 `audit.py` 合在一起算。
 
-1. **关注和粉丝**：用 [twitter-web-exporter](https://github.com/prinsss/twitter-web-exporter) 在浏览器里手动导出 `following.csv`、`followers.csv`。怎么滚页面、怎么转换，看 [docs/DATA_EXPORT.md](docs/DATA_EXPORT.md)。
+1. **关注和粉丝**：用 [twitter-web-exporter](https://github.com/prinsss/twitter-web-exporter) 在浏览器里手动导出 `following.csv`、`followers.csv`。谢谢这个开源脚本，它只记录网页本来就会加载的数据。怎么滚页面、怎么转换，看 [docs/DATA_EXPORT.md](docs/DATA_EXPORT.md)。
 2. **每天的互动**：Grok Bot 用 X 的只读接口采集原始 JSON，再由 `scripts/daily_collect.py` 生成 `interactions.csv`。接口、额度和目录见 [docs/DAILY_COLLECT.md](docs/DAILY_COLLECT.md)。
 3. **计算**：`audit.py --data-root` 合并多天的 `interactions.csv`；`--lists` 只读那两张关系表，用来判断互关和沉睡互关。
 
@@ -62,7 +62,7 @@ python3 audit.py --data-root ~/x-data/ --lists ~/x-lists/ --me 你的用户名 -
 
 `--overwrite` 只替换这个目录里本工具生成的四份结果：`dashboard.html`、`dashboard_public.html`、`accounts.csv`、`名单.md`。目录里如果还有别的文件，命令会报错停下，不会删除。不加 `--overwrite` 时，已有结果仍然拒绝覆盖。仓库内和日期输入目录始终不能写。
 
-## Quick Start（三步）
+## 三步走
 
 ```bash
 # 1. 下载
@@ -86,9 +86,7 @@ python3 audit.py
 | `dashboard_public.html` | 同一个看板的打码版，账号名换成「账号#01」，不列单向和沉睡名单，可以截图分享 |
 | `accounts.csv` | 每个账号一行：分层、星级、分数、各项明细 |
 
-常用参数：`--data 目录`、`--out 目录`、`--overwrite`（只覆盖本工具自己的旧结果）、`--days 30`、`--all-days`（全部互动日期）、`--end 2026-10-19`、`--me 你的用户名`（排除自己回自己）、`--config config.json`。
-
-已有每日采集目录时，用 `--data-root ~/x-data/` 合并多天；可加 `--lists ~/x-lists/`，只读取关注表和粉丝表，不混入该目录的回复。也可设置环境变量 `FAN_AUDIT_DATA_ROOT`，显式 `--data` 仍保持原来的单目录用法。每日模式的结果必须在仓库外，并多输出一份私有的 `名单.md`。已有同名结果时默认拒绝覆盖；要每天更新同一个目录，加上 `--overwrite`。用法与覆盖情况说明见 [多天一起分析](docs/DAILY_COLLECT.md#多天一起分析)。
+多天合并、`--data-root`、`--overwrite` 这些参数见 [docs/TOOLS.md](docs/TOOLS.md)。
 
 ## 星级怎么算（大白话）
 
@@ -111,7 +109,7 @@ python3 audit.py
 
 名单里的排序会给互关、蓝V（对 X 创作者收益的认证曝光有用）、对方粉丝多的人少量加分，只影响先后，不改星级。
 
-以上所有数字都是**初始值、待验证**，都在 [`config.json`](config.json) 里，改完重跑就行。完整公式见 [docs/SPEC_relationship_stars.md](docs/SPEC_relationship_stars.md)。
+以上所有数字都是**初始值、待验证**，都在 [`config.json`](config.json) 里，改完重跑就行。完整公式见 [docs/SPEC_relationship_stars.md](docs/SPEC_relationship_stars.md)。粉丝数为什么不等于收益门槛，见 [docs/TOOLS.md](docs/TOOLS.md)。
 
 > 分数只是线索，不代表真实关系，也不代表对方好不好。零公开互动 ≠ 没看过你的帖子。看板里的「建议动作」只是建议，工具不会执行任何操作。
 
@@ -126,40 +124,7 @@ python3 audit.py
 - [ ] 权重校准：用户标约 10 个「朋友」后按 SPEC 第 11 节调参
 - [ ] 补导出截图
 
-## 其他工具（仓库里已有）
-
-- `fan_audit.py`：名单核对（v0 功能）。用关注表、粉丝表和互动汇总，看互关比例、零互动率、简介含「互关」关键词的账号。用法：
-
-```bash
-python3 fan_audit.py --following examples/following.csv --followers examples/followers.csv \
-  --engagement examples/engagement.csv --requests examples/requests.csv --keywords keywords.txt \
-  --posts 10 --out output/name_check
-```
-
-  装了 openpyxl（`pip install -r requirements.txt`）会多输出 `report.xlsx`，不装也能跑。
-- `scripts/daily_collect.py`：把 X 官方只读接口的原始 JSON 转成 `interactions.csv`，见 [docs/DAILY_COLLECT.md](docs/DAILY_COLLECT.md)。
-- `scripts/relationship_stars.py`：只打星的命令行版本。
-- `adapters/`：twitter-web-exporter、X 官方归档、通用 CSV 的转换脚本。
-
-## 有效曝光规则（为什么只看粉丝数不够）
-
-X 现行的创作者收益项目是 Original Content Rewards（2026 年 9 月 8 日起替代 Creator Revenue Sharing）。据官方帮助页，申请时要同时满足：
-
-- 有效的 Premium、Premium+ 或 Premium Business 订阅
-- 至少 **500 个认证粉丝**
-- 最近 90 天内，来自**认证用户**的**首页时间线**曝光至少 **500,000** 次，**回复的曝光不计入**
-- 年满 18 岁，所在地区在支持名单内
-
-收益按「合格曝光」计算：来自 Premium 用户、出现在首页时间线、帖子至少 50% 可见的去重曝光，不含付费、推广和欺诈曝光。
-
-所以，粉丝数只是门槛之一；不回来看帖的粉丝，对曝光门槛的贡献可能很小。这个脚本测的是「公开互动」，可以当作一个粗略的替代指标，但它不等于有效曝光。规则会变，请以官方当前页面为准。
-
-参考：
-1. X Help Center, Original Content Rewards: https://help.x.com/en/using-x/original-content-rewards （Wayback 2026-10-05 快照：https://web.archive.org/web/20261005131543/https://help.x.com/en/using-x/original-content-rewards ）
-2. Original Content Rewards Program Terms (Effective Aug 7, 2026): https://legal.x.com/en/original-content-rewards-terms.html
-3. The Verge, 2026-08-08: https://www.theverge.com/tech/977143/x-revenue-sharing-original-content-rewards
-
-详细的指标定义和公式见 [docs/methodology.md](docs/methodology.md)。
+名单核对、采集转换和只打星的命令也在 [docs/TOOLS.md](docs/TOOLS.md)。
 
 ## 隐私和安全
 
@@ -178,7 +143,7 @@ templates/                空的 CSV 模板（列名和脚本一致）
 scripts/                  relationship_stars.py（打星）、daily_collect.py（每日采集转换）
 adapters/                 twitter-web-exporter / X 官方归档 / 通用 CSV 转换
 fan_audit.py, keywords.txt  名单核对（v0 功能）
-docs/                     DATA_EXPORT（数据准备）、SPEC（打分规格）、DAILY_COLLECT、方法和调研
+docs/                     DATA_EXPORT（数据准备）、TOOLS（多天参数和有效曝光）、SPEC、DAILY_COLLECT
 examples/                 名单核对和打分公式的虚构示例
 tests/                    python3 -m unittest discover -s tests
 LICENSE                   MIT
