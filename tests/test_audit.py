@@ -104,5 +104,33 @@ class TestAuditSample(unittest.TestCase):
         self.assertEqual(rows["user_01"]["stars"], "4")
 
 
+class TestTierGates(unittest.TestCase):
+    def setUp(self):
+        conf, _ = rs.load_config()
+        self.tcfg = conf["tiers"]
+
+    def row(self, **changes):
+        base = dict(status="ok", score=40, rounds=0, O=4, I=0, O_raw=4, I_raw=0,
+                    greet_share=0, sub_days=2, raw=4, L_in=0, mutual=False)
+        base.update(changes)
+        return base
+
+    def test_zero_replies_stay_one_way_even_at_silver_score(self):
+        self.assertEqual(audit.classify(self.row(score=40), self.tcfg), "单向·我常去他没回")
+        self.assertEqual(audit.classify(self.row(score=80, rounds=0), self.tcfg), "单向·我常去他没回")
+
+    def test_silver_needs_a_reply_and_a_confirmed_round(self):
+        self.assertEqual(audit.classify(self.row(score=50, rounds=1, O=2, I=2, O_raw=2, I_raw=2), self.tcfg), "银牌")
+        missed = self.row(score=50, rounds=0, O=4, I=2, O_raw=4, I_raw=2)
+        self.assertEqual(audit.classify(missed, self.tcfg), "其他有分")
+        self.assertNotEqual(audit.classify(missed, self.tcfg), "单向·我常去他没回")
+
+    def test_gold_still_needs_both_sides(self):
+        almost = self.row(score=90, rounds=3, O=4, I=0, O_raw=4, I_raw=0, sub_days=2, greet_share=0.1)
+        self.assertEqual(audit.classify(almost, self.tcfg), "单向·我常去他没回")
+        gold = self.row(score=90, rounds=3, O=4, I=4, O_raw=4, I_raw=4, sub_days=2, greet_share=0.1)
+        self.assertEqual(audit.classify(gold, self.tcfg), "金牌")
+
+
 if __name__ == "__main__":
     unittest.main()

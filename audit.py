@@ -115,16 +115,20 @@ def load_inputs(d):
 
 def classify(x, tcfg):
     g, s, o = tcfg["gold"], tcfg["silver"], tcfg["one_way"]
-    if x["status"] == "ok":
-        if (x["score"] >= g["min_score"] and x["rounds"] >= g["min_rounds"] and x["O"] >= g["min_each_side"]
+    their = x.get("I_raw", 0)
+    rounds = x.get("rounds") or 0
+    # 金牌、银牌都要对方至少回过 1 条，并且至少有 1 次确认往返。
+    if x["status"] == "ok" and their >= g.get("min_their_replies", 1) and rounds >= s.get("min_confirmed_rounds", 1):
+        if (x["score"] >= g["min_score"] and rounds >= g["min_rounds"] and x["O"] >= g["min_each_side"]
                 and x["I"] >= g["min_each_side"] and x.get("greet_share", 1) < g["max_greet_share"]
                 and x["sub_days"] >= g["min_sub_days"]):
             return "金牌"
-        if x["score"] >= s["min_score"] or x["rounds"] >= s["min_rounds"]:
+        if x["score"] >= s["min_score"] or rounds >= s["min_rounds"]:
             return "银牌"
-    if x.get("I_raw", 0) >= o["min_from_one_side"] and x.get("O_raw", 0) <= o["max_from_other_side"]:
+    if their >= o["min_from_one_side"] and x.get("O_raw", 0) <= o["max_from_other_side"]:
         return "单向·他常来我少回"
-    if x.get("O_raw", 0) >= o["min_from_one_side"] and x.get("I_raw", 0) == 0:
+    # 对方回复数为 0：优先单向，分数到了银牌线也不进银牌。
+    if x.get("O_raw", 0) >= o["min_from_one_side"] and their == 0:
         return "单向·我常去他没回"
     if x.get("mutual") and x.get("raw", 0) == 0 and x.get("L_in", 0) == 0:
         return "沉睡互关"
