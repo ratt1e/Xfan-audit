@@ -108,7 +108,27 @@ def within(path, parent):
     return path == parent or parent in path.parents
 
 
-def check_output(output, repo, root):
+def own_output_entries(output):
+    """确认目录里只有本工具生成的普通文件。不删除，也不跟随符号链接。"""
+    if not output.exists():
+        return []
+    if output.is_symlink() or not output.is_dir():
+        raise ValueError("输出路径不是目录，拒绝覆盖")
+    entries = list(output.iterdir())
+    for entry in entries:
+        if entry.name not in OUTPUT_NAMES or entry.is_symlink() or not entry.is_file():
+            raise ValueError("输出目录里有不是本工具生成的文件，已停止，没有删除任何文件")
+    return entries
+
+
+def clear_own_outputs(output):
+    """只删除本工具的旧结果。调用前必须已经确认目录里没有其他文件。"""
+    output = Path(output).expanduser().resolve()
+    for entry in own_output_entries(output):
+        entry.unlink()
+
+
+def check_output(output, repo, root, overwrite=False):
     """解析符号链接后再检查；也不允许把分析结果写回日期输入目录。"""
     output = Path(output).expanduser().resolve()
     repo = Path(repo).resolve()
@@ -121,10 +141,13 @@ def check_output(output, repo, root):
                     within(output, folder.resolve()) or
                     ((folder / "private").is_dir() and within(output, (folder / "private").resolve()))):
                 raise ValueError("输出不能写入日期输入目录或 private 原件目录")
-    for name in OUTPUT_NAMES:
-        target = output / name
-        if target.exists() or target.is_symlink():
-            raise ValueError("目标输出文件已存在；请换一个 --out 目录，避免覆盖")
+    if overwrite:
+        own_output_entries(output)
+    else:
+        for name in OUTPUT_NAMES:
+            target = output / name
+            if target.exists() or target.is_symlink():
+                raise ValueError("目标输出文件已存在；请换一个 --out 目录，或加上 --overwrite")
     return output
 
 

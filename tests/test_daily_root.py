@@ -169,6 +169,54 @@ class TestDailyRoot(unittest.TestCase):
         self.cli("--data-root", self.daily, "--out", self.daily / "2026-10-01/private", ok=False)
         self.assertFalse((self.daily / "2026-10-01/private/accounts.csv").exists())
 
+    def test_overwrite_replaces_only_own_files(self):
+        self.day("2026-10-01", [self.row()])
+        output = self.base / "output"
+        output.mkdir()
+        for name in ("accounts.csv", "dashboard.html", "dashboard_public.html", "名单.md"):
+            (output / name).write_text("old-result", encoding="utf-8")
+        self.cli("--data-root", self.daily, "--out", output, "--overwrite")
+        names = sorted(path.name for path in output.iterdir())
+        self.assertEqual(names, ["accounts.csv", "dashboard.html", "dashboard_public.html", "名单.md"])
+        dashboard = (output / "dashboard.html").read_text(encoding="utf-8")
+        self.assertIn("粉丝体检", dashboard)
+        self.assertNotIn("old-result", dashboard)
+        self.assertIn("user_201", (output / "accounts.csv").read_text(encoding="utf-8-sig"))
+
+    def test_overwrite_stops_when_directory_has_other_files(self):
+        self.day("2026-10-01", [self.row()])
+        output = self.base / "output"
+        output.mkdir()
+        (output / "accounts.csv").write_text("old-result", encoding="utf-8")
+        (output / "notes.txt").write_text("keep-me", encoding="utf-8")
+        (output / "extra").mkdir()
+        result = self.cli("--data-root", self.daily, "--out", output, "--overwrite", ok=False)
+        self.assertIn("不是本工具生成的文件", result.stderr)
+        self.assertEqual((output / "accounts.csv").read_text(encoding="utf-8"), "old-result")
+        self.assertEqual((output / "notes.txt").read_text(encoding="utf-8"), "keep-me")
+        self.assertTrue((output / "extra").is_dir())
+        self.assertFalse((output / "dashboard.html").exists())
+
+    def test_overwrite_does_not_remove_symlink_or_write_into_inputs(self):
+        self.day("2026-10-01", [self.row()])
+        secret = self.base / "secret.csv"
+        secret.write_bytes(b"do-not-delete")
+        output = self.base / "output"
+        output.mkdir()
+        (output / "accounts.csv").symlink_to(secret)
+        result = self.cli("--data-root", self.daily, "--out", output, "--overwrite", ok=False)
+        self.assertIn("不是本工具生成的文件", result.stderr)
+        self.assertTrue((output / "accounts.csv").is_symlink())
+        self.assertEqual(secret.read_bytes(), b"do-not-delete")
+        private = self.daily / "2026-10-01" / "private"
+        original = (private / "interactions.csv").read_bytes()
+        blocked = self.cli("--data-root", self.daily, "--out", private, "--overwrite", ok=False)
+        self.assertIn("输出不能写入日期输入目录", blocked.stderr)
+        self.assertEqual((private / "interactions.csv").read_bytes(), original)
+        self.assertFalse((private / "dashboard.html").exists())
+        inside = self.cli("--data-root", self.daily, "--out", ROOT, "--overwrite", ok=False)
+        self.assertIn("输出不能在仓库内", inside.stderr)
+
     def test_unknown_conversation_does_not_create_reply_links(self):
         rows = [self.row(conversation_id="待核实"),
                 self.row(id="tw:9100002", tweet_id="9100002", direction="out",

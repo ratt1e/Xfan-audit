@@ -55,12 +55,12 @@
 每次采集完成，在本机用同一条命令再跑 `audit.py`，把含账号名的 `dashboard.html` 写到仓库外的固定目录。用浏览器打开这个文件，收藏成书签。以后每天还是点这个书签，看到的就是最新一份。
 
 ```bash
-python3 audit.py --data-root ~/x-data/ --lists ~/x-lists/ --me 你的用户名 --out ~/x-data/_看板/
+python3 audit.py --data-root ~/x-data/ --lists ~/x-lists/ --me 你的用户名 --out ~/x-data/_看板/ --overwrite
 ```
 
 含账号名的看板、`accounts.csv` 和 `名单.md` 只留在你的电脑上。不要部署到公网，也不要放到网盘的公开链接里。要给别人看，用打码的 `dashboard_public.html` 自己截一张图。
 
-每日模式如果这个目录里已经有上一份输出，会拒绝覆盖。更新前先删掉该目录里的 `dashboard.html`、`dashboard_public.html`、`accounts.csv`、`名单.md`，再跑上面同一条命令。
+`--overwrite` 只替换这个目录里本工具生成的四份结果：`dashboard.html`、`dashboard_public.html`、`accounts.csv`、`名单.md`。目录里如果还有别的文件，命令会报错停下，不会删除。不加 `--overwrite` 时，已有结果仍然拒绝覆盖。仓库内和日期输入目录始终不能写。
 
 ## Quick Start（三步）
 
@@ -86,9 +86,9 @@ python3 audit.py
 | `dashboard_public.html` | 同一个看板的打码版，账号名换成「账号#01」，不列单向和沉睡名单，可以截图分享 |
 | `accounts.csv` | 每个账号一行：分层、星级、分数、各项明细 |
 
-常用参数：`--data 目录`、`--out 目录`、`--days 30`、`--all-days`（全部互动日期）、`--end 2026-10-19`、`--me 你的用户名`（排除自己回自己）、`--config config.json`。
+常用参数：`--data 目录`、`--out 目录`、`--overwrite`（只覆盖本工具自己的旧结果）、`--days 30`、`--all-days`（全部互动日期）、`--end 2026-10-19`、`--me 你的用户名`（排除自己回自己）、`--config config.json`。
 
-已有每日采集目录时，用 `--data-root ~/x-data/` 合并多天；可加 `--lists ~/x-lists/`，只读取关注表和粉丝表，不混入该目录的回复。也可设置环境变量 `FAN_AUDIT_DATA_ROOT`，显式 `--data` 仍保持原来的单目录用法。每日模式的结果必须在仓库外，并多输出一份私有的 `名单.md`；已有同名结果时会拒绝覆盖。用法与覆盖情况说明见 [多天一起分析](docs/DAILY_COLLECT.md#多天一起分析)。
+已有每日采集目录时，用 `--data-root ~/x-data/` 合并多天；可加 `--lists ~/x-lists/`，只读取关注表和粉丝表，不混入该目录的回复。也可设置环境变量 `FAN_AUDIT_DATA_ROOT`，显式 `--data` 仍保持原来的单目录用法。每日模式的结果必须在仓库外，并多输出一份私有的 `名单.md`。已有同名结果时默认拒绝覆盖；要每天更新同一个目录，加上 `--overwrite`。用法与覆盖情况说明见 [多天一起分析](docs/DAILY_COLLECT.md#多天一起分析)。
 
 ## 星级怎么算（大白话）
 

@@ -21,7 +21,7 @@ from datetime import date, datetime, timedelta, timezone
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "scripts"))
 import relationship_stars as rs  # noqa: E402
-from daily_root import load_daily_root, check_output, coverage_lines, write_roster  # noqa: E402
+from daily_root import load_daily_root, check_output, clear_own_outputs, coverage_lines, write_roster  # noqa: E402
 
 try:
     from zoneinfo import ZoneInfo
@@ -375,6 +375,8 @@ def main(argv=None):
     ap.add_argument("--data-root", help="每日数据根目录；也可用 FAN_AUDIT_DATA_ROOT")
     ap.add_argument("--lists", help="每日模式可选关系表目录，只读 following.csv 和 followers.csv")
     ap.add_argument("--out", help="输出目录；每日模式默认在数据根目录的 _分析结果/截止日期/")
+    ap.add_argument("--overwrite", action="store_true",
+                    help="覆盖 --out 里本工具上次生成的结果；目录里有其他文件则停止，不删除")
     ap.add_argument("--config", default=rs.CONFIG_PATH)
     ap.add_argument("--end", help="截止日 YYYY-MM-DD，默认取 config（auto=数据里最晚一天）")
     period = ap.add_mutually_exclusive_group()
@@ -397,7 +399,7 @@ def main(argv=None):
     if root:
         try:
             if a.out:
-                check_output(a.out, HERE, root)
+                check_output(a.out, HERE, root, a.overwrite)
             data = load_daily_root(root, a.lists)
             # 空文件或只有点赞时，默认截止日期仍有确定来源。
             daily_conf = dict(conf, window=dict(conf.get("window", {})))
@@ -409,7 +411,7 @@ def main(argv=None):
                 raise ValueError("每日数据的时间或字段格式无效，请在本机核对；具体值未打印") from None
             from pathlib import Path
             target = a.out or Path(root).expanduser() / "_分析结果" / meta["end"]
-            a.out = str(check_output(target, HERE, root))
+            a.out = str(check_output(target, HERE, root, a.overwrite))
         except (ValueError, OSError) as exc:
             # OSError 的路径可能带账号；不把原始异常内容输出。
             ap.error(str(exc) if isinstance(exc, ValueError) else "每日数据或输出目录无法访问")
@@ -417,6 +419,11 @@ def main(argv=None):
         data = load_inputs(a.data or "data")
         res, meta = analyze(data, conf, cfg, a.end, a.days, a.all_days)
         a.out = a.out or "output"
+    if root and a.overwrite:
+        try:
+            clear_own_outputs(a.out)
+        except (ValueError, OSError) as exc:
+            ap.error(str(exc) if isinstance(exc, ValueError) else "输出目录无法更新")
     os.makedirs(a.out, exist_ok=True)
     write_csv(res, os.path.join(a.out, "accounts.csv"))
     with open(os.path.join(a.out, "dashboard.html"), "w", encoding="utf-8") as f:
