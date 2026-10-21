@@ -94,6 +94,9 @@ class TestWebScore(unittest.TestCase):
         html = (ROOT / "web/index.html").read_text(encoding="utf-8")
         self.assertIn("数据只在你的浏览器里处理，不会上传", html)
         self.assertIn("打码模式", html)
+        self.assertIn('type="file" multiple', html)
+        self.assertIn("<select data-idx=", html)
+        self.assertIn("请选择", html)
         self.assertNotIn("https://", html)
         self.assertNotIn("fetch(", html)
         self.assertNotIn("script src", html.lower())
@@ -117,3 +120,63 @@ class TestWebScore(unittest.TestCase):
         owner = json.loads(subprocess.check_output(
             [node, str(ROOT / "tests/web_score_runner.mjs"), "owner"], cwd=str(ROOT)))
         self.assertEqual(owner["owner"], "")
+
+    def kinds(self, jobs):
+        node = find_node()
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        plan = Path(folder.name) / "plan.json"
+        plan.write_text(json.dumps(jobs), encoding="utf-8")
+        return json.loads(subprocess.check_output(
+            [node, str(ROOT / "tests/web_score_runner.mjs"), "kinds", str(plan)], cwd=str(ROOT)))
+
+    def test_plugin_export_names_and_content_fallback(self):
+        tweets = str(ROOT / "tests/fixtures/twe_tweets.json")
+        following = str(ROOT / "tests/fixtures/twe_following.json")
+        followers = str(ROOT / "tests/fixtures/twe_followers.json")
+        got = self.kinds([
+            {"name": "twitter-用户推文-1792582217575.json", "file": tweets},
+            {"name": "twitter-UserTweets-1792582217575.json", "file": tweets},
+            {"name": "twitter-tweets-1792582217575.json", "file": tweets},
+            {"name": "twitter-正在关注-1792582202463.json", "file": following},
+            {"name": "twitter-Following-1792582202463.json", "file": following},
+            {"name": "twitter-关注者-1792582196xxx.json", "file": followers},
+            {"name": "twitter-Followers-1792582196123.json", "file": followers},
+            {"name": "weekly.json", "file": tweets},
+            {"name": "people.json", "file": following},
+            {"name": "twitter-正在关注-1792582202463.json", "file": tweets},
+        ])
+        self.assertEqual(got["kinds"], [
+            "tweets", "tweets", "tweets", "following", "following", "followers", "followers",
+            "tweets", "ask-users", "following",
+        ])
+        self.assertEqual(got["needsChoice"], ["people.json"])
+
+    def test_same_type_exports_are_merged_once(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        tweets = json.loads((ROOT / "tests/fixtures/twe_tweets.json").read_text(encoding="utf-8"))
+        extra = dict(tweets[1])
+        extra["id"] = "9100088"
+        second_tweets = Path(folder.name) / "more-tweets.json"
+        second_tweets.write_text(json.dumps(tweets + [extra]), encoding="utf-8")
+        people = json.loads((ROOT / "tests/fixtures/twe_following.json").read_text(encoding="utf-8"))
+        newbie = dict(people[-1])
+        newbie["screen_name"] = "user_299"
+        newbie["id"] = "9200099"
+        second_following = Path(folder.name) / "more-following.json"
+        second_following.write_text(json.dumps(people + [newbie]), encoding="utf-8")
+        one = self.kinds([
+            {"name": "twitter-用户推文-1792582217575.json", "file": str(ROOT / "tests/fixtures/twe_tweets.json"), "owner": "demo_owner"},
+            {"name": "twitter-正在关注-1792582202463.json", "file": str(ROOT / "tests/fixtures/twe_following.json")},
+        ])
+        got = self.kinds([
+            {"name": "twitter-用户推文-1792582217575.json", "file": str(ROOT / "tests/fixtures/twe_tweets.json"), "owner": "demo_owner"},
+            {"name": "twitter-用户推文-1793000000000.json", "file": str(second_tweets), "owner": "demo_owner"},
+            {"name": "twitter-正在关注-1792582202463.json", "file": str(ROOT / "tests/fixtures/twe_following.json")},
+            {"name": "twitter-正在关注-1793000000000.json", "file": str(second_following)},
+        ])
+        self.assertEqual(got["tweetIds"], sorted(set(one["tweetIds"] + ["9100088"])))
+        self.assertLess(len(got["tweetIds"]), len(one["tweetIds"]) * 2)
+        self.assertEqual(got["following"], sorted(set(one["following"] + ["user_299"])))
+        self.assertEqual(len(got["following"]), len(one["following"]) + 1)

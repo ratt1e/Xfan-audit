@@ -13,7 +13,8 @@ h1{font-size:28px;margin:0 0 4px} h2{font-size:18px;margin:0 0 12px}
 .drop.over{background:#EFF6FF}
 .row{display:flex;flex-wrap:wrap;gap:10px;align-items:end;margin:12px 0}
 label{font-size:13px;color:#374151;display:flex;flex-direction:column;gap:4px}
-input,button{font:inherit}
+input,button,select{font:inherit}
+select{border:1px solid #D1D5DB;border-radius:8px;padding:4px 8px;background:#fff}
 input[type="date"],input[type="text"]{border:1px solid #D1D5DB;border-radius:8px;padding:6px 8px;background:#fff}
 button{border:1px solid #D1D5DB;background:#fff;border-radius:8px;padding:7px 12px;cursor:pointer}
 button.on{background:#1D4ED8;color:#fff;border-color:#1D4ED8}
@@ -38,7 +39,7 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
 <h1>粉丝体检 · 互动关系星级</h1>
 <p class="privacy">数据只在你的浏览器里处理，不会上传。</p>
 <p class="sub">把 twitter-web-exporter 导出的 JSON（用户推文、正在关注、关注者）或 interactions.csv 拖进来。不联网，没有统计代码。权重仍是初始值。</p>
-<div class="drop" id="drop">把文件拖到这里，或点此选择。文件名请带上「用户推文 / 正在关注 / 关注者」，或用 following.csv、followers.csv、interactions.csv、replies.csv。</div>
+<div class="drop" id="drop">把文件拖到这里，或点此选择。可以一次放进多个，不用改名。插件导出的「用户推文 / UserTweets」「正在关注 / Following」「关注者 / Followers」会自动认出来。</div>
 <input id="picker" type="file" multiple hidden>
 <div class="row">
 <label>你的用户名（推文 JSON 需要）<input id="me" type="text" placeholder="不带 @" autocomplete="off"></label>
@@ -455,36 +456,66 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
     if (!Array.isArray(records)) records = [records];
     return {json: json, records: records};
   }
+  function nameKind(name) {
+    var base = String(name || "").replace(/\.[^.]+$/, "").replace(/[-_ ]\d{6,}$/, "");
+    var low = base.toLowerCase();
+    if (base.indexOf("用户推文") >= 0 || low.indexOf("usertweets") >= 0 || low.indexOf("tweets") >= 0) return "tweets";
+    if (base.indexOf("正在关注") >= 0 || low.indexOf("following") >= 0) return "following";
+    if (base.indexOf("关注者") >= 0 || base.indexOf("粉丝") >= 0 || low.indexOf("followers") >= 0) return "followers";
+    return "";
+  }
+  function contentKind(records) {
+    var tweet = records.some(function (r) {
+      if (!r) return false;
+      var body = r.full_text != null ? r.full_text : null;
+      if (body == null && r.text != null && r.screen_name) body = r.text;
+      return body != null && (r.created_at || r.ts);
+    });
+    if (tweet) return "tweets";
+    var user = records.some(function (r) { return r && (r.screen_name || r.handle) && r.full_text == null; });
+    if (user) return "ask-users";
+    return "";
+  }
   function fileKind(name, text) {
-    var parsed = parseRecords(text);
+    var byName = nameKind(name);
+    if (byName) return byName;
     var low = String(name || "").toLowerCase();
-    if (parsed.json) {
-      var looksTweet = parsed.records.some(function (r) { return r && (r.full_text != null || r.in_reply_to != null); });
-      if (looksTweet || name.indexOf("用户推文") >= 0 || low.indexOf("tweet") >= 0) return "tweets";
-      var looksUser = parsed.records.some(function (r) { return r && (r.screen_name || r.handle); });
-      if (looksUser) {
-        if (low.indexOf("following") >= 0 || name.indexOf("正在关注") >= 0) return "following";
-        if (low.indexOf("follower") >= 0 || name.indexOf("关注者") >= 0 || name.indexOf("粉丝") >= 0) return "followers";
-        return "ask-users";
-      }
-      return "unknown";
-    }
     if (low.indexOf("interaction") >= 0) return "interactions";
     if (low.indexOf("repl") >= 0) return "replies";
     if (low.indexOf("like") >= 0) return "likes";
     if (low.indexOf("profile") >= 0) return "profiles";
-    if (low.indexOf("following") >= 0 || name.indexOf("正在关注") >= 0) return "following";
-    if (low.indexOf("follower") >= 0 || name.indexOf("关注者") >= 0 || name.indexOf("粉丝") >= 0) return "followers";
+    var parsed;
+    try { parsed = parseRecords(text); } catch (err) { return "bad"; }
+    if (parsed.json) return contentKind(parsed.records) || "unknown";
     return "unknown";
+  }
+  function mergeUsers(target, records) {
+    var add = usersFrom(records);
+    Object.keys(add).forEach(function (h) { if (!target[h]) target[h] = add[h]; });
+  }
+  function dedupeRows(rows) {
+    var seen = {}, out = [];
+    rows.forEach(function (r) {
+      var key = r.id || (r.tweet_id ? "tw:" + r.tweet_id : "");
+      if (key && seen[key]) return;
+      if (key) seen[key] = 1;
+      out.push(r);
+    });
+    return out;
   }
   function loadTexts(parts) {
     var data = {rows: [], following: {}, followers: {}, profiles: {}, warnings: [], needsChoice: [], owner: ""};
     parts.forEach(function (part, idx) {
       var name = part.name || "";
-      var parsed = parseRecords(part.text || "");
       var kind = part.kind || fileKind(name, part.text || "");
-      var records = parsed.records;
       if (kind === "ask-users") { data.needsChoice.push({index: idx, name: name}); return; }
+      if (kind === "unknown" || kind === "bad") { data.warnings.push("有一份文件认不出来，已跳过"); return; }
+      var parsed;
+      try { parsed = parseRecords(part.text || ""); } catch (err) {
+        data.warnings.push("有一份文件读不了，已跳过");
+        return;
+      }
+      var records = parsed.records;
       if (kind === "tweets") {
         var owner = norm(part.owner || "") || inferOwner(records);
         if (!owner) data.warnings.push("有一份推文没能判断你的用户名，请在页面上填写");
@@ -492,17 +523,21 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
           data.owner = data.owner || owner;
           data.rows = data.rows.concat(repliesFromTweets(records, owner));
         }
-      } else if (kind === "followers") Object.assign(data.followers, usersFrom(records));
-      else if (kind === "following") Object.assign(data.following, usersFrom(records));
+      } else if (kind === "followers") mergeUsers(data.followers, records);
+      else if (kind === "following") mergeUsers(data.following, records);
       else if (kind === "interactions") data.rows = data.rows.concat(rowsFromInteractions(records));
       else if (kind === "replies") data.rows = data.rows.concat(rowsFromReplies(records));
       else if (kind === "likes") data.rows = data.rows.concat(rowsFromLikes(records));
-      else if (kind === "profiles") records.forEach(function (r) { var h = norm(r.handle); if (h) data.profiles[h] = r; });
+      else if (kind === "profiles") records.forEach(function (r) {
+        var h = norm(r.handle);
+        if (h && !data.profiles[h]) data.profiles[h] = r;
+      });
       else data.warnings.push("有一份文件认不出来，已跳过");
     });
+    data.rows = dedupeRows(data.rows);
     return data;
   }
-  root.FanAudit = {CONFIG: CONFIG, TIERS: TIERS, analyze: analyze, loadTexts: loadTexts, parseCsv: parseCsv, fileKind: fileKind, inferOwner: inferOwner, repliesFromTweets: repliesFromTweets};
+  root.FanAudit = {CONFIG: CONFIG, TIERS: TIERS, analyze: analyze, loadTexts: loadTexts, parseCsv: parseCsv, fileKind: fileKind, nameKind: nameKind, inferOwner: inferOwner, repliesFromTweets: repliesFromTweets};
 })(typeof globalThis !== "undefined" ? globalThis : this);
 </script>
 <script>
@@ -522,14 +557,19 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
     var pending = [].slice.call(files);
     var left = pending.length;
     if (!left) return;
-    pending.forEach(function (file) {
+    var slots = new Array(pending.length);
+    pending.forEach(function (file, i) {
       var reader = new FileReader();
       reader.onload = function () {
         var text = String(reader.result || "");
         var kind = "bad";
         try { kind = FanAudit.fileKind(file.name, text); } catch (err) { kind = "bad"; }
-        state.parts.push({name: file.name, text: text, kind: kind});
-        if (--left === 0) { state.mode = "30"; render(); }
+        slots[i] = {name: file.name, text: text, kind: kind};
+        if (--left === 0) {
+          slots.forEach(function (part) { if (part) state.parts.push(part); });
+          state.mode = "30";
+          render();
+        }
       };
       reader.readAsText(file);
     });
@@ -562,11 +602,10 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
     render();
   };
   document.getElementById("me").onchange = function () { if (!writingDates) render(); };
-  out.addEventListener("click", function (e) {
+  out.addEventListener("change", function (e) {
     var el = e.target;
-    while (el && el !== out && !(el.getAttribute && el.getAttribute("data-kind"))) el = el.parentNode;
-    if (!el || el === out) return;
-    state.parts[+el.getAttribute("data-idx")].kind = el.getAttribute("data-kind");
+    if (!el || !el.getAttribute || el.tagName !== "SELECT" || el.getAttribute("data-idx") == null) return;
+    state.parts[+el.getAttribute("data-idx")].kind = el.value;
     render();
   });
   function stars(x) {
@@ -579,10 +618,21 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
       b.classList.toggle("on", b.getAttribute("data-mode") === state.mode);
     });
     if (!state.parts.length) { out.innerHTML = ""; return; }
-    if (state.parts.some(function (p) { return p.kind === "bad"; })) {
-      out.innerHTML = '<div class="warn">这份文件读不了。请确认是 JSON 或 CSV。</div>';
-      return;
-    }
+    var choices = [["tweets", "用户推文"], ["following", "正在关注"], ["followers", "关注者"], ["interactions", "互动"], ["replies", "回复"], ["likes", "点赞"], ["profiles", "资料"]];
+    var filesHtml = '<div class="card" style="margin-bottom:16px"><h2>读入的文件</h2><table><tr><th>文件</th><th>认成</th></tr>';
+    state.parts.forEach(function (p, i) {
+      var opts = choices.slice();
+      if (p.kind === "ask-users") opts.unshift(["ask-users", "请选择"]);
+      else if (p.kind === "unknown") opts.unshift(["unknown", "未识别"]);
+      else if (p.kind === "bad") opts.unshift(["bad", "读不了"]);
+      var sel = opts.map(function (o) {
+        return '<option value="' + o[0] + '"' + (o[0] === p.kind ? " selected" : "") + ">" + esc(o[1]) + "</option>";
+      }).join("");
+      filesHtml += "<tr><td>" + esc(p.name) + '</td><td><select data-idx="' + i + '">' + sel + "</select></td></tr>";
+    });
+    filesHtml += "</table></div>";
+    var askNote = state.parts.some(function (p) { return p.kind === "ask-users"; })
+      ? '<div class="warn">有文件分不清是正在关注还是关注者，请在下拉框里选。没选的这份先不算。</div>' : "";
     var owner = document.getElementById("me").value;
     var data;
     try {
@@ -590,15 +640,7 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
         return {name: p.name, text: p.text, owner: owner, kind: p.kind};
       }));
     } catch (err) {
-      out.innerHTML = '<div class="warn">这份文件读不了。请确认是 JSON 或 CSV。</div>';
-      return;
-    }
-    if (data.needsChoice.length) {
-      out.innerHTML = data.needsChoice.map(function (item) {
-        return '<div class="warn">' + esc(item.name) + ' 看不出是正在关注还是关注者。' +
-          '<button type="button" data-idx="' + item.index + '" data-kind="following">这是正在关注</button> ' +
-          '<button type="button" data-idx="' + item.index + '" data-kind="followers">这是关注者</button></div>';
-      }).join("");
+      out.innerHTML = filesHtml + '<div class="warn">这份文件读不了。请确认是 JSON 或 CSV。</div>';
       return;
     }
     if (!owner && data.owner) {
@@ -659,7 +701,7 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
     var cover = "区间 " + meta.start + " ~ " + meta.end + "。覆盖 " + meta.covered + " 天";
     if (meta.uncovered) cover += "，" + meta.uncovered + " 天无数据（不算零互动，不进持续性分母）";
     else cover += "，无数据 0 天";
-    out.innerHTML = '<p class="sub">' + esc(cover) + " · " + rows.length + " 个账号</p>" +
+    out.innerHTML = filesHtml + askNote + '<p class="sub">' + esc(cover) + " · " + rows.length + " 个账号</p>" +
       '<div class="grid"><div class="card"><div class="num">' + tiers["金牌"] + '</div><div class="lab">金牌</div></div>' +
       '<div class="card"><div class="num">' + tiers["银牌"] + '</div><div class="lab">银牌</div></div>' +
       '<div class="card"><div class="num">' + tiers["单向·我常去他没回"] + '</div><div class="lab">我常去他没回</div></div>' +

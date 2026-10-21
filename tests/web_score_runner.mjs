@@ -17,6 +17,22 @@ const dir = path.join(root, "sample_data");
 function text(name) {
   return fs.readFileSync(path.join(dir, name), "utf8");
 }
+if (process.argv[2] === "kinds") {
+  const jobs = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+  const parts = jobs.map(function (job) {
+    const file = path.isAbsolute(job.file) ? job.file : path.join(root, job.file);
+    return {name: job.name, text: fs.readFileSync(file, "utf8"), owner: job.owner || ""};
+  });
+  const data = fan.loadTexts(parts);
+  process.stdout.write(JSON.stringify({
+    kinds: parts.map(function (part) { return fan.fileKind(part.name, part.text); }),
+    following: Object.keys(data.following).sort(),
+    followers: Object.keys(data.followers).sort(),
+    tweetIds: data.rows.map(function (row) { return row.tweet_id; }).filter(Boolean).sort(),
+    needsChoice: data.needsChoice.map(function (item) { return item.name; })
+  }));
+  process.exit(0);
+}
 if (process.argv[2] === "tweets" || process.argv[2] === "owner") {
   const records = JSON.parse(fs.readFileSync(path.join(root, "tests/fixtures/twe_tweets.json"), "utf8"));
   if (process.argv[2] === "owner") {
