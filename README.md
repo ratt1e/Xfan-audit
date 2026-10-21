@@ -6,17 +6,43 @@
 
 ![看板示例（假数据生成，已打码）](docs/img/dashboard.png)
 
-用你自己账号的**公开回复**和**关注关系**，找出谁是真的在跟你来回聊天的「金牌用户」，谁是互关了但从来不说话的「沉睡互关」。
+用你自己账号的**公开回复**和**关注关系**，找出谁是真的在跟你来回聊天的「金牌用户」，谁是互关了但这段时间没说话的「沉睡互关」。
 
-- `audit.py` 在你自己的电脑上离线算分：不联网，也不会点赞、关注、取关或发帖。采集是另一件事，见下面。
-- 只用 Python 标准库（3.9+），不用装任何依赖。
-- 一行命令出两个看板：一个带账号名（只给自己看），一个自动打码（可以截图分享）。
+**数据只在你的浏览器里处理，不会上传。** 网页不联网，也没有统计代码。
 
-## 适用人群
+## 两步上手
+
+### 1. 装插件，导出 JSON
+
+安装 [twitter-web-exporter](https://github.com/prinsss/twitter-web-exporter)，在浏览器里导出这三份：
+
+- 用户推文
+- 正在关注
+- 关注者
+
+谢谢这个开源脚本，它只记录网页本来就会加载的数据。怎么滚页面，看 [docs/DATA_EXPORT.md](docs/DATA_EXPORT.md)。
+
+### 2. 打开网页，拖进去
+
+用浏览器打开本仓库的 `web/index.html`（双击，或把文件拖进浏览器）。再把上面的 JSON 拖进页面。`interactions.csv` 也可以直接拖。
+
+页面上填你的用户名（不带 @）。推文文件没填时，会用主帖最多的那个账号来猜，不对就改掉。文件名看不出是「正在关注」还是「关注者」时，页面会先问你。
+
+顶部可以选开始、结束日期，或点「最近 7 天 / 30 天 / 全部」。一切换就重算，并写出覆盖了几天。没有采集、也没有互动时间落在上面的日期按「无数据」处理，不当成零互动，也不进持续性的分母。
+
+截图前点「打码模式」，账号名会换成账号#01。
+
+GitHub Pages 的配置在 `.github/workflows/pages.yml`，准备从 `/web` 发布，**还没开启**。现在请直接打开本地的 `web/index.html`。
+
+## 进阶用法
+
+下面是 Python 命令行。适合已经用 Grok Bot 每天采集，或要把看板写到固定目录的人。网页和命令行用同一套打分。
+
+### 适用人群
 
 写给已经开通 **X Premium** 的人。推荐和 **Grok Bot** 一起用：Bot 负责每天用只读接口把互动采下来，这个仓库的脚本在你电脑上打分、出看板。没有 Bot 也能跑，只是互动数据要自己导出，结果通常会少一截，见下一节。
 
-## 数据从哪来
+### 数据从哪来
 
 两份数据分开准备，最后由 `audit.py` 合在一起算。
 
@@ -26,7 +52,7 @@
 
 没有 Grok Bot 时，可以用同一款插件把互动导出成 CSV 来代替。插件只记下你自己滚过的页面，通常只有一个方向。方向缺一半时，条数、分数和分层都会偏少。
 
-## 合理使用
+### 合理使用
 
 - **只读。** 不自动点赞，不自动关注或取关，不自动发帖，不私信。看板里的「建议动作」只是文字，工具不会替你做。
 - **遵守调用额度。** Grok Bot 内置的公开读取：每分钟 30 次、每天 1000 次、每次最多 25 条，每天 00:00 UTC 重置。平时这一轮合计不超过 27 次（补最近 48 小时不超过 33 次），硬上限 40 次。遇到 429，等到重置后再重试 1 次；401、403 或额度不足就停。页数怎么分配见 [额度预算](docs/DAILY_COLLECT.md#6-额度预算)。
@@ -50,7 +76,7 @@
 7. 不要把 cookie、token、API key，或任何具体账号名，写进仓库、日志或这段提示词的回执里。
 ```
 
-## 每天看看板
+### 每天看看板
 
 每次采集完成，在本机用同一条命令再跑 `audit.py`，把含账号名的 `dashboard.html` 写到仓库外的固定目录。用浏览器打开这个文件，收藏成书签。以后每天还是点这个书签，看到的就是最新一份。
 
@@ -62,7 +88,7 @@ python3 audit.py --data-root ~/x-data/ --lists ~/x-lists/ --me 你的用户名 -
 
 `--overwrite` 只替换这个目录里本工具生成的四份结果：`dashboard.html`、`dashboard_public.html`、`accounts.csv`、`名单.md`。目录里如果还有别的文件，命令会报错停下，不会删除。不加 `--overwrite` 时，已有结果仍然拒绝覆盖。仓库内和日期输入目录始终不能写。
 
-## 三步走
+### Python 命令行
 
 ```bash
 # 1. 下载
@@ -76,7 +102,7 @@ python3 audit.py --data sample_data
 python3 audit.py
 ```
 
-第 3 步需要的 CSV 怎么导出，看 **[docs/DATA_EXPORT.md](docs/DATA_EXPORT.md)**（保姆级，写了浏览器插件和 X 官方归档两种办法）。最少只要一个 `replies.csv`，最好再加 `following.csv`、`followers.csv`。
+命令行需要的 CSV 怎么导出，看 **[docs/DATA_EXPORT.md](docs/DATA_EXPORT.md)**（保姆级，写了浏览器插件和 X 官方归档两种办法）。最少只要一个 `replies.csv`，最好再加 `following.csv`、`followers.csv`。
 
 输出在 `output/`：
 
@@ -115,6 +141,7 @@ python3 audit.py
 
 ## Roadmap
 
+- [x] 网页拖拽版：打开 `web/index.html`，拖入 JSON 或 CSV，在浏览器里算星级和分层
 - [x] v0.1 CSV → 星级 → 金牌/银牌/单向/沉睡互关分层 → HTML 看板（含打码版）
 - [x] v0.1 配置文件 `config.json`（词表、权重、星级线、门槛）
 - [x] v0.2 对话往返轮数（严格回复链：`in_reply_to_status_id` 指向对方那条才算）——已实现；没有父帖 ID 的回复会提示「无法确认往返」
@@ -136,7 +163,9 @@ python3 audit.py
 ## 目录
 
 ```
-audit.py                  一行命令出看板（v0.1 主入口）
+web/index.html            拖入 JSON 或 CSV 的网页（不联网）
+.github/workflows/pages.yml  从 /web 发布的配置，还没开启
+audit.py                  一行命令出看板（进阶用法）
 config.json               词表、权重、星级线、时间窗口、金牌/银牌定义
 sample_data/              20 个虚构账号的假数据和生成脚本
 templates/                空的 CSV 模板（列名和脚本一致）
@@ -151,7 +180,7 @@ LICENSE                   MIT
 
 ## English (brief)
 
-**fan-audit** is an offline, read-only toolkit for scoring your two-way public conversations on X (Twitter). It is meant for X Premium users, and works best with a read-only daily collector such as Grok Bot: the bot writes `interactions.csv`, you export following and followers yourself, and `audit.py` scores them on your computer. Put `replies.csv` (+ optional `following.csv`, `followers.csv`, `likes.csv`) into `data/` and run `python3 audit.py` to get an HTML dashboard with 1–5 star scores, a "gold / silver / one-way / dormant mutual" segmentation, and a masked version for sharing. The dashboard that still shows account names stays on your machine; do not publish it. Try it with `python3 audit.py --data sample_data`. Standard library only, Python 3.9+. Weights are initial values, not yet validated. No automatic likes, follows, or posts. MIT License.
+**fan-audit** scores two-way public conversations on X (Twitter). Open `web/index.html` and drop in a twitter-web-exporter JSON export (your tweets, following, followers) or `interactions.csv`. The page calculates stars and tiers in the browser and does not upload anything. A mask button replaces account names before you take a screenshot. The Python command line remains for daily collection: a read-only collector such as Grok Bot can write `interactions.csv`, and `python3 audit.py --data sample_data` runs the same scoring offline. Standard library only, Python 3.9+. Weights are initial values, not yet validated. No automatic likes, follows, or posts. The named dashboard stays on your machine. MIT License.
 
 ---
 

@@ -1,0 +1,33 @@
+# 从 /web 发布到 GitHub Pages。只准备了配置，没有开启。
+# 要发布时：先在仓库设置里打开 Pages，再手动运行这个 workflow。
+# 不要加 push 触发，避免一次普通推送就把网页公开。
+name: pages
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: upload
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+      - name: deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,680 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>fan-audit · 网页拖拽版</title>
+<style>
+body{font-family:-apple-system,"PingFang SC","Noto Sans CJK SC","Microsoft YaHei",sans-serif;background:#F7F8FA;color:#1F2937;margin:0;padding:28px}
+h1{font-size:28px;margin:0 0 4px} h2{font-size:18px;margin:0 0 12px}
+.privacy{background:#ECFDF5;border:1px solid #6EE7B7;border-radius:12px;padding:12px 16px;font-size:16px;font-weight:650;margin:14px 0}
+.sub{color:#6B7280;font-size:14px;margin-bottom:12px}
+.drop{border:2px dashed #93C5FD;background:#fff;border-radius:14px;padding:22px;text-align:center;margin-bottom:14px}
+.drop.over{background:#EFF6FF}
+.row{display:flex;flex-wrap:wrap;gap:10px;align-items:end;margin:12px 0}
+label{font-size:13px;color:#374151;display:flex;flex-direction:column;gap:4px}
+input,button{font:inherit}
+input[type="date"],input[type="text"]{border:1px solid #D1D5DB;border-radius:8px;padding:6px 8px;background:#fff}
+button{border:1px solid #D1D5DB;background:#fff;border-radius:8px;padding:7px 12px;cursor:pointer}
+button.on{background:#1D4ED8;color:#fff;border-color:#1D4ED8}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:14px;margin:14px 0}
+.card{background:#fff;border:1px solid #E5E7EB;border-radius:14px;padding:16px 18px}
+.num{font-size:32px;font-weight:700}.lab{color:#6B7280;font-size:13px;margin-top:4px}
+.panels{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
+@media(max-width:820px){.panels{grid-template-columns:1fr}}
+.bar{display:flex;align-items:center;margin:6px 0;font-size:14px}
+.bar .k{width:210px}.bar .b{height:14px;border-radius:4px;background:#3B82F6;margin-right:8px}
+.bar .b.gray{background:#CBD5E1}.bar .b.gold{background:#F59E0B}.bar .b.silver{background:#94A3B8}
+.bar .b.green{background:#10B981}.bar .b.red{background:#F43F5E}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{text-align:left;padding:7px 8px;border-bottom:1px solid #EEF0F3;vertical-align:top}
+th{color:#6B7280;font-weight:600}
+.warn{background:#FFF7ED;border:1px solid #FED7AA;border-radius:10px;padding:10px 14px;font-size:13px;margin:12px 0}
+.muted{color:#6B7280;font-size:12px}
+footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
+</style>
+</head>
+<body>
+<h1>粉丝体检 · 互动关系星级</h1>
+<p class="privacy">数据只在你的浏览器里处理，不会上传。</p>
+<p class="sub">把 twitter-web-exporter 导出的 JSON（用户推文、正在关注、关注者）或 interactions.csv 拖进来。不联网，没有统计代码。权重仍是初始值。</p>
+<div class="drop" id="drop">把文件拖到这里，或点此选择。文件名请带上「用户推文 / 正在关注 / 关注者」，或用 following.csv、followers.csv、interactions.csv、replies.csv。</div>
+<input id="picker" type="file" multiple hidden>
+<div class="row">
+<label>你的用户名（推文 JSON 需要）<input id="me" type="text" placeholder="不带 @" autocomplete="off"></label>
+<label>开始<input id="start" type="date"></label>
+<label>结束<input id="end" type="date"></label>
+<button type="button" id="d7" data-mode="7">最近 7 天</button>
+<button type="button" id="d30" data-mode="30">最近 30 天</button>
+<button type="button" id="dall" data-mode="all">全部</button>
+<button type="button" id="mask">打码模式</button>
+<button type="button" id="clear">清空</button>
+</div>
+<div id="out"></div>
+<footer>fan-audit 网页版 · 建议只是文字，不会替你点赞、关注或发帖</footer>
+<script id="fan-audit-engine">
+(function (root) {
+  var CONFIG = {
+    window: {days: 30, timezone: "America/Los_Angeles"},
+    weights: {persistence: 0.40, bidirectional: 0.35, rounds: 0.25},
+    persistence: {alpha: 0.30, greet_day: 0.2, greet_day_cap: 1.0},
+    greeting_cap: {share: 0.8, max_score: 39.9},
+    likes: {points_each: 0.5, cap: 5.0, time_mode: "strict"},
+    insufficient: {min_raw: 3, min_days: 2},
+    stars: {5: 80, 4: 60, 3: 40, 2: 20},
+    tiers: {
+      gold: {min_score: 55, min_rounds: 3, min_each_side: 3, max_greet_share: 0.5, min_sub_days: 2, min_their_replies: 1},
+      silver: {min_score: 40, min_rounds: 2, min_their_replies: 1, min_confirmed_rounds: 1},
+      one_way: {min_from_one_side: 3, max_from_other_side: 1},
+      priority_bonus: {mutual: 5, verified: 5, followers_log10_max: 5}
+    },
+    greetings: {max_core_len: 15, words: ["早安", "早上好", "午安", "晚安", "互关", "回关", "互粉", "浇水", "浇朋友", "浇浇", "打卡", "新朋友", "gm", "gn", "follow back", "^来了", "^你好", "来咯", "来啦", "串门", "互一互", "互动互动", "早早早", "出摊"]},
+    exclude_accounts: ["grok"]
+  };
+  var TIERS = ["金牌", "银牌", "单向·他常来我少回", "单向·我常去他没回", "沉睡互关", "样本不足", "其他有分", "零互动"];
+  var TALK = {reply: 1, quote: 1, mention: 1};
+
+  function norm(h) {
+    return String(h || "").trim().replace(/^@/, "").trim().toLowerCase();
+  }
+  function truthy(v) {
+    if (v === true) return true;
+    return ["1", "true", "yes", "y", "是", "✔"].indexOf(String(v || "").trim().toLowerCase()) >= 0;
+  }
+  function pyRound(value, digits) {
+    var m = Math.pow(10, digits);
+    var shifted = value * m;
+    var sign = shifted < 0 ? -1 : 1;
+    var abs = Math.abs(shifted);
+    var floor = Math.floor(abs + 1e-10);
+    var frac = abs - floor;
+    var rounded = Math.abs(frac - 0.5) < 1e-8 ? (floor % 2 === 0 ? floor : floor + 1) : Math.round(abs);
+    return sign * rounded / m;
+  }
+  function parseUtc(s) {
+    if (!s) return null;
+    var t = String(s).trim();
+    if (!t) return null;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(t)) t += "T00:00:00Z";
+    else if (!/[zZ]$/.test(t) && !/[+-]\d{2}:?\d{2}$/.test(t)) t += "Z";
+    var d = new Date(t);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  function localDay(date, tz) {
+    var parts = new Intl.DateTimeFormat("en-US", {timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit"}).formatToParts(date);
+    function get(type) {
+      for (var i = 0; i < parts.length; i++) if (parts[i].type === type) return parts[i].value;
+      return "";
+    }
+    return get("year") + "-" + get("month") + "-" + get("day");
+  }
+  function dayNum(ymd) {
+    var p = ymd.split("-");
+    return Date.UTC(+p[0], +p[1] - 1, +p[2]) / 86400000;
+  }
+  function addDays(ymd, n) {
+    var t = new Date((dayNum(ymd) + n) * 86400000);
+    var m = String(t.getUTCMonth() + 1);
+    var d = String(t.getUTCDate());
+    if (m.length < 2) m = "0" + m;
+    if (d.length < 2) d = "0" + d;
+    return t.getUTCFullYear() + "-" + m + "-" + d;
+  }
+  function coreOf(text) {
+    var s = String(text || "").replace(/https?:\/\/\S+/g, "").replace(/@\w+/g, "").trim();
+    var out = "";
+    for (var i = 0; i < s.length; i++) if (/\p{L}|\p{N}/u.test(s.charAt(i))) out += s.charAt(i);
+    return out;
+  }
+  function isGreeting(text, words, maxLen) {
+    var core = coreOf(text);
+    if (!core) return true;
+    if (core.length > maxLen) return false;
+    var low = String(text || "").replace(/https?:\/\/\S+/g, "").replace(/@\w+/g, "").trim().toLowerCase();
+    for (var i = 0; i < words.length; i++) {
+      var w = words[i];
+      var prefix = w.charAt(0) === "^";
+      w = w.replace(/^\^/, "").toLowerCase();
+      if (/^[a-z0-9 ]+$/.test(w)) {
+        var pat = "\\b" + w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b";
+        if (prefix) pat = "^" + pat;
+        if (new RegExp(pat).test(low)) return true;
+      } else if (prefix ? low.indexOf(w) === 0 : low.indexOf(w) >= 0) return true;
+    }
+    return false;
+  }
+  function parseCsv(text) {
+    text = String(text || "").replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    var rows = [], row = [], field = "", q = false;
+    for (var i = 0; i < text.length; i++) {
+      var c = text.charAt(i);
+      if (q) {
+        if (c === '"') {
+          if (text.charAt(i + 1) === '"') { field += '"'; i++; } else q = false;
+        } else field += c;
+      } else if (c === '"') q = true;
+      else if (c === ",") { row.push(field); field = ""; }
+      else if (c === "\n") { row.push(field); rows.push(row); row = []; field = ""; }
+      else field += c;
+    }
+    if (field.length || row.length) { row.push(field); rows.push(row); }
+    if (!rows.length) return [];
+    var head = rows[0].map(function (h) { return h.trim(); });
+    var out = [];
+    for (var r = 1; r < rows.length; r++) {
+      if (rows[r].every(function (x) { return x === ""; })) continue;
+      var obj = {};
+      for (var c = 0; c < head.length; c++) obj[head[c]] = rows[r][c] == null ? "" : rows[r][c];
+      out.push(obj);
+    }
+    return out;
+  }
+  function prepare(rows, tz, words, maxLen) {
+    var seen = {}, out = [];
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      var key = (TALK[r.type] && r.tweet_id) ? ("tw:" + r.tweet_id) : r.id;
+      if (seen[key]) continue;
+      seen[key] = 1;
+      r = Object.assign({}, r);
+      var dt = parseUtc(r.ts), post = parseUtc(r.post_created_at), obs = parseUtc(r.first_observed_at);
+      r.day = dt ? localDay(dt, tz) : "";
+      r.postDay = post ? localDay(post, tz) : "";
+      r.obsDay = obs ? localDay(obs, tz) : "";
+      if (TALK[r.type]) {
+        if (r.is_greeting === "true" || r.is_greeting === "false") r.greet = r.is_greeting === "true";
+        else r.greet = isGreeting(r.text, words, maxLen);
+      }
+      out.push(r);
+    }
+    return out;
+  }
+  function likeInRange(r, s, e, mode) {
+    if (mode === "strict") return !!(r.postDay && r.obsDay && r.postDay >= s && r.obsDay <= e);
+    return !!(r.obsDay && s <= r.obsDay && r.obsDay <= e && r.observed_baseline !== "true");
+  }
+  function windowScale(s, e, observed) {
+    var span = dayNum(e) - dayNum(s) + 1;
+    function calendarWeek(day) { return Math.floor((dayNum(day) - dayNum(s)) / 7); }
+    if (!observed) return {D: span, weekOf: calendarWeek, K: Math.ceil(span / 7)};
+    var covered = [];
+    for (var i = 0; i < span; i++) {
+      var day = addDays(s, i);
+      if (observed[day]) covered.push(day);
+    }
+    if (covered.length === 0 || covered.length === span) return {D: span, weekOf: calendarWeek, K: Math.ceil(span / 7)};
+    var index = {};
+    covered.forEach(function (day, n) { index[day] = n; });
+    return {D: covered.length, weekOf: function (day) { return day in index ? Math.floor(index[day] / 7) : calendarWeek(day); }, K: Math.ceil(covered.length / 7)};
+  }
+  function score(rows, s, e, likeMode, observed) {
+    var obs = null;
+    if (observed) {
+      obs = Object.assign({}, observed);
+      rows.forEach(function (r) { if (r.day && s <= r.day && r.day <= e) obs[r.day] = 1; });
+    }
+    var scale = windowScale(s, e, obs);
+    var talk = rows.filter(function (r) { return TALK[r.type] && r.day && s <= r.day && r.day <= e; });
+    var likesAll = rows.filter(function (r) { return r.type === "like"; });
+    var likes = likesAll.filter(function (r) { return likeInRange(r, s, e, likeMode); });
+    var sub = talk.filter(function (r) { return !r.greet; });
+    var greet = talk.filter(function (r) { return r.greet; });
+    function count(list, dir) { return list.filter(function (r) { return r.direction === dir; }).length; }
+    function daysOf(list) {
+      var set = {};
+      list.forEach(function (r) { set[r.day] = 1; });
+      return Object.keys(set);
+    }
+    var res = {
+      raw: talk.length, sub: sub.length, greet: greet.length,
+      active_days: daysOf(talk).length, sub_days: daysOf(sub).length,
+      O: count(sub, "out"), I: count(sub, "in"), O_raw: count(talk, "out"), I_raw: count(talk, "in"),
+      L_in: count(likes, "in"), L_out: count(likes, "out"), likes_unscored: likesAll.length - likes.length
+    };
+    var byTid = {};
+    talk.forEach(function (r) { byTid[r.tweet_id] = r; });
+    var rounds = 0, unconfirmed = 0, branch = 0, convs = {};
+    sub.forEach(function (r) {
+      convs[r.conversation_id || r.tweet_id] = 1;
+      if (r.type !== "reply") return;
+      var p = r.in_reply_to_status_id;
+      if (p && byTid[p]) {
+        var par = byTid[p];
+        if (par.direction !== r.direction && !par.greet) rounds += 1;
+      } else if (r.parent_kind === "root") {
+        return;
+      } else if (r.parent_kind === "other") branch += 1;
+      else unconfirmed += 1;
+    });
+    var T = Object.keys(convs).length;
+    res.T = T; res.rounds = rounds; res.unconfirmed = unconfirmed; res.branch = branch;
+    var cfg = CONFIG;
+    if (talk.length < cfg.insufficient.min_raw || res.active_days < cfg.insufficient.min_days) {
+      res.status = "样本不足";
+      return res;
+    }
+    var subDays = {}, greetOnly = {};
+    sub.forEach(function (r) { subDays[r.day] = 1; });
+    greet.forEach(function (r) { if (!subDays[r.day]) greetOnly[r.day] = 1; });
+    var pDay = Math.min(1, (Object.keys(subDays).length + Math.min(cfg.persistence.greet_day_cap, cfg.persistence.greet_day * Object.keys(greetOnly).length)) / (cfg.persistence.alpha * scale.D));
+    var weeks = {};
+    sub.forEach(function (r) { weeks[scale.weekOf(r.day)] = 1; });
+    var P = 0.5 * pDay + 0.5 * (Object.keys(weeks).length / scale.K);
+    var B = res.O >= 1 && res.I >= 1 ? Math.min(res.O, res.I) / Math.max(res.O, res.I) : 0;
+    var R = T ? Math.min(1, rounds / Math.max(2 * T, 4)) : 0;
+    var base = 100 * (cfg.weights.persistence * P + cfg.weights.bidirectional * B + cfg.weights.rounds * R);
+    var bonus = Math.min(cfg.likes.cap, cfg.likes.points_each * (res.L_in + res.L_out), base);
+    var S = Math.min(100, base + bonus);
+    var share = greet.length / talk.length;
+    var capped = share >= cfg.greeting_cap.share;
+    if (capped) S = Math.min(S, cfg.greeting_cap.max_score);
+    var stars = 1, table = cfg.stars;
+    if (S >= table[5]) stars = 5; else if (S >= table[4]) stars = 4; else if (S >= table[3]) stars = 3; else if (S >= table[2]) stars = 2;
+    res.status = "ok";
+    res.greet_share = pyRound(share, 2);
+    res.P = pyRound(P, 3); res.B = pyRound(B, 3); res.R = pyRound(R, 3);
+    res.base = pyRound(base, 1); res.bonus = pyRound(bonus, 1); res.score = pyRound(S, 1);
+    res.stars = stars; res.greet_cap = capped;
+    return res;
+  }
+  function classify(x) {
+    var g = CONFIG.tiers.gold, s = CONFIG.tiers.silver, o = CONFIG.tiers.one_way;
+    var their = x.I_raw || 0, rounds = x.rounds || 0;
+    if (x.status === "ok" && their >= (g.min_their_replies || 1) && rounds >= (s.min_confirmed_rounds || 1)) {
+      if (x.score >= g.min_score && rounds >= g.min_rounds && x.O >= g.min_each_side && x.I >= g.min_each_side && (x.greet_share == null ? 1 : x.greet_share) < g.max_greet_share && x.sub_days >= g.min_sub_days) return "金牌";
+      if (x.score >= s.min_score || rounds >= s.min_rounds) return "银牌";
+    }
+    if (their >= o.min_from_one_side && (x.O_raw || 0) <= o.max_from_other_side) return "单向·他常来我少回";
+    if ((x.O_raw || 0) >= o.min_from_one_side && their === 0) return "单向·我常去他没回";
+    if (x.mutual && (x.raw || 0) === 0 && (x.L_in || 0) === 0) return "沉睡互关";
+    if (x.status === "样本不足" && ((x.raw || 0) || (x.L_in || 0))) return "样本不足";
+    if (x.status === "ok") return "其他有分";
+    return "零互动";
+  }
+  function action(x) {
+    var parts = [], t = x.tier;
+    if (t === "金牌") {
+      parts.push("重点维护：他发帖时优先接他的话题，挑一条好帖引用并加上你的观点");
+      parts.push("聊得来可以试着邀请互推或一起做一条内容（对方意愿待核实）");
+    } else if (t === "银牌") {
+      if (x.I > x.O) parts.push("他回你比你回他多，多接他的话");
+      else if (x.O > x.I + 1) parts.push("你去得多、他回得少，挑他主页的实质话题再聊");
+      parts.push(x.rounds >= 2 ? ("已经有 " + x.rounds + " 轮真往返，再多聊几天就可能升金牌") : "下次他回你时再接一句，把单句评论聊成对话");
+      if ((x.greet || 0) >= 2) parts.push("少一点问候，多一点具体内容");
+    } else if (t === "单向·他常来我少回") parts.push("回他一两句实质内容，这是成本最低的升级");
+    else if (t === "单向·我常去他没回") parts.push("先别再大量串门；看看是不是没采到他的回复");
+    else if (t === "沉睡互关") parts.push("不急着取关（零公开互动≠没看过）；挑简介方向接近的主动聊一次");
+    if (t === "金牌" || t === "银牌") {
+      if (x.verified) parts.push("蓝V：他的曝光算进 OCR 认证曝光");
+      if (!x.mutual && !x.i_follow) parts.push("你还没关注他，可以考虑回关");
+    }
+    return parts.join("；");
+  }
+  function analyze(data, options) {
+    options = options || {};
+    var tz = CONFIG.window.timezone;
+    var words = CONFIG.greetings.words, maxLen = CONFIG.greetings.max_core_len;
+    var me = norm(options.me || "");
+    var excl = {"grok": 1};
+    CONFIG.exclude_accounts.forEach(function (a) { if (norm(a)) excl[norm(a)] = 1; });
+    if (me) excl[me] = 1;
+    var rows = (data.rows || []).filter(function (r) { return !excl[norm(r.account)]; });
+    rows.forEach(function (r) { r.account = norm(r.account); });
+    var prep = prepare(rows, tz, words, maxLen);
+    var dates = [];
+    prep.forEach(function (r) { ["day", "postDay", "obsDay"].forEach(function (k) { if (r[k]) dates.push(r[k]); }); });
+    var end = options.end && options.end !== "auto" ? options.end : (dates.length ? dates.slice().sort().pop() : localDay(new Date(), tz));
+    var days = options.days || CONFIG.window.days;
+    var start = addDays(end, 1 - days);
+    if (options.allDays) {
+      if (dates.length) { dates.sort(); start = dates[0]; end = dates[dates.length - 1]; }
+      days = dayNum(end) - dayNum(start) + 1;
+    }
+    var observed = null;
+    if (options.gapsAreEmpty) {
+      observed = {};
+      prep.forEach(function (r) {
+        if (r.day) observed[r.day] = 1;
+        if (r.obsDay) observed[r.obsDay] = 1;
+      });
+    }
+    var by = {};
+    prep.forEach(function (r) { (by[r.account] = by[r.account] || []).push(r); });
+    var accounts = {};
+    Object.keys(by).forEach(function (a) { accounts[a] = 1; });
+    Object.keys(data.following || {}).forEach(function (a) { if (!excl[a]) accounts[a] = 1; });
+    Object.keys(data.followers || {}).forEach(function (a) { if (!excl[a]) accounts[a] = 1; });
+    var pb = CONFIG.tiers.priority_bonus;
+    var res = Object.keys(accounts).sort().map(function (a) {
+      var x = score(by[a] || [], start, end, CONFIG.likes.time_mode, observed);
+      x.account = a;
+      x.i_follow = !!(data.following || {})[a];
+      x.follows_me = !!(data.followers || {})[a];
+      x.mutual = x.i_follow && x.follows_me;
+      var p = (data.profiles || {})[a] || {};
+      var f = (data.followers || {})[a] || (data.following || {})[a] || {};
+      x.verified = truthy(p.verified || f.verified || f.is_blue_verified);
+      var count = parseInt(p.followers_count || f.followers_count || 0, 10);
+      x.followers_count = isNaN(count) || !count ? null : count;
+      x.tier = classify(x);
+      var bonus = pb.mutual * (x.mutual ? 1 : 0) + pb.verified * (x.verified ? 1 : 0) + pb.followers_log10_max * Math.min(1, Math.log10((x.followers_count || 0) + 1) / 4);
+      x.priority = pyRound((x.score || 0) + bonus, 1);
+      x.action = action(x);
+      return x;
+    });
+    res.sort(function (a, b) {
+      var d = TIERS.indexOf(a.tier) - TIERS.indexOf(b.tier);
+      if (d) return d;
+      if (a.priority !== b.priority) return b.priority - a.priority;
+      return a.account < b.account ? -1 : 1;
+    });
+    var span = [];
+    for (var i = 0; i <= dayNum(end) - dayNum(start); i++) span.push(addDays(start, i));
+    var covered = observed ? span.filter(function (d) { return observed[d]; }) : span.slice();
+    return {rows: res, meta: {start: start, end: end, days: days, covered: covered.length, uncovered: span.length - covered.length, gapsAreEmpty: !!options.gapsAreEmpty}};
+  }
+  function usersFrom(records) {
+    var map = {};
+    records.forEach(function (r) {
+      var h = norm(r.screen_name || r.handle);
+      if (!h || map[h]) return;
+      map[h] = {handle: h, verified: r.verified, is_blue_verified: r.is_blue_verified, followers_count: r.followers_count};
+    });
+    return map;
+  }
+  function repliesFromTweets(records, owner) {
+    owner = norm(owner);
+    var author = {}, seen = {}, recs = [];
+    records.forEach(function (t) {
+      var tid = String(t.id || t.rest_id || "").trim();
+      if (tid && seen[tid]) return;
+      if (tid) seen[tid] = 1;
+      recs.push(t);
+      author[tid] = norm(t.screen_name);
+    });
+    var rows = [];
+    recs.forEach(function (t) {
+      var tid = String(t.id || t.rest_id || "");
+      var h = norm(t.screen_name);
+      var parent = String(t.in_reply_to || t.in_reply_to_status_id_str || "").trim();
+      if (["none", "null", "n/a"].indexOf(parent.toLowerCase()) >= 0) parent = "";
+      if (!parent) return;
+      var target = norm(t.in_reply_to_screen_name) || author[parent] || "";
+      var direction = "", acc = "";
+      if (h === owner && target && target !== owner) { direction = "out"; acc = target; }
+      else if (h !== owner && target === owner) { direction = "in"; acc = h; }
+      else return;
+      rows.push({id: "tw:" + tid, tweet_id: tid, ts: t.created_at || "", account: acc, direction: direction, type: "reply", text: t.full_text || t.text || "", in_reply_to_status_id: parent, conversation_id: t.conversation_id || t.conversation_id_str || "", parent_kind: ""});
+    });
+    return rows;
+  }
+  function rowsFromReplies(records) {
+    var rows = [];
+    records.forEach(function (r) {
+      var direction = String(r.direction || "").trim().toLowerCase();
+      if (direction === "我→他") direction = "out";
+      if (direction === "他→我") direction = "in";
+      if (direction !== "in" && direction !== "out") return;
+      rows.push({id: "tw:" + r.tweet_id, tweet_id: r.tweet_id, ts: r.created_at || r.ts || "", account: norm(r.account), direction: direction, type: (r.type || "reply").trim() || "reply", text: r.text || "", in_reply_to_status_id: r.in_reply_to_status_id || "", conversation_id: r.conversation_id || "", parent_kind: r.parent_kind || ""});
+    });
+    return rows;
+  }
+  function rowsFromInteractions(records) {
+    return records.map(function (r) {
+      return Object.assign({}, r, {account: norm(r.account)});
+    });
+  }
+  function rowsFromLikes(records) {
+    return records.map(function (r) {
+      var a = norm(r.account);
+      return {id: "like:in:" + a + ":" + r.post_id, tweet_id: "", ts: "", account: a, direction: (r.direction || "in").trim() || "in", type: "like", post_id: r.post_id, post_created_at: r.post_created_at || "", first_observed_at: r.first_observed_at || "", observed_baseline: r.observed_baseline || ""};
+    });
+  }
+  function inferOwner(records) {
+    var counts = {};
+    records.forEach(function (t) {
+      var parent = String(t.in_reply_to || t.in_reply_to_status_id_str || "").trim();
+      if (!parent || ["none", "null", "n/a"].indexOf(parent.toLowerCase()) >= 0) {
+        var h = norm(t.screen_name);
+        if (h) counts[h] = (counts[h] || 0) + 1;
+      }
+    });
+    var best = "", n = 0, tie = false;
+    Object.keys(counts).forEach(function (h) {
+      if (counts[h] > n) { best = h; n = counts[h]; tie = false; }
+      else if (counts[h] === n) tie = true;
+    });
+    return tie ? "" : best;
+  }
+  function parseRecords(text) {
+    var body = String(text || "").replace(/^\uFEFF/, "");
+    var trimmed = body.trim();
+    var json = trimmed.charAt(0) === "[" || trimmed.charAt(0) === "{";
+    var records = json ? JSON.parse(trimmed) : parseCsv(body);
+    if (json && records && records.data) records = records.data;
+    if (!Array.isArray(records)) records = [records];
+    return {json: json, records: records};
+  }
+  function fileKind(name, text) {
+    var parsed = parseRecords(text);
+    var low = String(name || "").toLowerCase();
+    if (parsed.json) {
+      var looksTweet = parsed.records.some(function (r) { return r && (r.full_text != null || r.in_reply_to != null); });
+      if (looksTweet || name.indexOf("用户推文") >= 0 || low.indexOf("tweet") >= 0) return "tweets";
+      var looksUser = parsed.records.some(function (r) { return r && (r.screen_name || r.handle); });
+      if (looksUser) {
+        if (low.indexOf("following") >= 0 || name.indexOf("正在关注") >= 0) return "following";
+        if (low.indexOf("follower") >= 0 || name.indexOf("关注者") >= 0 || name.indexOf("粉丝") >= 0) return "followers";
+        return "ask-users";
+      }
+      return "unknown";
+    }
+    if (low.indexOf("interaction") >= 0) return "interactions";
+    if (low.indexOf("repl") >= 0) return "replies";
+    if (low.indexOf("like") >= 0) return "likes";
+    if (low.indexOf("profile") >= 0) return "profiles";
+    if (low.indexOf("following") >= 0 || name.indexOf("正在关注") >= 0) return "following";
+    if (low.indexOf("follower") >= 0 || name.indexOf("关注者") >= 0 || name.indexOf("粉丝") >= 0) return "followers";
+    return "unknown";
+  }
+  function loadTexts(parts) {
+    var data = {rows: [], following: {}, followers: {}, profiles: {}, warnings: [], needsChoice: [], owner: ""};
+    parts.forEach(function (part, idx) {
+      var name = part.name || "";
+      var parsed = parseRecords(part.text || "");
+      var kind = part.kind || fileKind(name, part.text || "");
+      var records = parsed.records;
+      if (kind === "ask-users") { data.needsChoice.push({index: idx, name: name}); return; }
+      if (kind === "tweets") {
+        var owner = norm(part.owner || "") || inferOwner(records);
+        if (!owner) data.warnings.push("有一份推文没能判断你的用户名，请在页面上填写");
+        else {
+          data.owner = data.owner || owner;
+          data.rows = data.rows.concat(repliesFromTweets(records, owner));
+        }
+      } else if (kind === "followers") Object.assign(data.followers, usersFrom(records));
+      else if (kind === "following") Object.assign(data.following, usersFrom(records));
+      else if (kind === "interactions") data.rows = data.rows.concat(rowsFromInteractions(records));
+      else if (kind === "replies") data.rows = data.rows.concat(rowsFromReplies(records));
+      else if (kind === "likes") data.rows = data.rows.concat(rowsFromLikes(records));
+      else if (kind === "profiles") records.forEach(function (r) { var h = norm(r.handle); if (h) data.profiles[h] = r; });
+      else data.warnings.push("有一份文件认不出来，已跳过");
+    });
+    return data;
+  }
+  root.FanAudit = {CONFIG: CONFIG, TIERS: TIERS, analyze: analyze, loadTexts: loadTexts, parseCsv: parseCsv, fileKind: fileKind, inferOwner: inferOwner, repliesFromTweets: repliesFromTweets};
+})(typeof globalThis !== "undefined" ? globalThis : this);
+</script>
+<script>
+(function () {
+  if (typeof document === "undefined") return;
+  var state = {parts: [], mode: "30", masked: false};
+  var writingDates = false;
+  var drop = document.getElementById("drop");
+  var picker = document.getElementById("picker");
+  var out = document.getElementById("out");
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c];
+    });
+  }
+  function readFiles(files) {
+    var pending = [].slice.call(files);
+    var left = pending.length;
+    if (!left) return;
+    pending.forEach(function (file) {
+      var reader = new FileReader();
+      reader.onload = function () {
+        var text = String(reader.result || "");
+        var kind = "bad";
+        try { kind = FanAudit.fileKind(file.name, text); } catch (err) { kind = "bad"; }
+        state.parts.push({name: file.name, text: text, kind: kind});
+        if (--left === 0) { state.mode = "30"; render(); }
+      };
+      reader.readAsText(file);
+    });
+  }
+  drop.addEventListener("click", function () { picker.click(); });
+  picker.addEventListener("change", function () { readFiles(picker.files); picker.value = ""; });
+  drop.addEventListener("dragover", function (e) { e.preventDefault(); drop.classList.add("over"); });
+  drop.addEventListener("dragleave", function () { drop.classList.remove("over"); });
+  drop.addEventListener("drop", function (e) {
+    e.preventDefault();
+    drop.classList.remove("over");
+    readFiles(e.dataTransfer.files);
+  });
+  document.getElementById("clear").onclick = function () { state.parts = []; out.innerHTML = ""; };
+  document.getElementById("mask").onclick = function () {
+    state.masked = !state.masked;
+    this.classList.toggle("on", state.masked);
+    this.textContent = state.masked ? "显示账号名" : "打码模式";
+    render();
+  };
+  ["d7", "d30", "dall"].forEach(function (id) {
+    document.getElementById(id).onclick = function () {
+      state.mode = this.getAttribute("data-mode");
+      render();
+    };
+  });
+  document.getElementById("start").onchange = document.getElementById("end").onchange = function () {
+    if (writingDates) return;
+    state.mode = "custom";
+    render();
+  };
+  document.getElementById("me").onchange = function () { if (!writingDates) render(); };
+  out.addEventListener("click", function (e) {
+    var el = e.target;
+    while (el && el !== out && !(el.getAttribute && el.getAttribute("data-kind"))) el = el.parentNode;
+    if (!el || el === out) return;
+    state.parts[+el.getAttribute("data-idx")].kind = el.getAttribute("data-kind");
+    render();
+  });
+  function stars(x) {
+    if (x.status !== "ok") return "样本不足";
+    return "★★★★★".slice(0, x.stars) + "☆☆☆☆☆".slice(0, 5 - x.stars);
+  }
+  function render() {
+    ["d7", "d30", "dall"].forEach(function (id) {
+      var b = document.getElementById(id);
+      b.classList.toggle("on", b.getAttribute("data-mode") === state.mode);
+    });
+    if (!state.parts.length) { out.innerHTML = ""; return; }
+    if (state.parts.some(function (p) { return p.kind === "bad"; })) {
+      out.innerHTML = '<div class="warn">这份文件读不了。请确认是 JSON 或 CSV。</div>';
+      return;
+    }
+    var owner = document.getElementById("me").value;
+    var data;
+    try {
+      data = FanAudit.loadTexts(state.parts.map(function (p) {
+        return {name: p.name, text: p.text, owner: owner, kind: p.kind};
+      }));
+    } catch (err) {
+      out.innerHTML = '<div class="warn">这份文件读不了。请确认是 JSON 或 CSV。</div>';
+      return;
+    }
+    if (data.needsChoice.length) {
+      out.innerHTML = data.needsChoice.map(function (item) {
+        return '<div class="warn">' + esc(item.name) + ' 看不出是正在关注还是关注者。' +
+          '<button type="button" data-idx="' + item.index + '" data-kind="following">这是正在关注</button> ' +
+          '<button type="button" data-idx="' + item.index + '" data-kind="followers">这是关注者</button></div>';
+      }).join("");
+      return;
+    }
+    if (!owner && data.owner) {
+      writingDates = true;
+      document.getElementById("me").value = data.owner;
+      writingDates = false;
+      owner = data.owner;
+    }
+    var opt = {me: owner, gapsAreEmpty: true};
+    if (state.mode === "all") opt.allDays = true;
+    else if (state.mode === "custom") {
+      opt.end = document.getElementById("end").value;
+      var start = document.getElementById("start").value;
+      if (opt.end && start) {
+        opt.days = Math.round((Date.parse(opt.end + "T00:00:00Z") - Date.parse(start + "T00:00:00Z")) / 86400000) + 1;
+        if (opt.days < 1) opt.days = 1;
+      }
+    } else opt.days = state.mode === "7" ? 7 : 30;
+    var result = FanAudit.analyze(data, opt);
+    writingDates = true;
+    document.getElementById("start").value = result.meta.start;
+    document.getElementById("end").value = result.meta.end;
+    writingDates = false;
+    var rows = result.rows, meta = result.meta;
+    var alias = {};
+    rows.forEach(function (x, i) {
+      var s = String(i + 1);
+      alias[x.account] = "账号#" + (s.length < 2 ? "0" + s : s);
+    });
+    function name(account) { return state.masked ? alias[account] : "@" + account; }
+    var tiers = {};
+    FanAudit.TIERS.forEach(function (t) { tiers[t] = 0; });
+    rows.forEach(function (x) { tiers[x.tier] = (tiers[x.tier] || 0) + 1; });
+    var starCount = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0};
+    var thin = 0;
+    rows.forEach(function (x) {
+      if (x.status === "ok") starCount[x.stars] += 1;
+      else if (x.raw || x.L_in) thin += 1;
+    });
+    var mutual = rows.filter(function (x) { return x.mutual; }).length;
+    function bars(items) {
+      var max = 0;
+      items.forEach(function (it) { if (it[1] > max) max = it[1]; });
+      return items.map(function (it) {
+        var w = max ? Math.round(220 * it[1] / max) : 0;
+        return '<div class="bar"><span class="k">' + esc(it[0]) + '</span><span class="b ' + (it[2] || "") + '" style="width:' + w + 'px"></span><b>' + it[1] + "</b></div>";
+      }).join("");
+    }
+    function table(tier) {
+      var xs = rows.filter(function (x) { return x.tier === tier; });
+      if (!xs.length) return '<p class="muted">（这一层暂时没有人）</p>';
+      var html = "<table><tr><th>账号</th><th>星级</th><th>分数</th><th>实质 我→他/他→我</th><th>真往返</th><th>建议动作</th></tr>";
+      xs.slice(0, 50).forEach(function (x) {
+        html += "<tr><td>" + esc(name(x.account)) + "</td><td>" + stars(x) + "</td><td>" + (x.score == null ? "—" : x.score) + "</td><td>" + x.O + " / " + x.I + "</td><td>" + x.rounds + "</td><td>" + esc(x.action) + "</td></tr>";
+      });
+      return html + "</table>";
+    }
+    var cover = "区间 " + meta.start + " ~ " + meta.end + "。覆盖 " + meta.covered + " 天";
+    if (meta.uncovered) cover += "，" + meta.uncovered + " 天无数据（不算零互动，不进持续性分母）";
+    else cover += "，无数据 0 天";
+    out.innerHTML = '<p class="sub">' + esc(cover) + " · " + rows.length + " 个账号</p>" +
+      '<div class="grid"><div class="card"><div class="num">' + tiers["金牌"] + '</div><div class="lab">金牌</div></div>' +
+      '<div class="card"><div class="num">' + tiers["银牌"] + '</div><div class="lab">银牌</div></div>' +
+      '<div class="card"><div class="num">' + tiers["单向·我常去他没回"] + '</div><div class="lab">我常去他没回</div></div>' +
+      '<div class="card"><div class="num">' + tiers["沉睡互关"] + '</div><div class="lab">沉睡互关</div></div>' +
+      '<div class="card"><div class="num">' + mutual + '</div><div class="lab">互关</div></div></div>' +
+      (data.warnings.length ? '<div class="warn">' + esc(data.warnings.join("；")) + "</div>" : "") +
+      '<div class="panels"><div class="card"><h2>星级分布</h2>' + bars([["★★★★★", starCount[5], ""], ["★★★★", starCount[4], ""], ["★★★", starCount[3], ""], ["★★", starCount[2], ""], ["★", starCount[1], ""], ["样本不足", thin, "gray"]]) +
+      '</div><div class="card"><h2>分层人数</h2>' + bars(FanAudit.TIERS.map(function (t) {
+        var c = t === "金牌" ? "gold" : t === "银牌" ? "silver" : t.indexOf("他常来") >= 0 ? "green" : t.indexOf("我常去") >= 0 ? "red" : "gray";
+        return [t, tiers[t] || 0, c];
+      })) + "</div></div>" +
+      '<div class="card" style="margin-bottom:16px"><h2>金牌</h2>' + table("金牌") + "</div>" +
+      '<div class="card"><h2>银牌</h2>' + table("银牌") + "</div>";
+  }
+})();
+</script>
+</body>
+</html>
