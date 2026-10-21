@@ -97,6 +97,8 @@ git clone https://github.com/ratt1e/Xfan-audit.git fan-audit && cd fan-audit    
 # 2. 先用假数据跑一遍（1 秒）
 python3 audit.py --data sample_data
 #    打开 output/dashboard.html 看效果
+#    请求 30 天，计分覆盖 28 天，无数据 2 天
+#    金牌 3，银牌 2，他常来 2，我常去 1，沉睡 3，样本不足 3，其他有分 4，零互动 2
 
 # 3. 换成你自己的数据：把 CSV 放进 data/，再跑
 python3 audit.py
@@ -116,7 +118,7 @@ python3 audit.py
 
 ## 星级怎么算（大白话）
 
-只看这段时间（默认最近 30 天）里**你和每个人之间**的公开回复。每个人打 0–100 分：
+只看这段时间（默认最近 30 天）里**你和每个人之间**的公开回复。请求区间里没有互动时间、也没有点赞观察时间的日期是无数据，不进持续性的分母。`sample_data` 这 30 天实际覆盖 28 天。每个人打 0–100 分：
 
 | 看什么 | 占比 | 大白话 |
 |---|---|---|

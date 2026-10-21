@@ -192,15 +192,16 @@ def analyze(data, conf, cfg, end=None, days=None, all_days=False):
     by = defaultdict(list)
     for r in prep:
         by[r["account"]].append(r)
-    observed = None
+    # 有数据的日期：采集日（只有 --data-root 有）、互动时间、点赞第一次被看到的时间。
+    # 单目录没有采集日。这些日期以外是无数据，不进持续性分母。帖子发布时间单独不算。
+    observed = set()
     if data.get("coverage"):
-        # 采集日，以及任何互动时间落在的日期，都算有数据。没有这两样的日期是无数据。
-        observed = {date.fromisoformat(day) for day in data["coverage"]["read_days"]}
-        for r in prep:
-            if r.get("dt"):
-                observed.add(r["dt"].date())
-            if r.get("obs_dt"):
-                observed.add(r["obs_dt"].date())
+        observed.update(date.fromisoformat(day) for day in data["coverage"]["read_days"])
+    for r in prep:
+        if r.get("dt"):
+            observed.add(r["dt"].date())
+        if r.get("obs_dt"):
+            observed.add(r["obs_dt"].date())
     fol, fer, prof = data["following"], data["followers"], data["profiles"]
     accounts = set(by) | set(fol) | set(fer)
     accounts -= excl
@@ -439,8 +440,8 @@ def main(argv=None):
         print("⚠", w)
     c = Counter(x["tier"] for x in res)
     extra = ""
-    if meta.get("uncovered_days"):
-        extra = f"；计分覆盖 {meta['scoring_days']} 天，无数据 {len(meta['uncovered_days'])} 天"
+    if meta.get("covered_days") is not None:
+        extra = f"；计分覆盖 {meta['scoring_days']} 天，无数据 {len(meta.get('uncovered_days') or [])} 天"
     print(f"区间 {meta['start']} ~ {meta['end']}{extra}，{len(res)} 个账号：" + "，".join(f"{t} {c.get(t, 0)}" for t in TIERS))
     if root:
         print("已在仓库外写出 accounts.csv、dashboard.html、dashboard_public.html、名单.md（私有名单不在终端展示）")

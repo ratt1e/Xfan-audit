@@ -27,25 +27,9 @@ def find_node():
     return ""
 
 
-def covered_days(data, conf):
-    tzname = conf.get("window", {}).get("timezone", "America/Los_Angeles")
-    from zoneinfo import ZoneInfo
-    rows = [r for r in data["rows"] if r["account"] not in {audit.norm(a) for a in conf.get("exclude_accounts", [])}]
-    prep = audit.rs.prepare(rows, ZoneInfo(tzname), conf.get("greetings", {}).get("words", []),
-                            conf.get("greetings", {}).get("max_core_len", 15))
-    found = set()
-    for row in prep:
-        if row.get("dt"):
-            found.add(row["dt"].date().isoformat())
-        if row.get("obs_dt"):
-            found.add(row["obs_dt"].date().isoformat())
-    return sorted(found)
-
-
 def python_rows(end, days, all_days):
     conf, cfg = audit.rs.load_config(str(ROOT / "config.json"))
     data = audit.load_inputs(str(ROOT / "sample_data"))
-    data["coverage"] = {"read_days": covered_days(data, conf)}
     res, meta = audit.analyze(data, conf, cfg, end, days, all_days)
     rows = []
     for item in res:

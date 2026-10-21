@@ -82,7 +82,13 @@ class TestAuditSample(unittest.TestCase):
         p = subprocess.run([sys.executable, os.path.join(ROOT, "audit.py"), "--data", os.path.join(ROOT, "sample_data"),
                             "--out", out], capture_output=True, text=True)
         self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("计分覆盖 28 天，无数据 2 天", p.stdout)
+        self.assertIn("20 个账号", p.stdout)
         self.assertTrue(os.path.exists(os.path.join(out, "dashboard.html")))
+        with open(os.path.join(out, "dashboard.html"), encoding="utf-8") as f:
+            page = f.read()
+        self.assertIn("覆盖 28 天", page)
+        self.assertIn("2 天无数据", page)
 
     def test_missing_data_dir_message(self):
         p = subprocess.run([sys.executable, os.path.join(ROOT, "audit.py"), "--data", tempfile.mkdtemp()],
