@@ -17,6 +17,15 @@ const dir = path.join(root, "sample_data");
 function text(name) {
   return fs.readFileSync(path.join(dir, name), "utf8");
 }
+if (process.argv[2] === "board") {
+  const spec = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+  process.stdout.write(JSON.stringify({
+    html: fan.boardHtml(spec.rows, spec.options || {}),
+    empty: fan.jumpPlan(0),
+    some: fan.jumpPlan(4)
+  }));
+  process.exit(0);
+}
 if (process.argv[2] === "kinds") {
   const jobs = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
   const parts = jobs.map(function (job) {

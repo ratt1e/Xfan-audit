@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>fan-audit · 网页拖拽版</title>
 <style>
+html{scroll-behavior:smooth}
 body{font-family:-apple-system,"PingFang SC","Noto Sans CJK SC","Microsoft YaHei",sans-serif;background:#F7F8FA;color:#1F2937;margin:0;padding:28px}
 h1{font-size:28px;margin:0 0 4px} h2{font-size:18px;margin:0 0 12px}
 .privacy{background:#ECFDF5;border:1px solid #6EE7B7;border-radius:12px;padding:12px 16px;font-size:16px;font-weight:650;margin:14px 0}
@@ -20,6 +21,15 @@ button{border:1px solid #D1D5DB;background:#fff;border-radius:8px;padding:7px 12
 button.on{background:#1D4ED8;color:#fff;border-color:#1D4ED8}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:14px;margin:14px 0}
 .card{background:#fff;border:1px solid #E5E7EB;border-radius:14px;padding:16px 18px}
+button.card{padding:16px 18px;text-align:left;width:100%;cursor:pointer}
+button.tier-card.empty,button.tier-card.empty .num,button.tier-card.empty .lab{background:#F3F4F6;color:#9CA3AF}
+.stat-cards{border-top:1px dashed #D1D5DB;padding-top:8px}
+.tag{display:inline-block;margin-top:6px;font-size:11px;color:#1D4ED8;background:#EFF6FF;border-radius:999px;padding:1px 8px}
+.block-head{display:flex;justify-content:space-between;align-items:center;gap:12px}
+.back-top{font-size:13px;color:#2563EB;text-decoration:none;white-space:nowrap}
+.tier-block{margin-bottom:16px;scroll-margin-top:12px}
+h2.flash{background:#FDE68A;border-radius:6px}
+button.bar{width:100%;background:transparent;border:0;padding:0;cursor:pointer;text-align:left}
 .num{font-size:32px;font-weight:700}.lab{color:#6B7280;font-size:13px;margin-top:4px}
 .panels{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
 @media(max-width:820px){.panels{grid-template-columns:1fr}}
@@ -36,7 +46,7 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
 </style>
 </head>
 <body>
-<h1>粉丝体检 · 互动关系星级</h1>
+<h1 id="top">粉丝体检 · 互动关系星级</h1>
 <p class="privacy">数据只在你的浏览器里处理，不会上传。</p>
 <p class="sub">把 twitter-web-exporter 导出的 JSON（用户推文、正在关注、关注者）或 interactions.csv 拖进来。不联网，没有统计代码。权重仍是初始值。</p>
 <div class="drop" id="drop">把文件拖到这里，或点此选择。可以一次放进多个，不用改名。插件导出的「用户推文 / UserTweets」「正在关注 / Following」「关注者 / Followers」会自动认出来。</div>
@@ -537,13 +547,83 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
     data.rows = dedupeRows(data.rows);
     return data;
   }
-  root.FanAudit = {CONFIG: CONFIG, TIERS: TIERS, analyze: analyze, loadTexts: loadTexts, parseCsv: parseCsv, fileKind: fileKind, nameKind: nameKind, inferOwner: inferOwner, repliesFromTweets: repliesFromTweets};
+  function escHtml(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c];
+    });
+  }
+  function starsText(x) {
+    if (!x || x.status !== "ok") return "样本不足";
+    var n = x.stars || 0;
+    return "★★★★★".slice(0, n) + "☆☆☆☆☆".slice(0, 5 - n);
+  }
+  function jumpPlan(count) {
+    return {scroll: true, message: count ? "" : "这一层暂时没有人"};
+  }
+  function boardHtml(rows, options) {
+    options = options || {};
+    var open = options.open || {};
+    var alias = {};
+    rows.forEach(function (x, i) {
+      var s = String(i + 1);
+      alias[x.account] = "账号#" + (s.length < 2 ? "0" + s : s);
+    });
+    function name(account) { return options.masked ? alias[account] : "@" + account; }
+    var count = {};
+    TIERS.forEach(function (t) { count[t] = 0; });
+    rows.forEach(function (x) { count[x.tier] = (count[x.tier] || 0) + 1; });
+    var mutual = rows.filter(function (x) { return x.mutual; }).length;
+    var cards = '<div class="grid tier-cards">';
+    TIERS.forEach(function (t) {
+      var n = count[t] || 0;
+      cards += '<button type="button" class="card tier-card' + (n ? "" : " empty") + '" data-jump="' + escHtml(t) + '" data-count="' + n + '"><div class="num">' + n + "</div><div class=\"lab\">" + escHtml(t) + "</div></button>";
+    });
+    cards += '</div><div class="grid stat-cards"><div class="card stat-card"><div class="num">' + mutual + '</div><div class="lab">互关</div><div class="tag">统计</div></div></div>';
+    cards += '<p id="jump-note" class="muted"></p>';
+    function bars(items, jump) {
+      var max = 0;
+      items.forEach(function (it) { if (it[1] > max) max = it[1]; });
+      return items.map(function (it) {
+        var w = max ? Math.round(220 * it[1] / max) : 0;
+        var openTag = jump ? '<button type="button" class="bar" data-jump="' + escHtml(it[0]) + '" data-count="' + it[1] + '">' : '<div class="bar">';
+        var closeTag = jump ? "</button>" : "</div>";
+        return openTag + '<span class="k">' + escHtml(it[0]) + '</span><span class="b ' + (it[2] || "") + '" style="width:' + w + 'px"></span><b>' + it[1] + "</b>" + closeTag;
+      }).join("");
+    }
+    var starCount = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0};
+    var thin = 0;
+    rows.forEach(function (x) {
+      if (x.status === "ok") starCount[x.stars] = (starCount[x.stars] || 0) + 1;
+      else if (x.raw || x.L_in) thin += 1;
+    });
+    var panels = '<div class="panels"><div class="card"><h2>星级分布</h2>' + bars([["★★★★★", starCount[5] || 0, ""], ["★★★★", starCount[4] || 0, ""], ["★★★", starCount[3] || 0, ""], ["★★", starCount[2] || 0, ""], ["★", starCount[1] || 0, ""], ["样本不足", thin, "gray"]]) +
+      '</div><div class="card"><h2>分层人数</h2>' + bars(TIERS.map(function (t) {
+        var c = t === "金牌" ? "gold" : t === "银牌" ? "silver" : t.indexOf("他常来") >= 0 ? "green" : t.indexOf("我常去") >= 0 ? "red" : "gray";
+        return [t, count[t] || 0, c];
+      }), true) + "</div></div>";
+    var blocks = TIERS.map(function (t) {
+      var xs = rows.filter(function (x) { return x.tier === t; });
+      var shown = open[t] ? xs : xs.slice(0, 20);
+      var body = '<p class="muted">这一层暂时没有人</p>';
+      if (xs.length) {
+        body = "<table><tr><th>账号</th><th>星级</th><th>分数</th><th>建议动作</th></tr>";
+        shown.forEach(function (x) {
+          body += "<tr><td>" + escHtml(name(x.account)) + "</td><td>" + starsText(x) + "</td><td>" + (x.score == null ? "—" : escHtml(x.score)) + "</td><td>" + escHtml(x.action || "") + "</td></tr>";
+        });
+        body += "</table>";
+        if (xs.length > 20 && !open[t]) body += '<button type="button" data-expand="' + escHtml(t) + '">展开全部</button>';
+      }
+      return '<section class="card tier-block" id="tier-' + t + '" data-total="' + xs.length + '" data-shown="' + shown.length + '"><div class="block-head"><h2>' + escHtml(t) + "（" + xs.length + '）</h2><a class="back-top" href="#top">回到顶部</a></div>' + body + "</section>";
+    }).join("");
+    return cards + panels + blocks;
+  }
+  root.FanAudit = {CONFIG: CONFIG, TIERS: TIERS, analyze: analyze, loadTexts: loadTexts, parseCsv: parseCsv, fileKind: fileKind, nameKind: nameKind, inferOwner: inferOwner, repliesFromTweets: repliesFromTweets, boardHtml: boardHtml, jumpPlan: jumpPlan};
 })(typeof globalThis !== "undefined" ? globalThis : this);
 </script>
 <script>
 (function () {
   if (typeof document === "undefined") return;
-  var state = {parts: [], mode: "30", masked: false};
+  var state = {parts: [], mode: "30", masked: false, open: {}};
   var writingDates = false;
   var drop = document.getElementById("drop");
   var picker = document.getElementById("picker");
@@ -602,17 +682,44 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
     render();
   };
   document.getElementById("me").onchange = function () { if (!writingDates) render(); };
+  out.addEventListener("click", function (e) {
+    var el = e.target;
+    while (el && el !== out) {
+      if (el.getAttribute && el.getAttribute("data-expand")) {
+        state.open[el.getAttribute("data-expand")] = true;
+        render(true);
+        return;
+      }
+      if (el.getAttribute && el.getAttribute("data-jump")) {
+        jump(el.getAttribute("data-jump"));
+        return;
+      }
+      el = el.parentNode;
+    }
+  });
+  function jump(tier) {
+    var el = document.getElementById("tier-" + tier);
+    if (!el) return;
+    var plan = FanAudit.jumpPlan(+(el.getAttribute("data-total") || 0));
+    var note = document.getElementById("jump-note");
+    if (note) note.textContent = plan.message;
+    if (plan.scroll) el.scrollIntoView({behavior: "smooth", block: "start"});
+    var title = el.querySelector("h2");
+    if (!title) return;
+    title.classList.remove("flash");
+    void title.offsetWidth;
+    title.classList.add("flash");
+    clearTimeout(state.flashTimer);
+    state.flashTimer = setTimeout(function () { title.classList.remove("flash"); }, 1400);
+  }
   out.addEventListener("change", function (e) {
     var el = e.target;
     if (!el || !el.getAttribute || el.tagName !== "SELECT" || el.getAttribute("data-idx") == null) return;
     state.parts[+el.getAttribute("data-idx")].kind = el.value;
     render();
   });
-  function stars(x) {
-    if (x.status !== "ok") return "样本不足";
-    return "★★★★★".slice(0, x.stars) + "☆☆☆☆☆".slice(0, 5 - x.stars);
-  }
-  function render() {
+  function render(keepScroll) {
+    var scrollY = keepScroll ? window.scrollY : 0;
     ["d7", "d30", "dall"].forEach(function (id) {
       var b = document.getElementById(id);
       b.classList.toggle("on", b.getAttribute("data-mode") === state.mode);
@@ -665,56 +772,13 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
     document.getElementById("end").value = result.meta.end;
     writingDates = false;
     var rows = result.rows, meta = result.meta;
-    var alias = {};
-    rows.forEach(function (x, i) {
-      var s = String(i + 1);
-      alias[x.account] = "账号#" + (s.length < 2 ? "0" + s : s);
-    });
-    function name(account) { return state.masked ? alias[account] : "@" + account; }
-    var tiers = {};
-    FanAudit.TIERS.forEach(function (t) { tiers[t] = 0; });
-    rows.forEach(function (x) { tiers[x.tier] = (tiers[x.tier] || 0) + 1; });
-    var starCount = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0};
-    var thin = 0;
-    rows.forEach(function (x) {
-      if (x.status === "ok") starCount[x.stars] += 1;
-      else if (x.raw || x.L_in) thin += 1;
-    });
-    var mutual = rows.filter(function (x) { return x.mutual; }).length;
-    function bars(items) {
-      var max = 0;
-      items.forEach(function (it) { if (it[1] > max) max = it[1]; });
-      return items.map(function (it) {
-        var w = max ? Math.round(220 * it[1] / max) : 0;
-        return '<div class="bar"><span class="k">' + esc(it[0]) + '</span><span class="b ' + (it[2] || "") + '" style="width:' + w + 'px"></span><b>' + it[1] + "</b></div>";
-      }).join("");
-    }
-    function table(tier) {
-      var xs = rows.filter(function (x) { return x.tier === tier; });
-      if (!xs.length) return '<p class="muted">（这一层暂时没有人）</p>';
-      var html = "<table><tr><th>账号</th><th>星级</th><th>分数</th><th>实质 我→他/他→我</th><th>真往返</th><th>建议动作</th></tr>";
-      xs.slice(0, 50).forEach(function (x) {
-        html += "<tr><td>" + esc(name(x.account)) + "</td><td>" + stars(x) + "</td><td>" + (x.score == null ? "—" : x.score) + "</td><td>" + x.O + " / " + x.I + "</td><td>" + x.rounds + "</td><td>" + esc(x.action) + "</td></tr>";
-      });
-      return html + "</table>";
-    }
     var cover = "区间 " + meta.start + " ~ " + meta.end + "。覆盖 " + meta.covered + " 天";
     if (meta.uncovered) cover += "，" + meta.uncovered + " 天无数据（不算零互动，不进持续性分母）";
     else cover += "，无数据 0 天";
     out.innerHTML = filesHtml + askNote + '<p class="sub">' + esc(cover) + " · " + rows.length + " 个账号</p>" +
-      '<div class="grid"><div class="card"><div class="num">' + tiers["金牌"] + '</div><div class="lab">金牌</div></div>' +
-      '<div class="card"><div class="num">' + tiers["银牌"] + '</div><div class="lab">银牌</div></div>' +
-      '<div class="card"><div class="num">' + tiers["单向·我常去他没回"] + '</div><div class="lab">我常去他没回</div></div>' +
-      '<div class="card"><div class="num">' + tiers["沉睡互关"] + '</div><div class="lab">沉睡互关</div></div>' +
-      '<div class="card"><div class="num">' + mutual + '</div><div class="lab">互关</div></div></div>' +
       (data.warnings.length ? '<div class="warn">' + esc(data.warnings.join("；")) + "</div>" : "") +
-      '<div class="panels"><div class="card"><h2>星级分布</h2>' + bars([["★★★★★", starCount[5], ""], ["★★★★", starCount[4], ""], ["★★★", starCount[3], ""], ["★★", starCount[2], ""], ["★", starCount[1], ""], ["样本不足", thin, "gray"]]) +
-      '</div><div class="card"><h2>分层人数</h2>' + bars(FanAudit.TIERS.map(function (t) {
-        var c = t === "金牌" ? "gold" : t === "银牌" ? "silver" : t.indexOf("他常来") >= 0 ? "green" : t.indexOf("我常去") >= 0 ? "red" : "gray";
-        return [t, tiers[t] || 0, c];
-      })) + "</div></div>" +
-      '<div class="card" style="margin-bottom:16px"><h2>金牌</h2>' + table("金牌") + "</div>" +
-      '<div class="card"><h2>银牌</h2>' + table("银牌") + "</div>";
+      FanAudit.boardHtml(rows, {masked: state.masked, open: state.open});
+    if (keepScroll) window.scrollTo(0, scrollY);
   }
 })();
 </script>

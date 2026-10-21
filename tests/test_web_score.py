@@ -2,6 +2,7 @@
 import csv
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -97,6 +98,10 @@ class TestWebScore(unittest.TestCase):
         self.assertIn('type="file" multiple', html)
         self.assertIn("<select data-idx=", html)
         self.assertIn("请选择", html)
+        self.assertIn('id="top"', html)
+        self.assertIn("scrollIntoView", html)
+        self.assertIn("smooth", html)
+        self.assertIn("flash", html)
         self.assertNotIn("https://", html)
         self.assertNotIn("fetch(", html)
         self.assertNotIn("script src", html.lower())
@@ -180,3 +185,52 @@ class TestWebScore(unittest.TestCase):
         self.assertLess(len(got["tweetIds"]), len(one["tweetIds"]) * 2)
         self.assertEqual(got["following"], sorted(set(one["following"] + ["user_299"])))
         self.assertEqual(len(got["following"]), len(one["following"]) + 1)
+
+    def board(self, rows, options):
+        node = find_node()
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        plan = Path(folder.name) / "board.json"
+        plan.write_text(json.dumps({"rows": rows, "options": options}), encoding="utf-8")
+        return json.loads(subprocess.check_output(
+            [node, str(ROOT / "tests/web_score_runner.mjs"), "board", str(plan)], cwd=str(ROOT)))
+
+    def test_tier_cards_jump_to_every_list(self):
+        tiers = ["金牌", "银牌", "单向·他常来我少回", "单向·我常去他没回", "沉睡互关", "样本不足", "其他有分", "零互动"]
+        rows = []
+        for i in range(25):
+            rows.append({"account": "acct_%02d" % i, "tier": "零互动", "status": "零互动",
+                         "score": None, "action": "先看看", "mutual": False})
+        rows.append({"account": "acct_gold", "tier": "金牌", "status": "ok", "score": 90, "stars": 5,
+                     "action": "重点维护", "mutual": True})
+        got = self.board(rows, {})
+        html = got["html"]
+        cards = html.split('class="grid stat-cards"')[0]
+        self.assertEqual(re.findall(r'data-jump="([^"]+)"', cards), tiers)
+        stat = html.split('class="grid stat-cards"')[1].split("</div></div>")[0]
+        self.assertIn("互关", stat)
+        self.assertIn("统计", stat)
+        self.assertNotIn("data-jump", stat)
+        self.assertIn('class="card tier-card empty" data-jump="银牌" data-count="0"', html)
+        self.assertIn(">金牌（1）<", html)
+        self.assertIn(">零互动（25）<", html)
+        self.assertEqual(html.count("回到顶部"), 8)
+        self.assertEqual(html.count("这一层暂时没有人"), 6)
+        quiet = html.split('id="tier-零互动"')[1].split("<section")[0]
+        self.assertIn('data-shown="20"', quiet)
+        self.assertIn("展开全部", quiet)
+        self.assertEqual(quiet.count("<tr>"), 21)
+        self.assertIn("建议动作", quiet)
+        bars = html.split("<h2>分层人数</h2>")[1].split("</div></div>")[0]
+        self.assertEqual(re.findall(r'data-jump="([^"]+)"', bars), tiers)
+        opened = self.board(rows, {"open": {"零互动": True}})["html"]
+        full = opened.split('id="tier-零互动"')[1].split("<section")[0]
+        self.assertNotIn("展开全部", full)
+        self.assertEqual(full.count("<tr>"), 26)
+        masked = self.board(rows, {"masked": True})["html"]
+        self.assertNotIn("acct_", masked)
+        self.assertIn("账号#01", masked.split('id="tier-零互动"')[1])
+        self.assertIn("账号#26", masked.split('id="tier-金牌"')[1])
+        self.assertEqual(got["empty"]["message"], "这一层暂时没有人")
+        self.assertEqual(got["some"]["message"], "")
+        self.assertTrue(got["empty"]["scroll"])
