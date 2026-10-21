@@ -26,20 +26,15 @@ fan-audit 只读你**自己电脑上**的 CSV。数据怎么来，你自己选�
 ### 1. 安装
 
 1. 在浏览器里装 Tampermonkey（油猴）扩展。
-   `![截图1：Tampermonkey 扩展商店页面](img/export_01_tampermonkey.png)`
 2. 打开 twitter-web-exporter 的 GitHub 页面，按 README 里的安装链接安装用户脚本（具体链接以它的 README 为准）。
-   `![截图2：用户脚本安装确认页](img/export_02_install.png)`
 3. 刷新 x.com，页面边上会出现脚本的小面板（位置和图标**待核实**，不同版本可能不一样）。
-   `![截图3：x.com 页面上的脚本面板入口](img/export_03_panel.png)`
 
 ### 2. 导出关注 / 粉丝 → following.csv、followers.csv
 
 1. 打开 `x.com/<你的用户名>/following`，慢慢往下滚，直到滚不动。
 2. 打开脚本面板，找到用户列表对应的模块（模块名**待核实**），导出 JSON 或 CSV。
-   `![截图4：面板里的关注列表模块和导出按钮](img/export_04_following.png)`
 3. **在面板里清空已捕获的数据**（按钮位置**待核实**），再打开 `x.com/<你的用户名>/verified_followers`（或 `/followers`）重复一遍。
    关注和粉丝两个页面可能共用一个模块，**不要在同一次采集里两个都打开**，否则会混在一起。
-   `![截图5：清空已捕获数据的按钮](img/export_05_clear.png)`
 4. 转换成标准表头：
 
 ```bash
@@ -59,8 +54,6 @@ python3 adapters/twitter_web_exporter.py users followers_export.json -o data/fol
 ```bash
 python3 adapters/twitter_web_exporter.py replies tweets_export.json --owner <你的用户名> -o data/replies.csv
 ```
-
-`![截图6：帖子详情页滚动后，面板里推文模块的导出](img/export_06_tweets.png)`
 
 说明：
 - 转换脚本靠父推文 ID（`in_reply_to`）判断方向；如果父推文不在导出里，又没有 `in_reply_to_screen_name` 字段，就会跳过，并打印跳过了多少条。所以**最好把你自己的帖子和别人的回复一起导出**。
@@ -101,9 +94,7 @@ python3 adapters/twitter_web_exporter.py replies tweets_export.json --owner <你
 ## 方式二：X 官方账号归档（备选，最稳但不全）
 
 1. 打开 X 的「设置 → 你的账号 → 下载数据归档」（入口名称以当前页面为准，**待核实**），验证密码后申请。
-   `![截图7：设置里下载数据归档的入口](img/export_07_archive.png)`
 2. 一般要等一段时间（通常一天左右，**待核实**），收到通知后下载 zip 并解压。
-   `![截图8：归档下载完成的通知 / 下载按钮](img/export_08_download.png)`
 3. 把你自己发的回复转成 replies.csv：
 
 ```bash
@@ -158,15 +149,4 @@ python3 adapters/generic_csv.py 你的导出.csv -o data/followers.csv --handle-
 
 ## 需要补的截图清单
 
-README 和本文里的截图位置现在都是占位符，需要补这几张（放在 `docs/img/`）：
-
-1. `export_01_tampermonkey.png`：Tampermonkey 扩展页面
-2. `export_02_install.png`：用户脚本安装确认页
-3. `export_03_panel.png`：x.com 上的脚本面板入口
-4. `export_04_following.png`：关注列表模块和导出按钮
-5. `export_05_clear.png`：清空已捕获数据的按钮
-6. `export_06_tweets.png`：推文模块导出
-7. `export_07_archive.png`：设置里下载归档的入口
-8. `export_08_download.png`：归档下载页面
-
-截图里记得把别人的头像和用户名打码。
+截图待补。上面的安装、导出和归档步骤目前只有文字说明。8 张导出过程的图以后再补，也记在 README 的 Roadmap「补导出截图」里。补的时候把别人的头像、用户名和帖子内容打码，浏览器地址栏和书签栏里的私人信息裁掉。

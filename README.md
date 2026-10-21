@@ -16,7 +16,7 @@
 
 ```bash
 # 1. 下载
-git clone <仓库地址> fan-audit && cd fan-audit      # 或者下载 zip 解压
+git clone https://github.com/ratt1e/fan-audit.git fan-audit && cd fan-audit      # 或者下载 zip 解压
 
 # 2. 先用假数据跑一遍（1 秒）
 python3 audit.py --data sample_data
@@ -74,6 +74,7 @@ python3 audit.py
 - [ ] v0.3 用大模型识别走心评论 vs 水评，替代现在的关键词词表
 - [ ] v0.4 一键生成打码版月度铁粉报告
 - [ ] 权重校准：用户标约 10 个「朋友」后按 SPEC 第 11 节调参
+- [ ] 补导出截图
 
 ## 其他工具（仓库里已有）
 
