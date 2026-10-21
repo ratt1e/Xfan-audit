@@ -8,9 +8,59 @@
 
 用你自己账号的**公开回复**和**关注关系**，找出谁是真的在跟你来回聊天的「金牌用户」，谁是互关了但从来不说话的「沉睡互关」。
 
-- 离线、只读：不联网，不调用任何 X 接口，不会点赞、关注、取关任何人。
+- `audit.py` 在你自己的电脑上离线算分：不联网，也不会点赞、关注、取关或发帖。采集是另一件事，见下面。
 - 只用 Python 标准库（3.9+），不用装任何依赖。
 - 一行命令出两个看板：一个带账号名（只给自己看），一个自动打码（可以截图分享）。
+
+## 适用人群
+
+写给已经开通 **X Premium** 的人。推荐和 **Grok Bot** 一起用：Bot 负责每天用只读接口把互动采下来，这个仓库的脚本在你电脑上打分、出看板。没有 Bot 也能跑，只是互动数据要自己导出，结果通常会少一截，见下一节。
+
+## 数据从哪来
+
+两份数据分开准备，最后由 `audit.py` 合在一起算。
+
+1. **关注和粉丝**：用 [twitter-web-exporter](https://github.com/prinsss/twitter-web-exporter) 在浏览器里手动导出 `following.csv`、`followers.csv`。怎么滚页面、怎么转换，看 [docs/DATA_EXPORT.md](docs/DATA_EXPORT.md)。
+2. **每天的互动**：Grok Bot 用 X 的只读接口采集原始 JSON，再由 `scripts/daily_collect.py` 生成 `interactions.csv`。接口、额度和目录见 [docs/DAILY_COLLECT.md](docs/DAILY_COLLECT.md)。
+3. **计算**：`audit.py --data-root` 合并多天的 `interactions.csv`；`--lists` 只读那两张关系表，用来判断互关和沉睡互关。
+
+没有 Grok Bot 时，可以用同一款插件把互动导出成 CSV 来代替。插件只记下你自己滚过的页面，通常只有一个方向。方向缺一半时，条数、分数和分层都会偏少。
+
+## 合理使用
+
+- **只读。** 不自动点赞，不自动关注或取关，不自动发帖，不私信。看板里的「建议动作」只是文字，工具不会替你做。
+- **遵守调用额度。** Grok Bot 内置的公开读取：每分钟 30 次、每天 1000 次、每次最多 25 条，每天 00:00 UTC 重置。平时这一轮合计不超过 27 次（补最近 48 小时不超过 33 次），硬上限 40 次。遇到 429，等到重置后再重试 1 次；401、403 或额度不足就停。页数怎么分配见 [额度预算](docs/DAILY_COLLECT.md#6-额度预算)。
+- **不要交出登录凭证。** 不要用会导出 cookie / token 的工具，也不要把 API key 写进仓库、提示词或截图。
+
+下面这段可以直接贴给 Grok Bot，当作每天的采集说明。里面没有 key，也没有具体账号名。用户名和数字 ID 用你自己的配置填，不要贴回对话里保存。
+
+```text
+你是每日采集助手。只使用 X 的只读接口。不要点赞，不要关注或取关，不要发帖，不要私信，不要自动滚动页面。
+
+额度：每分钟不超过 30 次，每天不超过 1000 次，每次最多 25 条。平时这一轮 posts 不超过 12 页、mentions 不超过 8 页，加上资料 1 次和少量引用或转帖，合计不超过 27 次。第一次或断档后补 48 小时时不超过 33 次。硬上限 40 次。遇到 429，等到重置后只重试 1 次。401、403 或额度不足就停，不要反复重试。
+
+步骤：
+1. GET /2/users/by/username/<我的用户名>，拿到数字 ID。用户名和 ID 只留在本机，不要写进会提交的文件。
+2. 读 private/daily/state.json 里的 since_id。没有的话，start_time 用现在减去 48 小时（UTC）。两个方向用同一个时间窗。
+3. GET /2/users/<ME_ID>/tweets，不要加 exclude=replies。字段和翻页方式按本仓库 docs/DAILY_COLLECT.md。每页原样存成 posts_p01.json、posts_p02.json …
+4. GET /2/users/<ME_ID>/mentions，同样存成 mentions_p01.json …。别人回复我的帖子会 @ 我，所以「他回我」主要在这里。
+5. 哪个方向的最早时间更晚，就先翻哪个方向，直到两边最早时间相差小于 1 小时。到了页数上限还有下一页，就停下，第二天从断点补。
+6. 原始 JSON 只放在 private/。然后在本机运行：
+   python3 scripts/daily_collect.py --raw-dir private/daily/<采集日期> --me-id <ME_ID> --me <我的用户名> --snapshot-dir daily/<采集日期> --window-hours 48
+7. 不要把 cookie、token、API key，或任何具体账号名，写进仓库、日志或这段提示词的回执里。
+```
+
+## 每天看看板
+
+每次采集完成，在本机用同一条命令再跑 `audit.py`，把含账号名的 `dashboard.html` 写到仓库外的固定目录。用浏览器打开这个文件，收藏成书签。以后每天还是点这个书签，看到的就是最新一份。
+
+```bash
+python3 audit.py --data-root ~/x-data/ --lists ~/x-lists/ --me 你的用户名 --out ~/x-data/_看板/
+```
+
+含账号名的看板、`accounts.csv` 和 `名单.md` 只留在你的电脑上。不要部署到公网，也不要放到网盘的公开链接里。要给别人看，用打码的 `dashboard_public.html` 自己截一张图。
+
+每日模式如果这个目录里已经有上一份输出，会拒绝覆盖。更新前先删掉该目录里的 `dashboard.html`、`dashboard_public.html`、`accounts.csv`、`名单.md`，再跑上面同一条命令。
 
 ## Quick Start（三步）
 
@@ -136,7 +186,7 @@ LICENSE                   MIT
 
 ## English (brief)
 
-**fan-audit** is an offline, read-only toolkit for scoring your two-way public conversations on X (Twitter). Put `replies.csv` (+ optional `following.csv`, `followers.csv`, `likes.csv`) into `data/` and run `python3 audit.py` to get an HTML dashboard with 1–5 star scores, a "gold / silver / one-way / dormant mutual" segmentation, and a masked version for sharing. Try it with `python3 audit.py --data sample_data`. Standard library only, Python 3.9+. Weights are initial values, not yet validated. MIT License.
+**fan-audit** is an offline, read-only toolkit for scoring your two-way public conversations on X (Twitter). It is meant for X Premium users, and works best with a read-only daily collector such as Grok Bot: the bot writes `interactions.csv`, you export following and followers yourself, and `audit.py` scores them on your computer. Put `replies.csv` (+ optional `following.csv`, `followers.csv`, `likes.csv`) into `data/` and run `python3 audit.py` to get an HTML dashboard with 1–5 star scores, a "gold / silver / one-way / dormant mutual" segmentation, and a masked version for sharing. The dashboard that still shows account names stays on your machine; do not publish it. Try it with `python3 audit.py --data sample_data`. Standard library only, Python 3.9+. Weights are initial values, not yet validated. No automatic likes, follows, or posts. MIT License.
 
 ---
 
