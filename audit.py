@@ -188,6 +188,15 @@ def analyze(data, conf, cfg, end=None, days=None, all_days=False):
     by = defaultdict(list)
     for r in prep:
         by[r["account"]].append(r)
+    observed = None
+    if data.get("coverage"):
+        # 采集日，以及任何互动时间落在的日期，都算有数据。没有这两样的日期是无数据。
+        observed = {date.fromisoformat(day) for day in data["coverage"]["read_days"]}
+        for r in prep:
+            if r.get("dt"):
+                observed.add(r["dt"].date())
+            if r.get("obs_dt"):
+                observed.add(r["obs_dt"].date())
     fol, fer, prof = data["following"], data["followers"], data["profiles"]
     accounts = set(by) | set(fol) | set(fer)
     accounts -= excl
@@ -195,7 +204,7 @@ def analyze(data, conf, cfg, end=None, days=None, all_days=False):
     pb = tcfg.get("priority_bonus", {})
     res = []
     for a in sorted(accounts):
-        x = rs.score(by.get(a, []), s, e, conf.get("likes", {}).get("time_mode", "strict"), cfg)
+        x = rs.score(by.get(a, []), s, e, conf.get("likes", {}).get("time_mode", "strict"), cfg, observed)
         x["account"] = a
         x["i_follow"], x["follows_me"] = a in fol, a in fer
         x["mutual"] = x["i_follow"] and x["follows_me"]
@@ -215,6 +224,12 @@ def analyze(data, conf, cfg, end=None, days=None, all_days=False):
     meta = dict(start=str(s), end=str(e), days=days, tz=str(tz), n_rows=len(rows),
                 n_following=len(fol), n_followers=len(fer), n_mutual=sum(1 for a in fol if a in fer),
                 warnings=data["warnings"])
+    if observed is not None:
+        span = [s + timedelta(days=i) for i in range((e - s).days + 1)]
+        covered = [d for d in span if d in observed]
+        meta["covered_days"] = [d.isoformat() for d in covered]
+        meta["uncovered_days"] = [d.isoformat() for d in span if d not in observed]
+        meta["scoring_days"] = len(covered) if covered else days
     return res, meta
 
 
@@ -241,6 +256,17 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
 
 def stars_txt(x):
     return ("★" * x["stars"] + "☆" * (5 - x["stars"])) if x["status"] == "ok" else "样本不足"
+
+
+def coverage_note(meta):
+    covered = meta.get("covered_days")
+    if covered is None:
+        return ""
+    missing = len(meta.get("uncovered_days") or [])
+    note = f"；覆盖 {len(covered)} 天"
+    if missing:
+        note += f"，{missing} 天无数据（不算零互动）"
+    return note
 
 
 def mutual_txt(x):
@@ -301,7 +327,7 @@ def render(res, meta, public=False):
     return f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title><style>{CSS}</style></head><body>
 <h1>{title}</h1>
-<div class="sub">区间 {meta['start']} ~ {meta['end']}（{meta['days']} 天，{html.escape(meta['tz'])}）· 只统计公开回复、引用和点赞 · 分数只是线索，不代表真实关系</div>
+<div class="sub">区间 {meta['start']} ~ {meta['end']}（请求 {meta['days']} 天，{html.escape(meta['tz'])}）{coverage_note(meta)} · 只统计公开回复、引用和点赞 · 分数只是线索，不代表真实关系</div>
 {f'<div class="warn">{warn}</div>' if warn else ''}
 <div class="grid">
 <div class="card"><div class="num">{meta['n_following']}</div><div class="lab">我关注的</div></div>
@@ -401,7 +427,10 @@ def main(argv=None):
     for w in meta["warnings"]:
         print("⚠", w)
     c = Counter(x["tier"] for x in res)
-    print(f"区间 {meta['start']} ~ {meta['end']}，{len(res)} 个账号：" + "，".join(f"{t} {c.get(t, 0)}" for t in TIERS))
+    extra = ""
+    if meta.get("uncovered_days"):
+        extra = f"；计分覆盖 {meta['scoring_days']} 天，无数据 {len(meta['uncovered_days'])} 天"
+    print(f"区间 {meta['start']} ~ {meta['end']}{extra}，{len(res)} 个账号：" + "，".join(f"{t} {c.get(t, 0)}" for t in TIERS))
     if root:
         print("已在仓库外写出 accounts.csv、dashboard.html、dashboard_public.html、名单.md（私有名单不在终端展示）")
     else:

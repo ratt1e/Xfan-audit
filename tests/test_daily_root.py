@@ -1,6 +1,7 @@
 """每日目录测试：只使用手写数据和现有 SPEC 假数据。"""
 import csv
 import os
+from datetime import date, timedelta
 from pathlib import Path
 import subprocess
 import sys
@@ -189,6 +190,63 @@ class TestDailyRoot(unittest.TestCase):
                                         first_observed_at="2026-10-03T12:00:00Z")])
         result = self.cli("--data-root", self.daily, "--all-days", "--out", self.base / "out")
         self.assertIn("2026-09-30 ~ 2026-10-03", result.stdout)
+
+    def test_uncovered_days_do_not_count_as_inactivity(self):
+        rows = []
+        for day, n in (("2026-10-18", "1"), ("2026-10-19", "2")):
+            rows.append(self.row(id="tw:91000%s1" % n, tweet_id="91000%s1" % n, ts=day + "T20:00:00Z",
+                                 direction="out", text="这个口径和上次不一样"))
+            rows.append(self.row(id="tw:91000%s2" % n, tweet_id="91000%s2" % n, ts=day + "T21:00:00Z",
+                                 direction="in", in_reply_to_status_id="91000%s1" % n,
+                                 text="我按公开回复重新对过"))
+        self.day("2026-10-19", rows)
+        recent = self.cli("--data-root", self.daily, "--days", "30", "--end", "2026-10-19",
+                          "--out", self.base / "recent")
+        full = self.cli("--data-root", self.daily, "--all-days", "--out", self.base / "full")
+        self.assertIn("有数据的日期（覆盖 2 天）：2026-10-18、2026-10-19", recent.stdout)
+        self.assertIn("无数据不是零互动，不进入持续性分母", recent.stdout)
+        self.assertIn("2026-10-17", recent.stdout)
+        self.assertNotIn("user_201", recent.stdout + recent.stderr)
+        self.assertIn("无数据不是零互动", (self.base / "recent/名单.md").read_text())
+        with (self.base / "recent/accounts.csv").open(encoding="utf-8-sig") as f:
+            month = {r["account"]: r for r in csv.DictReader(f)}
+        with (self.base / "full/accounts.csv").open(encoding="utf-8-sig") as f:
+            entire = {r["account"]: r for r in csv.DictReader(f)}
+        self.assertEqual(month["user_201"]["score"], entire["user_201"]["score"])
+        self.assertEqual(month["user_201"]["tier"], entire["user_201"]["tier"])
+        self.assertGreater(float(month["user_201"]["P"]), 0.9)
+
+    def test_collected_day_without_this_person_still_counts(self):
+        for offset, day in enumerate(("2026-10-12", "2026-10-13", "2026-10-14", "2026-10-15",
+                                      "2026-10-16", "2026-10-17")):
+            self.day(day, [self.row(id="tw:920000%s" % offset, tweet_id="920000%s" % offset,
+                                   ts=day + "T20:00:00Z", account="user_202", text="今天换了个统计口径")])
+        own = []
+        for day, n in (("2026-10-18", "8"), ("2026-10-19", "9")):
+            own.append(self.row(id="tw:91000%s1" % n, tweet_id="91000%s1" % n, ts=day + "T20:00:00Z",
+                                direction="out", text="这个口径和上次不一样"))
+            own.append(self.row(id="tw:91000%s2" % n, tweet_id="91000%s2" % n, ts=day + "T21:00:00Z",
+                                direction="in", in_reply_to_status_id="91000%s1" % n,
+                                text="我按公开回复重新对过"))
+        self.day("2026-10-19", own)
+        result = self.cli("--data-root", self.daily, "--days", "30", "--end", "2026-10-19",
+                          "--out", self.base / "out")
+        self.assertIn("覆盖 8 天", result.stdout)
+        self.assertNotIn("user_201", result.stdout + result.stderr)
+        with (self.base / "out/accounts.csv").open(encoding="utf-8-sig") as f:
+            rows = {r["account"]: r for r in csv.DictReader(f)}
+        self.assertGreater(float(rows["user_201"]["P"]), 0.5)
+        self.assertLess(float(rows["user_201"]["P"]), 1.0)
+
+    def test_full_coverage_uses_the_same_denominator(self):
+        start, end = date(2026, 9, 20), date(2026, 10, 19)
+        every = {start + timedelta(days=i) for i in range((end - start).days + 1)}
+        self.assertEqual(audit.rs.window_scale(start, end, None)[0], 30)
+        self.assertEqual(audit.rs.window_scale(start, end, every)[:1], (30,))
+        partial = {date(2026, 10, 18), date(2026, 10, 19)}
+        length, week_of, weeks = audit.rs.window_scale(start, end, partial)
+        self.assertEqual((length, weeks), (2, 1))
+        self.assertEqual(week_of(date(2026, 10, 18)), week_of(date(2026, 10, 19)))
 
     def test_empty_root_bad_timestamp_and_conflicting_flags(self):
         self.cli("--data-root", self.daily, "--out", self.base / "empty", ok=False)

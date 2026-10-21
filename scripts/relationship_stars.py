@@ -98,9 +98,42 @@ def like_in_range(r, s, e, mode):
     return r["obs_dt"] is not None and s <= r["obs_dt"].date() <= e and r.get("observed_baseline") != "true"
 
 
-def score(rows, s, e, like_mode="strict", cfg=CFG):
-    D = (e - s).days + 1
-    K = math.ceil(D / 7)
+def window_scale(s, e, observed):
+    """区间长度 D 和周序号。observed 为 None 时按整段日历（SPEC 6.1）。
+
+    传入有数据的日期时，缺口是无数据，不是零互动：D 只数这些日期，并按时间顺序重新接上再切周。
+    整天都有数据时，结果与日历算法相同。
+    """
+    span_days = (e - s).days + 1
+
+    def calendar_week(day):
+        return (day - s).days // 7
+
+    if observed is None:
+        return span_days, calendar_week, math.ceil(span_days / 7)
+    covered = []
+    day = s
+    for _ in range(span_days):
+        if day in observed:
+            covered.append(day)
+        day += timedelta(days=1)
+    if len(covered) in (0, span_days):
+        return span_days, calendar_week, math.ceil(span_days / 7)
+    index = {day: i for i, day in enumerate(covered)}
+
+    def covered_week(day):
+        return index[day] // 7 if day in index else calendar_week(day)
+
+    return len(covered), covered_week, math.ceil(len(covered) / 7)
+
+
+def score(rows, s, e, like_mode="strict", cfg=CFG, observed=None):
+    if observed is not None:
+        observed = set(observed)
+        for r in rows:
+            if r.get("dt") and s <= r["dt"].date() <= e:
+                observed.add(r["dt"].date())
+    D, week_of, K = window_scale(s, e, observed)
     talk = [r for r in rows if r["type"] in TALK and r["dt"] and s <= r["dt"].date() <= e]
     likes_all = [r for r in rows if r["type"] == "like"]
     likes = [r for r in likes_all if like_in_range(r, s, e, like_mode)]
@@ -139,7 +172,7 @@ def score(rows, s, e, like_mode="strict", cfg=CFG):
     sub_days = {r["dt"].date() for r in sub}
     greet_only = {r["dt"].date() for r in greet} - sub_days
     p_day = min(1.0, (len(sub_days) + min(cfg["GREET_DAY_CAP"], cfg["GREET_DAY"] * len(greet_only))) / (cfg["ALPHA"] * D))
-    p_week = len({(r["dt"].date() - s).days // 7 for r in sub}) / K
+    p_week = len({week_of(r["dt"].date()) for r in sub}) / K
     P = 0.5 * p_day + 0.5 * p_week
     O, I = res["O"], res["I"]
     B = min(O, I) / max(O, I) if O >= 1 and I >= 1 else 0.0

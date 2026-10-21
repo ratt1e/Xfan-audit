@@ -133,6 +133,12 @@ def coverage_lines(data, meta, me="", excluded=()):
     start, end = date.fromisoformat(meta["start"]), date.fromisoformat(meta["end"])
     expected = [(start + timedelta(days=n)).isoformat() for n in range((end - start).days + 1)]
     missing = [d for d in expected if d not in coverage["read_days"]]
+    covered = meta.get("covered_days")
+    if covered is None:
+        covered = [d for d in expected if d in coverage["read_days"]]
+    uncovered = meta.get("uncovered_days")
+    if uncovered is None:
+        uncovered = [d for d in expected if d not in set(covered)]
     excluded = {norm(x) for x in excluded} | {norm(me)}
     replies = [r for r in data["rows"] if r["type"] == "reply" and r["account"] not in excluded]
     absent = sum(not r.get("in_reply_to_status_id") for r in replies)
@@ -141,6 +147,10 @@ def coverage_lines(data, meta, me="", excluded=()):
         f"已读采集日期（{len(coverage['read_days'])} 天）：" + "、".join(coverage["read_days"]),
         f"分析区间缺采集文件的日期（{len(missing)} 天）：" + ("、".join(missing) or "无"),
         "缺采集文件不等于没有互动；单日文件也可能含历史补采。",
+        f"有数据的日期（覆盖 {len(covered)} 天）：" + ("、".join(covered) or "无"),
+        f"无数据的日期（{len(uncovered)} 天）：" + ("、".join(uncovered) or "无"),
+        "无数据不是零互动，不进入持续性分母；计分只按有数据的日期。",
+        f"计分天数：{meta.get('scoring_days', len(covered) or meta['days'])}。请求区间 {meta['days']} 天。",
         f"每日行数：合并前 {coverage['before']}，去重后 {coverage['after']}",
         f"全部去重回复缺父帖 ID：{absent}/{len(replies)}（{fraction}）",
     ]
