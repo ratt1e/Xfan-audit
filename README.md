@@ -16,7 +16,7 @@
 
 ```bash
 # 1. 下载
-git clone https://github.com/ratt1e/fan-audit.git fan-audit && cd fan-audit      # 或者下载 zip 解压
+git clone https://github.com/ratt1e/Xfan-audit.git fan-audit && cd fan-audit      # 或者下载 zip 解压
 
 # 2. 先用假数据跑一遍（1 秒）
 python3 audit.py --data sample_data
