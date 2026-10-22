@@ -21,7 +21,10 @@ button{border:1px solid #D1D5DB;background:#fff;border-radius:8px;padding:7px 12
 button.on{background:#1D4ED8;color:#fff;border-color:#1D4ED8}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:14px;margin:14px 0}
 .card{background:#fff;border:1px solid #E5E7EB;border-radius:14px;padding:16px 18px}
-button.card{padding:16px 18px;text-align:left;width:100%;cursor:pointer}
+button.card,a.card{padding:16px 18px;text-align:left;width:100%;cursor:pointer;box-sizing:border-box}
+a.card{display:block;color:inherit;text-decoration:none}
+a.card:hover{border-color:#93C5FD}
+a.bar{text-decoration:none;color:inherit}
 button.tier-card.empty,button.tier-card.empty .num,button.tier-card.empty .lab{background:#F3F4F6;color:#9CA3AF}
 .stat-cards{border-top:1px dashed #D1D5DB;padding-top:8px}
 .tag{display:inline-block;margin-top:6px;font-size:11px;color:#1D4ED8;background:#EFF6FF;border-radius:999px;padding:1px 8px}
@@ -635,7 +638,11 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
       var s = String(i + 1);
       alias[x.account] = "账号#" + (s.length < 2 ? "0" + s : s);
     });
-    function name(account) { return options.masked ? alias[account] : "@" + account; }
+    function nameCell(account) {
+      if (options.masked) return escHtml(alias[account]);
+      var href = "https:" + "//x.com/" + account;
+      return '<a href="' + escHtml(href) + '" target="_blank" rel="noopener noreferrer">@' + escHtml(account) + "</a>";
+    }
     var count = {};
     TIERS.forEach(function (t) { count[t] = 0; });
     rows.forEach(function (x) { count[x.tier] = (count[x.tier] || 0) + 1; });
@@ -645,7 +652,11 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
       var n = count[t] || 0;
       cards += '<button type="button" class="card tier-card' + (n ? "" : " empty") + '" data-jump="' + escHtml(t) + '" data-count="' + n + '"><div class="num">' + n + "</div><div class=\"lab\">" + escHtml(t) + "</div></button>";
     });
-    cards += '</div><div class="grid stat-cards"><div class="card stat-card"><div class="num">' + mutual + '</div><div class="lab">互关</div><div class="tag">统计</div></div></div>';
+    cards += '</div><div class="grid stat-cards"><div class="card stat-card"><div class="num">' + mutual + '</div><div class="lab">互关</div><div class="tag">统计</div></div>';
+    (options.extras || []).forEach(function (item) {
+      cards += '<button type="button" class="card tier-card" data-jump-id="' + escHtml(item.id) + '" data-count="' + escHtml(item.count) + '"><div class="num">' + escHtml(item.count) + '</div><div class="lab">' + escHtml(item.label) + "</div></button>";
+    });
+    cards += "</div>";
     cards += '<p id="jump-note" class="muted"></p>';
     function bars(items, jump) {
       var max = 0;
@@ -675,7 +686,7 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
       if (xs.length) {
         body = "<table><tr><th>账号</th><th>星级</th><th>分数</th><th>建议动作</th></tr>";
         shown.forEach(function (x) {
-          body += "<tr><td>" + escHtml(name(x.account)) + "</td><td>" + starsText(x) + "</td><td>" + (x.score == null ? "—" : escHtml(x.score)) + "</td><td>" + escHtml(x.action || "") + "</td></tr>";
+          body += "<tr><td>" + nameCell(x.account) + "</td><td>" + starsText(x) + "</td><td>" + (x.score == null ? "—" : escHtml(x.score)) + "</td><td>" + escHtml(x.action || "") + "</td></tr>";
         });
         body += "</table>";
         if (xs.length > 20 && !open[t]) body += '<button type="button" data-expand="' + escHtml(t) + '">展开全部</button>';
@@ -771,13 +782,19 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
     function label(item) {
       var key = item.handle || item.id;
       if (item.handle && item.id && collisions[item.handle]) key = item.handle + "#" + item.id;
-      if (!options.masked) {
-        if (item.handle && item.id && collisions[item.handle]) return "@" + item.handle + "（id " + item.id + "）";
-        return item.handle ? "@" + item.handle : item.id;
+      if (options.masked) {
+        var shown = known[key];
+        if (!shown) {
+          if (!assigned[key]) { assigned[key] = aliasText(next); next += 1; }
+          shown = assigned[key];
+        }
+        return escHtml(shown);
       }
-      if (known[key]) return known[key];
-      if (!assigned[key]) { assigned[key] = aliasText(next); next += 1; }
-      return assigned[key];
+      var text = item.handle ? "@" + item.handle : (item.id || "");
+      if (item.handle && item.id && collisions[item.handle]) text = "@" + item.handle + "（id " + item.id + "）";
+      if (!item.handle) return escHtml(text);
+      var href = "https:" + "//x.com/" + item.handle;
+      return '<a href="' + escHtml(href) + '" target="_blank" rel="noopener noreferrer">' + escHtml(text) + "</a>";
     }
     var order = [["unfollowed_me", "取关我的"], ["new_followers", "新粉丝"], ["i_unfollowed", "我取关的"], ["i_followed", "我新关注的"]];
     var notes = (diff.notes || []).map(function (note) { return '<p class="muted">' + escHtml(note) + "</p>"; }).join("");
@@ -791,7 +808,7 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
       else if (!items.length) { heading = pair[1] + "（0）"; body = '<p class="muted">（暂时没有）</p>'; }
       else {
         heading = pair[1] + "（" + items.length + "）";
-        body = "<p>" + items.slice(0, 60).map(label).map(escHtml).join("、") + (items.length > 60 ? "…" : "") + "</p>";
+        body = "<p>" + items.slice(0, 60).map(label).join("、") + (items.length > 60 ? "…" : "") + "</p>";
       }
       lists.push("<p><b>" + escHtml(heading) + "</b></p>" + body);
     });
@@ -868,7 +885,7 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
       var href = "https:" + "//x.com/" + item.handle;
       var text = "@" + item.handle;
       if (collisions[item.handle] && item.id) text += "（id " + item.id + "）";
-      return '<a href="' + escHtml(href) + '">' + escHtml(text) + "</a>";
+      return '<a href="' + escHtml(href) + '" target="_blank" rel="noopener noreferrer">' + escHtml(text) + "</a>";
     }
     var count = info.ready ? String(items.length) : "—";
     var body;
@@ -960,15 +977,19 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
         render(true);
         return;
       }
+      if (el.getAttribute && el.getAttribute("data-jump-id")) {
+        jump(el.getAttribute("data-jump-id"));
+        return;
+      }
       if (el.getAttribute && el.getAttribute("data-jump")) {
-        jump(el.getAttribute("data-jump"));
+        jump("tier-" + el.getAttribute("data-jump"));
         return;
       }
       el = el.parentNode;
     }
   });
-  function jump(tier) {
-    var el = document.getElementById("tier-" + tier);
+  function jump(id) {
+    var el = document.getElementById(id);
     if (!el) return;
     var plan = FanAudit.jumpPlan(+(el.getAttribute("data-total") || 0));
     var note = document.getElementById("jump-note");
@@ -1049,11 +1070,21 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
     var backHtml = back ? FanAudit.notFollowedBackHtml(back, {masked: state.masked, rows: rows}) : "";
     var diff = FanAudit.followDiff(data);
     var diffHtml = diff ? FanAudit.followDiffHtml(diff, {masked: state.masked, rows: rows}) : "";
+    var extras = [];
+    if (back) extras.push({id: "not-followed-back", count: back.ready ? String(back.items.length) : "—", label: "没回关"});
+    if (diff) {
+      var changeKeys = ["unfollowed_me", "new_followers", "i_unfollowed", "i_followed"];
+      var changeSeen = false, changeTotal = 0;
+      changeKeys.forEach(function (key) {
+        if (diff[key] != null) { changeSeen = true; changeTotal += diff[key].length; }
+      });
+      extras.push({id: "follow-diff", count: changeSeen ? String(changeTotal) : "—", label: "关注变化"});
+    }
     out.innerHTML = filesHtml + askNote + '<p class="sub">' + esc(cover) + " · " + rows.length + " 个账号</p>" +
       (data.warnings.length ? '<div class="warn">' + esc(data.warnings.join("；")) + "</div>" : "") +
+      FanAudit.boardHtml(rows, {masked: state.masked, open: state.open, extras: extras}) +
       backHtml +
-      diffHtml +
-      FanAudit.boardHtml(rows, {masked: state.masked, open: state.open});
+      diffHtml;
     if (keepScroll) window.scrollTo(0, scrollY);
   }
 })();

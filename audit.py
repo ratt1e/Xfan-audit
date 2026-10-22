@@ -242,25 +242,6 @@ def analyze(data, conf, cfg, end=None, days=None, all_days=False):
 
 # ---------------- 看板 ----------------
 
-CSS = """
-body{font-family:-apple-system,"PingFang SC","Noto Sans CJK SC","Microsoft YaHei",sans-serif;background:#F7F8FA;color:#1F2937;margin:0;padding:28px}
-h1{font-size:28px;margin:0 0 4px} .sub{color:#6B7280;font-size:14px;margin-bottom:20px}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:18px}
-.card{background:#fff;border:1px solid #E5E7EB;border-radius:14px;padding:16px 18px}
-.num{font-size:34px;font-weight:700} .lab{color:#6B7280;font-size:13px;margin-top:4px}
-.panels{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
-@media(max-width:820px){.panels{grid-template-columns:1fr}}
-h2{font-size:18px;margin:0 0 12px} .bar{display:flex;align-items:center;margin:6px 0;font-size:14px}
-.bar .k{width:150px;white-space:nowrap} .bar .b{height:16px;border-radius:4px;background:#3B82F6;margin-right:8px}
-.bar .b.gray{background:#CBD5E1} .bar .b.gold{background:#F59E0B} .bar .b.silver{background:#94A3B8}
-.bar .b.green{background:#10B981} .bar .b.red{background:#F43F5E}
-table{border-collapse:collapse;width:100%;font-size:13px} th,td{text-align:left;padding:7px 8px;border-bottom:1px solid #EEF0F3;vertical-align:top}
-th{color:#6B7280;font-weight:600;white-space:nowrap} td:nth-child(-n+8){white-space:nowrap} td:last-child{min-width:260px} .star{color:#F59E0B;white-space:nowrap} .muted{color:#6B7280;font-size:12px}
-.warn{background:#FFF7ED;border:1px solid #FED7AA;border-radius:10px;padding:10px 14px;font-size:13px;margin-bottom:16px}
-footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
-"""
-
-
 def stars_txt(x):
     return ("★" * x["stars"] + "☆" * (5 - x["stars"])) if x["status"] == "ok" else "样本不足"
 
@@ -276,63 +257,84 @@ def coverage_note(meta):
     return note
 
 
-def mutual_txt(x):
-    return "✔ 互关" if x["mutual"] else "→ 我关注" if x["i_follow"] else "← 关注我" if x["follows_me"] else ""
+def dashboard_css():
+    """和网页同一份样式。生成的看板把这段嵌进去，不额外请求文件。"""
+    page = os.path.join(HERE, "web", "index.html")
+    with open(page, encoding="utf-8") as f:
+        text = f.read()
+    start = text.find("<style>")
+    end = text.find("</style>", start)
+    if start < 0 or end < 0:
+        raise ValueError("网页样式读不了")
+    return text[start + len("<style>"):end].strip()
+
+
+def profile_link(handle, label):
+    url = "https://x.com/" + handle
+    return (
+        f'<a href="{html.escape(url, quote=True)}" target="_blank" rel="noopener noreferrer">'
+        f"{html.escape(label)}</a>"
+    )
+
+
+def masked_name(alias, key):
+    alias.setdefault(key, f"账号#{len(alias) + 1:02d}")
+    return html.escape(alias[key])
+
+
+def person_html(item, collisions, alias, public):
+    if public:
+        return masked_name(alias, follow_diff.public_key(item, collisions))
+    text = follow_diff.account_text(item, collisions, at=True)
+    if item.get("handle"):
+        return profile_link(item["handle"], text)
+    return html.escape(text)
 
 
 def not_back_block(info, alias, public):
     """没回关。打码版沿用上面的账号#，并且不放主页链接。"""
     if not info:
         return ""
+    ready = info["ready"]
+    count = None if not ready else len(info["items"])
+    heading = "没回关" if count is None else f"没回关（{count}）"
     head = (
-        '<section class="card" id="not-followed-back" style="margin-bottom:16px"><h2>没回关</h2>'
+        '<section class="card tier-block" id="not-followed-back" style="margin-bottom:16px"'
+        f' data-total="{0 if count is None else count}">'
+        f'<div class="block-head"><h2>{html.escape(heading)}</h2>'
+        '<a class="back-top" href="#top">回到顶部</a></div>'
         '<p class="muted">我关注了、对方没有回关。零互动的排在前面，然后按分数从低到高。</p>'
         f'<p class="muted">{html.escape(nfb.SAFETY)}</p>'
     )
-    if not info["ready"]:
-        count = "—"
+    if not ready:
         body = f'<p class="muted">{html.escape(info["note"])}</p>'
+    elif not info["items"]:
+        body = '<p class="muted">（暂时没有）</p>'
     else:
-        items = info["items"]
-        count = str(len(items))
-        if not items:
-            body = '<p class="muted">（暂时没有）</p>'
-        else:
-            collisions = nfb.collisions_of(items)
-            rows = ["<table><tr><th>账号</th><th>互动</th><th>分数</th><th>分层</th></tr>"]
-            for item in items:
-                if public:
-                    key = follow_diff.public_key(item, collisions)
-                    alias.setdefault(key, f"账号#{len(alias) + 1:02d}")
-                    cell = html.escape(alias[key])
-                else:
-                    label = html.escape(follow_diff.account_text(item, collisions, at=True))
-                    if item["handle"] and item["profile"]:
-                        cell = f'<a href="{html.escape(item["profile"], quote=True)}">{label}</a>'
-                    else:
-                        cell = label
-                rows.append(
-                    f"<tr><td>{cell}</td><td>{item['interactions']}</td>"
-                    f"<td>{html.escape(nfb.score_text(item))}</td>"
-                    f"<td>{html.escape(item['tier'] or '—')}</td></tr>"
-                )
-            rows.append("</table>")
-            body = "\n".join(rows)
-    card = f'<div class="grid"><div class="card"><div class="num">{count}</div><div class="lab">没回关</div></div></div>'
-    return head + card + body + "</section>"
+        collisions = nfb.collisions_of(info["items"])
+        rows = ["<table><tr><th>账号</th><th>互动</th><th>分数</th><th>分层</th></tr>"]
+        for item in info["items"]:
+            cell = person_html(item, collisions, alias, public)
+            rows.append(
+                f"<tr><td>{cell}</td><td>{item['interactions']}</td>"
+                f"<td>{html.escape(nfb.score_text(item))}</td>"
+                f"<td>{html.escape(item['tier'] or '—')}</td></tr>"
+            )
+        rows.append("</table>")
+        body = "\n".join(rows)
+    return head + body + "</section>"
+
+
+def follow_count(diff):
+    groups = [diff[key] for key, _title in follow_diff.GROUP_ORDER]
+    if all(items is None for items in groups):
+        return "—"
+    return str(sum(len(items) for items in groups if items is not None))
 
 
 def follow_block(diff, alias, public):
     """关注变化。打码时和上面的名单共用同一套账号#，不另起一套。"""
     collisions = diff["collisions"]
-
-    def label(item):
-        if not public:
-            return html.escape(follow_diff.account_text(item, collisions, at=True))
-        key = follow_diff.public_key(item, collisions)
-        alias.setdefault(key, f"账号#{len(alias) + 1:02d}")
-        return alias[key]
-
     notes = "".join(f'<p class="muted">{html.escape(note)}</p>' for note in diff["notes"])
     cards, lists = [], []
     for key, title in follow_diff.GROUP_ORDER:
@@ -346,99 +348,127 @@ def follow_block(diff, alias, public):
             body = '<p class="muted">（暂时没有）</p>'
             heading = f"{title}（0）"
         else:
-            shown = [label(item) for item in items[:60]]
+            shown = [person_html(item, collisions, alias, public) for item in items[:60]]
             text = "、".join(shown) + ("…" if len(items) > 60 else "")
             body = f"<p>{text}</p>"
             heading = f"{title}（{len(items)}）"
         lists.append(f"<p><b>{html.escape(heading)}</b></p>{body}")
     return (
-        '<section class="card" id="follow-diff" style="margin-bottom:16px"><h2>关注变化</h2>'
+        '<section class="card tier-block" id="follow-diff" style="margin-bottom:16px">'
+        '<div class="block-head"><h2>关注变化</h2><a class="back-top" href="#top">回到顶部</a></div>'
         f'<p class="muted">{html.escape(follow_diff.NOTE)}</p>{notes}'
         f'<div class="grid">{"".join(cards)}</div>{"".join(lists)}</section>'
     )
 
 
-def bars(items, maxv, cls=""):
-    out = []
-    for k, v, c in items:
-        w = 0 if not maxv else max(2 if v else 0, int(260 * v / maxv))
-        out.append(f'<div class="bar"><span class="k">{html.escape(k)}</span>'
-                   f'<span class="b {c or cls}" style="width:{w}px"></span><b>{v}</b></div>')
-    return "\n".join(out)
+def bar_row(label, value, maxv, color, href=None):
+    width = 0 if not maxv else max(2 if value else 0, int(220 * value / maxv))
+    inner = (f'<span class="k">{html.escape(label)}</span>'
+             f'<span class="b {color}" style="width:{width}px"></span><b>{value}</b>')
+    if href:
+        return f'<a class="bar" href="{html.escape(href, quote=True)}">{inner}</a>'
+    return f'<div class="bar">{inner}</div>'
+
+
+def jump_card(href, count, label, empty=False):
+    kind = "card tier-card empty" if empty else "card tier-card"
+    return (f'<a class="{kind}" href="{html.escape(href, quote=True)}">'
+            f'<div class="num">{html.escape(str(count))}</div>'
+            f'<div class="lab">{html.escape(label)}</div></a>')
+
+
+def tier_color(tier):
+    if tier == "金牌":
+        return "gold"
+    if tier == "银牌":
+        return "silver"
+    if "他常来" in tier:
+        return "green"
+    if "我常去" in tier:
+        return "red"
+    return "gray"
 
 
 def render(res, meta, public=False):
     alias = {}
+    if public:
+        for index, row in enumerate(res, 1):
+            alias[row["account"]] = f"账号#{index:02d}"
 
-    def name(x):
-        if not public:
-            return "@" + html.escape(x["account"])
-        alias.setdefault(x["account"], f"账号#{len(alias) + 1:02d}")
-        return alias[x["account"]]
-
-    scored = [x for x in res if x["status"] == "ok"]
-    st = Counter(x["stars"] for x in scored)
-    tiers = Counter(x["tier"] for x in res)
-    active = sum(1 for x in res if x.get("raw", 0) or x.get("L_in", 0))
-    star_items = [(f"{'★' * n}", st.get(n, 0), "") for n in (5, 4, 3, 2, 1)]
-    star_items.append(("样本不足", sum(1 for x in res if x["status"] == "样本不足" and (x.get("raw") or x.get("L_in"))), "gray"))
-    tier_cls = {"金牌": "gold", "银牌": "silver", "单向·他常来我少回": "green", "单向·我常去他没回": "red", "沉睡互关": "gray"}
-    tier_items = [(t, tiers.get(t, 0), tier_cls.get(t, "gray")) for t in TIERS[:6]]
-
-    def table(tier, limit=50):
-        xs = [x for x in res if x["tier"] == tier][:limit]
-        if not xs:
-            return '<p class="muted">（这一层暂时没有人）</p>'
-        h = ['<table><tr><th>账号</th><th>星级</th><th>分数</th><th>实质 我→他/他→我</th><th>真往返</th>'
-             '<th>活跃天</th><th>互关</th><th>认证</th><th>建议动作</th></tr>']
-        for x in xs:
-            h.append(f"<tr><td>{name(x)}</td><td class='star'>{stars_txt(x)}</td><td>{x.get('score', '—')}</td>"
-                     f"<td>{x['O']} / {x['I']}</td><td>{x['rounds']}</td><td>{x['sub_days']}</td>"
-                     f"<td>{mutual_txt(x)}</td><td>{'蓝V' if x['verified'] else ''}</td>"
-                     f"<td>{html.escape(x['action'])}</td></tr>")
-        h.append("</table>")
-        return "\n".join(h)
-
-    def small_list(tier, key):
-        xs = [x for x in res if x["tier"] == tier]
-        if not xs:
-            return '<p class="muted">（暂时没有）</p>'
+    def name_cell(row):
         if public:
-            return f'<p class="muted">共 {len(xs)} 个（对外版不列名单）</p>'
-        return "<p>" + "、".join(f"{name(x)}（{key(x)}）" for x in xs[:60]) + ("…" if len(xs) > 60 else "") + "</p>"
+            return html.escape(alias[row["account"]])
+        return profile_link(row["account"], "@" + row["account"])
+
+    counts = Counter(row["tier"] for row in res)
+    scored = [row for row in res if row["status"] == "ok"]
+    stars = Counter(row["stars"] for row in scored)
+    thin = sum(1 for row in res if row["status"] != "ok" and (row.get("raw") or row.get("L_in")))
+    star_max = max([stars.get(n, 0) for n in (5, 4, 3, 2, 1)] + [thin, 0])
+    star_rows = [bar_row("★" * n, stars.get(n, 0), star_max, "") for n in (5, 4, 3, 2, 1)]
+    star_rows.append(bar_row("样本不足", thin, star_max, "gray"))
+    tier_max = max([counts.get(tier, 0) for tier in TIERS] or [0])
+    tier_rows = [
+        bar_row(tier, counts.get(tier, 0), tier_max, tier_color(tier), "#tier-" + tier) for tier in TIERS
+    ]
+    tier_cards = "".join(
+        jump_card("#tier-" + tier, counts.get(tier, 0), tier, empty=not counts.get(tier, 0)) for tier in TIERS
+    )
+    stat_cards = (
+        f'<div class="card stat-card"><div class="num">{meta["n_mutual"]}</div>'
+        '<div class="lab">互关</div><div class="tag">统计</div></div>'
+    )
+    info = meta.get("not_followed_back")
+    if info:
+        back_count = "—" if not info["ready"] else str(len(info["items"]))
+        stat_cards += jump_card("#not-followed-back", back_count, "没回关", empty=(back_count == "0"))
+    diff = meta.get("follow_diff")
+    if diff:
+        stat_cards += jump_card("#follow-diff", follow_count(diff), "关注变化", empty=(follow_count(diff) == "0"))
+
+    def tier_section(tier):
+        rows = [row for row in res if row["tier"] == tier]
+        if rows:
+            body = ["<table><tr><th>账号</th><th>星级</th><th>分数</th><th>建议动作</th></tr>"]
+            for row in rows:
+                score = "—" if row.get("score") is None else html.escape(str(row.get("score")))
+                body.append(
+                    f"<tr><td>{name_cell(row)}</td><td>{stars_txt(row)}</td><td>{score}</td>"
+                    f"<td>{html.escape(row.get('action') or '')}</td></tr>"
+                )
+            body.append("</table>")
+            table = "\n".join(body)
+        else:
+            table = '<p class="muted">这一层暂时没有人</p>'
+        note = ""
+        if tier == "沉睡互关":
+            note = "<p class=\"muted\">零公开互动 ≠ 没看过，别急着取关；要清理也请手动、分批、慢慢来。</p>"
+        return (
+            f'<section class="card tier-block" id="tier-{html.escape(tier)}" data-total="{len(rows)}">'
+            f'<div class="block-head"><h2>{html.escape(tier)}（{len(rows)}）</h2>'
+            '<a class="back-top" href="#top">回到顶部</a></div>'
+            f"{table}{note}</section>"
+        )
 
     warn = "".join(f"<div>⚠ {html.escape(w)}</div>" for w in meta["warnings"])
     title = "粉丝体检 · 互动关系星级（试用版）" + ("· 对外打码版" if public else "")
+    sections = "".join(tier_section(tier) for tier in TIERS)
     return f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title><style>{CSS}</style></head><body>
-<h1>{title}</h1>
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(title)}</title><style>{dashboard_css()}</style></head><body>
+<h1 id="top">{html.escape(title)}</h1>
 <div class="sub">区间 {meta['start']} ~ {meta['end']}（请求 {meta['days']} 天，{html.escape(meta['tz'])}）{coverage_note(meta)} · 只统计公开回复、引用和点赞 · 分数只是线索，不代表真实关系</div>
 {f'<div class="warn">{warn}</div>' if warn else ''}
-<div class="grid">
-<div class="card"><div class="num">{meta['n_following']}</div><div class="lab">我关注的</div></div>
-<div class="card"><div class="num">{meta['n_followers']}</div><div class="lab">粉丝（名单里的）</div></div>
-<div class="card"><div class="num">{meta['n_mutual']}</div><div class="lab">互关</div></div>
-<div class="card"><div class="num">{active}</div><div class="lab">有公开互动的账号</div></div>
-<div class="card"><div class="num" style="color:#D97706">{tiers.get('金牌', 0)}</div><div class="lab">金牌用户</div></div>
-<div class="card"><div class="num" style="color:#64748B">{tiers.get('沉睡互关', 0)}</div><div class="lab">沉睡互关</div></div>
-</div>
+<div class="grid tier-cards">{tier_cards}</div>
+<div class="grid stat-cards">{stat_cards}</div>
 <div class="panels">
-<div class="card"><h2>星级分布</h2>{bars(star_items, max([v for _, v, _ in star_items] or [0]))}
+<div class="card"><h2>星级分布</h2>{''.join(star_rows)}
 <p class="muted">样本不足 = 少于 3 条或只在 1 天里，不打星。</p></div>
-<div class="card"><h2>分层</h2>{bars(tier_items, max([v for _, v, _ in tier_items] or [0]))}
-<p class="muted">{'；'.join(f'{k}：{v}' for k, v in list(TIER_NOTE.items())[:5])}</p></div>
+<div class="card"><h2>分层人数</h2>{''.join(tier_rows)}</div>
 </div>
-<div class="card" style="margin-bottom:16px"><h2>🥇 金牌（重点维护 / 可谈合作）</h2>{table('金牌')}</div>
-<div class="card" style="margin-bottom:16px"><h2>🥈 银牌（有潜力，可以升级）</h2>{table('银牌')}</div>
-<div class="panels">
-<div class="card"><h2>单向</h2><b>他常来、我少回</b>{small_list('单向·他常来我少回', lambda x: f"他 {x.get('I_raw', 0)} / 我 {x.get('O_raw', 0)}")}
-<b>我常去、他没回</b>{small_list('单向·我常去他没回', lambda x: f"我 {x.get('O_raw', 0)} 条")}</div>
-<div class="card"><h2>沉睡互关</h2>{small_list('沉睡互关', lambda x: '零互动')}
-<p class="muted">零公开互动 ≠ 没看过，别急着取关；要清理也请手动、分批、慢慢来。</p></div>
-</div>
-{not_back_block(meta.get("not_followed_back"), alias, public)}
-{follow_block(meta["follow_diff"], alias, public) if meta.get("follow_diff") else ""}
-<footer>fan-audit v0.1 · 试用版 · 权重待验证 · 所有建议都只是建议，工具不会执行任何操作</footer>
+{sections}
+{not_back_block(info, alias, public)}
+{follow_block(diff, alias, public) if diff else ""}
+<footer>fan-audit v0.1 · 试用版 · 权重待验证 · 所有建议都只是建议，工具不会自动取关或屏蔽</footer>
 </body></html>"""
 
 
