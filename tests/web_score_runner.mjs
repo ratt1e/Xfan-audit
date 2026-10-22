@@ -26,6 +26,24 @@ if (process.argv[2] === "board") {
   }));
   process.exit(0);
 }
+if (process.argv[2] === "diff") {
+  const spec = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+  const parts = spec.parts.map(function (job) {
+    const file = path.isAbsolute(job.file) ? job.file : path.join(root, job.file);
+    return {name: job.name, text: fs.readFileSync(file, "utf8"), owner: job.owner || "", kind: job.kind || ""};
+  });
+  const data = fan.loadTexts(parts);
+  const diff = fan.followDiff(data);
+  process.stdout.write(JSON.stringify({
+    diff: diff,
+    masked: fan.followDiffHtml(diff, {masked: true, rows: spec.rows || []}),
+    open: fan.followDiffHtml(diff, {masked: false, rows: spec.rows || []}),
+    kinds: parts.map(function (part) { return fan.fileKind(part.name, part.text); }),
+    followers: Object.keys(data.followers).sort(),
+    following: Object.keys(data.following).sort()
+  }));
+  process.exit(0);
+}
 if (process.argv[2] === "kinds") {
   const jobs = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
   const parts = jobs.map(function (job) {
