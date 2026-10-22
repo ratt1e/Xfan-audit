@@ -51,7 +51,7 @@ class TestSpecExample(unittest.TestCase):
 class TestAuditSample(unittest.TestCase):
     def setUp(self):
         self.out = tempfile.mkdtemp()
-        audit.main(["--data", os.path.join(ROOT, "sample_data"), "--out", self.out])
+        audit.main(["--data", os.path.join(ROOT, "sample_data"), "--tz", "America/Los_Angeles", "--out", self.out])
         with open(os.path.join(self.out, "accounts.csv"), encoding="utf-8-sig") as f:
             self.rows = {r["account"]: r for r in csv.DictReader(f)}
 
@@ -98,7 +98,7 @@ class TestAuditSample(unittest.TestCase):
     def test_cli_one_liner(self):
         out = tempfile.mkdtemp()
         p = subprocess.run([sys.executable, os.path.join(ROOT, "audit.py"), "--data", os.path.join(ROOT, "sample_data"),
-                            "--out", out], capture_output=True, text=True)
+                            "--tz", "America/Los_Angeles", "--out", out], capture_output=True, text=True)
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn("计分覆盖 28 天，无数据 2 天", p.stdout)
         self.assertIn("20 个账号", p.stdout)
@@ -126,7 +126,7 @@ class TestAuditSample(unittest.TestCase):
         with open(path, "w", encoding="utf-8") as f:
             json.dump(conf, f)
         out = tempfile.mkdtemp()
-        audit.main(["--data", os.path.join(ROOT, "sample_data"), "--out", out, "--config", path])
+        audit.main(["--data", os.path.join(ROOT, "sample_data"), "--tz", "America/Los_Angeles", "--out", out, "--config", path])
         with open(os.path.join(out, "accounts.csv"), encoding="utf-8-sig") as f:
             rows = {r["account"]: r for r in csv.DictReader(f)}
         self.assertEqual(rows["user_01"]["stars"], "4")

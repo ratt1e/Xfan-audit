@@ -4,19 +4,23 @@
 
 ## 多天参数
 
-单目录模式：将 CSV 文件放入 `data/` 目录，执行 `python3 audit.py`。该模式与 `--data-root` 及网页拖拽版遵循完全一致的规则：凡是没有互动时间戳、亦无点赞首次观察记录的日期均视为「无数据」，不计入持续性得分的分母，最终分析结果中会明确注明计分覆盖的有效天数。以 `sample_data` 查询最近 30 天（2026-09-20 ~ 2026-10-19）为例，实际计分覆盖 28 天，判定为无数据 2 天；分层结果依然保持：金牌 3、银牌 2、他常来 2、我常去 1、沉睡 3、样本不足 3、其他有分 4、零互动 2。当选定区间内每日均有数据记录时，分母与自然日历天数完全一致。若已经搭建了每日采集归档，可使用下述进阶参数。
+单目录模式：将 CSV 文件放入 `data/` 目录，执行 `python3 audit.py`。该模式与 `--data-root` 及网页拖拽版遵循完全一致的规则：凡是没有互动时间戳、亦无点赞首次观察记录的日期均视为「无数据」，不计入持续性得分的分母，最终分析结果中会明确注明计分覆盖的有效天数。以 `sample_data` 在 `America/Los_Angeles` 下查询最近 30 天（2026-09-20 ~ 2026-10-19）为例，实际计分覆盖 28 天，判定为无数据 2 天；分层结果依然保持：金牌 3、银牌 2、他常来 2、我常去 1、沉睡 3、样本不足 3、其他有分 4、零互动 2。这组假数据的时间大多是 UTC 17:00，太平洋时间仍是同一天。别的时区若跨过午夜，按天归属会不同。当选定区间内每日均有数据记录时，分母与自然日历天数完全一致。若已经搭建了每日采集归档，可使用下述进阶参数。
 
-常用参数：`--data 目录`、`--out 目录`、`--overwrite`（只覆盖本工具自己的旧结果）、`--days 30`、`--all-days`（全部互动日期）、`--end 2026-10-19`、`--me 你的用户名`（排除自己回自己）、`--config config.json`、`--prev-lists 旧名单目录`（增加「关注变化」章节，不指定则看板与此前保持一致）、`--keep-list 保留名单.txt`（在未回关名单中排除主动关注的人）。
+日期按 IANA 时区切。优先级：`--tz`、`config.json` 的 `window.timezone`、系统本地时区。配置里的时区留空，不再默认洛杉矶。网页版默认用浏览器时区，页面显示「当前时区：…」，也可以手动改。生成的看板写明本次时区，改日期重算时用同一个时区。`scripts/follow_diff.py` 只对比名单，没有 `--tz`。
 
-`dashboard.html` 与 `dashboard_public.html` 顶部支持自定义开始、结束日期，或快捷点击「最近 7 天 / 30 天 / 全部」。初次打开时展示本次计算的完整区间，各项数值与终端输出完全一致。切换日期后将调用与 `web/index.html` 相同的本地脚本实时重算，无数据日期不计入持续性得分分母。两份看板均为独立的单文件 HTML，不向外部网络发起任何请求。私有版嵌入真实用户名；脱敏打码版仅嵌入代号，不包含真实用户名、用户 ID、推文正文及主页链接。未回关名单的成员不随日期变更，但其互动次数、综合评分与分层结果会按新区间动态重算。「关注变化」始终呈现两份名单的差异对比，成员名单固定。
+常用参数：`--data 目录`、`--out 目录`、`--overwrite`（只覆盖本工具自己的旧结果）、`--days 30`、`--all-days`（全部互动日期）、`--end 2026-10-19`、`--tz Asia/Shanghai`、`--open`（用系统浏览器打开 `dashboard.html`，中文和空格路径可用）、`--me 你的用户名`（排除自己回自己）、`--config config.json`、`--prev-lists 旧名单目录`（增加「关注变化」章节，不指定则看板与此前保持一致）、`--auto-prev`（在名单目录里自动找上一份导出；不与 `--prev-lists` 同用）、`--keep-list 保留名单.txt`（在未回关名单中排除主动关注的人）。
+
+自己打开看板：macOS 用 `open output/dashboard.html`，Windows 命令提示符用 `start "" "output\dashboard.html"`，PowerShell 用 `Start-Process "output\dashboard.html"`，Linux 用 `xdg-open output/dashboard.html`。路径有空格时加引号。
+
+`dashboard.html` 与 `dashboard_public.html` 顶部支持自定义开始、结束日期、时区，或快捷点击「最近 7 天 / 30 天 / 全部」。初次打开时展示本次计算的完整区间和「当前时区」，各项数值与终端输出完全一致。切换日期后将调用与 `web/index.html` 相同的本地脚本实时重算，无数据日期不计入持续性得分分母。两份看板均为独立的单文件 HTML，不向外部网络发起任何请求。私有版嵌入真实用户名；脱敏打码版仅嵌入代号，不包含真实用户名、用户 ID、推文正文及主页链接。私人看板另有「打码模式」开关，打开后这一页上的账号名改成「账号#01」、去掉主页链接，改日期后仍然打码。状态记在地址 `#mask` 和浏览器本地存储 `fan-audit-mask`。开关只改变显示，`dashboard.html` 文件里仍有真实账号名，不能外发。要外发请用 `dashboard_public.html`。未回关名单的成员不随日期变更，但其互动次数、综合评分与分层结果会按新区间动态重算。「关注变化」始终呈现两份名单的差异对比，成员名单固定。
 
 ```bash
-python3 audit.py --data-root ~/x-data/ --lists ~/x-lists/ --me 你的用户名 --out ~/x-data/_看板/ --overwrite
+python3 audit.py --data-root ~/x-data/ --lists ~/x-lists/ --me 你的用户名 --tz Asia/Shanghai --auto-prev --out ~/x-data/_看板/ --overwrite --open
 ```
 
-`--data-root` 用于合并多天的 `interactions.csv` 文件。`--lists` 仅读取 `following.csv` 和 `followers.csv`，不会读取该目录中的回复数据。环境变量 `FAN_AUDIT_DATA_ROOT` 等效于 `--data-root`；若显式指定了 `--data` 则切换回单目录模式，不再受该环境变量影响。
+把 `--tz` 换成自己的 IANA 时区；太平洋时区用 `America/Los_Angeles`。`--data-root` 用于合并多天的 `interactions.csv` 文件。`--lists` 仅读取关系名单，不会读取该目录中的回复数据。环境变量 `FAN_AUDIT_DATA_ROOT` 等效于 `--data-root`；若显式指定了 `--data` 则切换回单目录模式，不再受该环境变量影响。
 
-每日分析结果必须输出至仓库外部目录，并会额外生成一份仅供个人查阅的 `名单.md`。若未添加 `--overwrite` 参数，遇到已存在的同名输出将直接拒绝覆盖。`--overwrite` 参数仅会替换本工具生成的 `dashboard.html`、`dashboard_public.html`、`accounts.csv`、`名单.md`、`没回关.md` 和 `没回关.csv`；若目录下存在其他文件，程序将立即报错终止，不会删除任何文件。此外，仓库内部以及日期输入目录始终禁止写入。
+每日分析结果必须输出至仓库外部目录，并会额外生成一份仅供个人查阅的 `名单.md`。若未添加 `--overwrite` 参数，遇到已存在的同名输出将直接拒绝覆盖。`--overwrite` 参数仅会替换本工具生成的 `dashboard.html`、`dashboard_public.html`、`accounts.csv`、`名单.md`、`没回关.md`、`没回关.csv`、`lists_snapshot.json` 和 `follow_summary.json`；若目录下存在其他文件，程序将立即报错终止，不会删除任何文件。此外，仓库内部以及日期输入目录始终禁止写入。
 
 采集目录、额度和覆盖天数的说明见 [DAILY_COLLECT.md](DAILY_COLLECT.md#多天一起分析)。
 
@@ -30,7 +34,9 @@ python3 scripts/follow_diff.py --old ~/x-lists-old/ --new ~/x-lists/ --out ~/x-d
 
 `--old` 与 `--new` 目录下放置 `following.csv`、`followers.csv`，或 twitter-web-exporter 导出的原始 JSON 文件（文件名包含「正在关注 / Following」「关注者 / Followers」即可自动识别）。也可以使用 `--old-following`、`--old-followers`、`--new-following`、`--new-followers` 分别指定文件路径。具体账号名仅写入 `--out` 目录下的 `关注变化.md`，终端控制台仅打印四组统计人数：取关我的、新粉丝、我取关的、我新关注的。
 
-`audit.py` 在指定 `--prev-lists 旧名单目录` 参数后，看板末尾会自动增加「关注变化」板块，展示上述四组数据。新名单直接采用本次的 `--lists` 目录，或单目录模式下的 `following.csv` 与 `followers.csv`。若未指定该参数，看板中不会出现该板块。脱敏版 `dashboard_public.html` 会将这些账号统一转换为「账号#01」格式，与主名单共享同一套编号体系。该板块仅展示于看板中，不单独生成文件。
+`audit.py` 在指定 `--prev-lists 旧名单目录` 参数后，看板末尾会自动增加「关注变化」板块，展示上述四组数据。新名单直接采用本次的 `--lists` 目录，或单目录模式下的 `following.csv` 与 `followers.csv`。若未指定该参数，也没有 `--auto-prev`，看板中不会出现该板块。
+
+`--auto-prev` 不用手写旧目录。它在名单目录的这一层（不进子目录）按文件名中的 13 位毫秒或文件修改时间找导出。同一角色在 12 小时内的文件算同一次，同一次优先 CSV。最新的正在关注与最新的关注者配成当前名单，上一对作为旧名单。目录里有两代及以上时以目录为准。只有一代时，把用户 ID 和用户名写入 `--out/lists_snapshot.json`。文件后来变了，就和这份快照比；文件没变、而且快照里已经有上一次对比，就沿用那一次，并写明两份导出的时间，不会写成没有变化。只有一份且没有旧快照时，看板提示「只有一份名单，下次导出后会自动对比。」。终端仍打印四个人数，并写出只含人数的 `follow_summary.json`。快照含真实用户名，只留在 `--out`，已被忽略规则挡住，不要提交或外发。导出时间标签用运行命令的电脑本地时间，计分日期仍按 `--tz`。脱敏版 `dashboard_public.html` 会将这些账号统一转换为「账号#01」格式，与主名单共享同一套编号体系。该板块仅展示于看板中，不单独生成带账号名的 Markdown。
 
 网页版只需将旧名单一并拖入浏览器，在对应文件的「识别为」下拉框中选择「旧·关注者」或「旧·正在关注」即可。若文件名中包含「旧」或 `old` / `prev`，页面会自动预选。打码模式同样对该板块生效，所有计算均在本地浏览器内完成。
 

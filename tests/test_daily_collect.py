@@ -177,10 +177,10 @@ class TestLikes(Base):
         # 第二天再采：保留最早的 first_observed_at；新出现的赞不是 baseline
         raw2 = os.path.join(os.path.dirname(self.raw), "2026-10-20")
         os.makedirs(raw2)
-        with open(os.path.join(raw2, "posts_p1.json"), "w") as f:
+        with open(os.path.join(raw2, "posts_p1.json"), "w", encoding="utf-8") as f:
             json.dump(page([post]), f)
         likers["data"].append({"id": "202", "username": "user_002"})
-        with open(os.path.join(raw2, "likers_1000.json"), "w") as f:
+        with open(os.path.join(raw2, "likers_1000.json"), "w", encoding="utf-8") as f:
             json.dump(likers, f)
         rows2, _ = self.run_dc(observed="2026-10-20T14:00:00Z", raw=raw2)
         self.assertEqual(rows2["like:in:201:1000"]["first_observed_at"], "2026-10-19T14:00:00Z")

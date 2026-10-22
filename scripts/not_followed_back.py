@@ -100,8 +100,10 @@ def assemble(following, followers, rows, keep_ids=(), keep_handles=()):
     return {"ready": True, "items": items, "note": ""}
 
 
-def build(lists_dir, rows, keep_path=None):
-    if not lists_dir:
+def build(lists_dir, rows, keep_path=None, indexes=None):
+    if indexes is not None:
+        following, followers = indexes
+    elif not lists_dir:
         following = followers = None
     else:
         following = follow_diff.load_role(lists_dir, None, "following")

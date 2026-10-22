@@ -241,8 +241,12 @@ class TestDailyRoot(unittest.TestCase):
                                self.row(id="like:1", tweet_id="", type="like", ts="", post_id="9100005",
                                         post_created_at="2026-10-02T12:00:00Z",
                                         first_observed_at="2026-10-03T12:00:00Z")])
-        result = self.cli("--data-root", self.daily, "--all-days", "--out", self.base / "out")
+        result = self.cli("--data-root", self.daily, "--all-days", "--tz", "America/Los_Angeles",
+                          "--out", self.base / "out")
         self.assertIn("2026-09-30 ~ 2026-10-03", result.stdout)
+        shanghai = self.cli("--data-root", self.daily, "--all-days", "--tz", "Asia/Shanghai",
+                            "--out", self.base / "shanghai")
+        self.assertIn("2026-10-01 ~ 2026-10-03", shanghai.stdout)
 
     def test_uncovered_days_do_not_count_as_inactivity(self):
         rows = []

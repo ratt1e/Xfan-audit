@@ -29,8 +29,9 @@ def find_node():
     return ""
 
 
-def python_rows(end, days, all_days):
+def python_rows(end, days, all_days, tz="America/Los_Angeles"):
     conf, cfg = audit.rs.load_config(str(ROOT / "config.json"))
+    conf.setdefault("window", {})["timezone"] = tz
     data = audit.load_inputs(str(ROOT / "sample_data"))
     res, meta = audit.analyze(data, conf, cfg, end, days, all_days)
     rows = []
@@ -45,13 +46,13 @@ def python_rows(end, days, all_days):
     return rows, meta
 
 
-def node_rows(end, days, all_days):
+def node_rows(end, days, all_days, tz="America/Los_Angeles"):
     node = find_node()
     if not node:
         raise AssertionError("找不到 node，无法核对网页打分")
     env = dict(os.environ)
     out = subprocess.check_output(
-        [node, str(ROOT / "tests/web_score_runner.mjs"), end, str(days), "1" if all_days else "0"],
+        [node, str(ROOT / "tests/web_score_runner.mjs"), end, str(days), "1" if all_days else "0", tz],
         cwd=str(ROOT), env=env)
     return json.loads(out)
 
@@ -63,14 +64,16 @@ def same(got, exp):
 
 
 class TestWebScore(unittest.TestCase):
-    def match(self, end, days, all_days):
-        web = node_rows(end, days, all_days)
+    def match(self, end, days, all_days, tz="America/Los_Angeles"):
+        web = node_rows(end, days, all_days, tz)
         conf = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
         for key in ("weights", "persistence", "greeting_cap", "likes", "insufficient", "stars", "tiers", "exclude_accounts"):
             self.assertEqual(web["config"][key], conf[key])
         self.assertEqual(web["config"]["greetings"]["words"], conf["greetings"]["words"])
         self.assertEqual(web["config"]["window"]["timezone"], conf["window"]["timezone"])
-        expected, meta = python_rows(end, days, all_days)
+        self.assertEqual(web["meta"]["tz"], tz)
+        expected, meta = python_rows(end, days, all_days, tz)
+        self.assertEqual(meta["tz"], tz)
         self.assertEqual(web["meta"]["start"], meta["start"])
         self.assertEqual(web["meta"]["end"], meta["end"])
         self.assertEqual(web["meta"]["covered"], len(meta["covered_days"]))
@@ -96,6 +99,9 @@ class TestWebScore(unittest.TestCase):
         html = (ROOT / "web/index.html").read_text(encoding="utf-8")
         self.assertIn("数据只在你的浏览器里处理，不会上传", html)
         self.assertIn("打码模式", html)
+        self.assertIn('id="tz"', html)
+        self.assertIn("当前时区：", html)
+        self.assertIn("defaultTimeZone", html)
         self.assertIn('type="file" multiple', html)
         self.assertIn("<select data-idx=", html)
         self.assertIn("请选择", html)

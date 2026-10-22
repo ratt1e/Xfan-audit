@@ -16,7 +16,7 @@
 2. **每天的互动**：Grok Bot 用 X 的只读接口抓取原始 JSON，再由 `scripts/daily_collect.py` 整理成 `interactions.csv`。接口、额度和目录说明看 [docs/DAILY_COLLECT.md](DAILY_COLLECT.md)。
 3. **计算**：用 `audit.py --data-root` 合并多天的 `interactions.csv`；`--lists` 只读那两张关系表，用来判断谁互关了、谁是沉睡互关。
 
-如果没有 Grok Bot，也可以用同一个插件把互动导出成 CSV 代替。不过插件只能记录你自己亲自滚屏浏览过的内容，通常只能拿到单向数据。少了一个方向的数据，互动条数、总分和分层结果都会偏低。
+如果没有 Grok Bot，也可以用同一个插件把互动导出成 CSV 代替。不过插件只能记录你自己亲自滚屏浏览过的内容，通常只能拿到单向数据。只导出「用户推文」时，拿到的是你自己发出的那一半；要补别人回你的，再导出一份搜索 `to:你的用户名` 的结果。两边都可能因为没滚到底或被限流而缺记录。少了一个方向的数据，互动条数、总分和分层结果都会偏低。
 
 ### 合理使用
 
@@ -44,15 +44,36 @@
 
 ### 每天看看板
 
-每次采集完，在本地跑一次 `audit.py`，把带账号名的完整版 `dashboard.html` 输出到仓库外的固定目录。用浏览器打开它、存个书签，以后每天点开书签就能看到最新的分析看板。
+每次采集完，在本地跑一次 `audit.py`，把带账号名的完整版 `dashboard.html` 输出到仓库外的固定目录。用浏览器打开它、存个书签，以后每天点开书签就能看到最新的分析看板。`--auto-prev` 自动对比关注和粉丝名单，`--open` 在生成后打开看板。
 
 ```bash
-python3 audit.py --data-root ~/x-data/ --lists ~/x-lists/ --me 你的用户名 --out ~/x-data/_看板/ --overwrite
+python3 audit.py --data-root ~/x-data/ --lists ~/x-lists/ --me 你的用户名 --tz Asia/Shanghai --auto-prev --out ~/x-data/_看板/ --overwrite --open
 ```
 
-带真实账号名的看板、`accounts.csv`、`名单.md` 和未回关名单，全都只留在你自己的电脑上。千万别发到公网或者传上公开网盘。要是想发出来分享，请用打码版的 `dashboard_public.html` 截图。
+把 `--tz` 换成你的 IANA 时区。人在太平洋时区就写 `America/Los_Angeles`。上面的路径都是占位，换成你自己的目录。`--auto-prev` 不要和 `--prev-lists` 一起用。没加 `--auto-prev` 时，看板仍然要写了 `--prev-lists` 才出现「关注变化」。
 
-`--overwrite` 参数只会替换这个目录下本工具生成的文件：`dashboard.html`、`dashboard_public.html`、`accounts.csv`、`名单.md`、`没回关.md` 和 `没回关.csv`。如果目录里有其他不相干的文件，命令会直接报错停下，不会乱删东西。不加 `--overwrite` 的话，发现已经有输出文件就会拒绝覆盖。另外，仓库里面和放原始数据的目录永远不会被写入。
+自动对比看两处。名单目录里，同一个角色有多份导出时，按文件名里的 13 位毫秒，没有就用文件修改时间，从新到旧排队。12 小时以内算同一次导出，同一次里优先用 CSV。最新的「正在关注」配最新的「关注者」，上一对就是旧名单。只看这一层，不读子目录。目录里已经有两代时，以目录为准。只有一份名单时，把当前名单的用户 ID 和用户名写进 `--out` 的 `lists_snapshot.json`（没有简介）。下次同一个文件被盖掉，或换成新导出，就和这份快照比。
+
+关系文件没有新的导出、而且上次已经对比过时，看板沿用那一次的结果，并写明是哪两份导出，不会显示成「没有变化」。只有一份、还没有旧快照时，看板写「只有一份名单，下次导出后会自动对比。」，这不是报错。终端打印四个人数：取关我的、新粉丝、我取关的、我新关注的，并打印只含人数的 `follow_summary.json` 路径。这两份 JSON 只留在 `--out`，不要提交，也不要外发。对比上的导出时间用运行命令这台电脑的本地时间，不跟 `--tz` 走。`--tz` 只决定互动按哪个时区切天。
+
+`--open` 用 Python 自带的浏览器模块打开刚生成的 `dashboard.html`，路径里有中文或空格也能用。也可以自己打开：
+
+```bash
+# macOS
+open ~/x-data/_看板/dashboard.html
+# Windows 命令提示符
+start "" "%USERPROFILE%\x-data\_看板\dashboard.html"
+# Windows PowerShell
+Start-Process "$env:USERPROFILE\x-data\_看板\dashboard.html"
+# Linux
+xdg-open ~/x-data/_看板/dashboard.html
+```
+
+路径里有空格时加上引号。脚本读写文件都显式用 UTF-8。时区优先级是 `--tz`、然后 `config.json` 里的 `timezone`、最后才是这台电脑的本地时区。配置里的时区留空，不再默认洛杉矶。网页版默认用浏览器时区，页面上有「当前时区：…」，也可以改成别的 IANA 名称。生成的两份看板会写明这次用的时区；在页面里改日期时，仍按这个时区重算。Windows 上如果 Python 没有 IANA 时区数据，`--tz` 会报「时区无效，请用 IANA 名称，例如 Asia/Shanghai」，报错里不带路径。`scripts/follow_diff.py` 只对比两份名单，不按天切，所以没有 `--tz`。`scripts/daily_collect.py --tz` 只把时区写进快照，文件夹日期仍用目录名。
+
+带真实账号名的看板、`accounts.csv`、`名单.md`、未回关名单和 `lists_snapshot.json`，全都只留在你自己的电脑上。千万别发到公网或者传上公开网盘。私人看板 `dashboard.html` 上的「打码模式」只改这一页的显示：账号名换成「账号#01」，主页链接去掉，改日期重算后仍然打码。开关记在地址 `#mask` 和浏览器本地存储里。文件里仍有真实账号名，所以这个开关不能拿来外发。要发出来，请用 `dashboard_public.html`，那个文件从一开始就没有真实名。
+
+`--overwrite` 参数只会替换这个目录下本工具生成的文件：`dashboard.html`、`dashboard_public.html`、`accounts.csv`、`名单.md`、`没回关.md`、`没回关.csv`、`lists_snapshot.json` 和 `follow_summary.json`。如果目录里有其他不相干的文件，命令会直接报错停下，不会乱删东西。不加 `--overwrite` 的话，发现已经有输出文件就会拒绝覆盖。另外，仓库里面和放原始数据的目录永远不会被写入。
 
 ### Python 命令行
 
@@ -60,9 +81,14 @@ python3 audit.py --data-root ~/x-data/ --lists ~/x-lists/ --me 你的用户名 -
 # 1. 下载
 git clone https://github.com/ratt1e/Xfan-audit.git fan-audit && cd fan-audit      # 或者下载 zip 解压
 
-# 2. 先用假数据跑一遍（1 秒）
-python3 audit.py --data sample_data
-#    打开 output/dashboard.html 看效果
+# 2. 先用假数据跑一遍（1 秒）。这组人数是 America/Los_Angeles 下的结果
+python3 audit.py --data sample_data --tz America/Los_Angeles
+#    打开看板：
+#      macOS: open output/dashboard.html
+#      Windows 命令提示符: start "" "output\dashboard.html"
+#      Windows PowerShell: Start-Process "output\dashboard.html"
+#      Linux: xdg-open output/dashboard.html
+#    也可以在上面的命令末尾加 --open
 #    请求 30 天，计分覆盖 28 天，无数据 2 天
 #    金牌 3，银牌 2，他常来 2，我常去 1，沉睡 3，样本不足 3，其他有分 4，零互动 2
 
@@ -76,8 +102,8 @@ python3 audit.py
 
 | 文件 | 内容 |
 |---|---|
-| `dashboard.html` | 看板：跟网页版一样可以自由选日期，刚打开会显示这次计算的完整时间段。每个分层都有能点击的数字卡片，点一下展开名单。用户名直接连到主页。**带真实账号名，留着自己看** |
-| `dashboard_public.html` | 同款看板的打码版。选日期功能完全可用，里面全是「账号#01」这样的代号，去掉了主页链接，可以放心截图对外分享 |
+| `dashboard.html` | 看板：跟网页版一样可以自由选日期，刚打开会显示这次计算的完整时间段。每个分层都有能点击的数字卡片，点一下展开名单。用户名直接连到主页。**带真实账号名，留着自己看**。有「打码模式」开关，打开后显示成「账号#01」并去掉主页链接；这只是显示，文件里仍有真实名 |
+| `dashboard_public.html` | 同款看板的打码版。选日期功能完全可用，里面全是「账号#01」这样的代号，去掉了主页链接，可以放心截图对外分享。它和上面的开关不同：这个文件里没有真实名 |
 | `accounts.csv` | 每个账号一行：记着分层、星级、总分和各项打分明细 |
 | `没回关.md`、`没回关.csv` | 我关注了但没回关我的名单。带主页链接，**留着自己看**。打码版看板里这一块不会放链接 |
 

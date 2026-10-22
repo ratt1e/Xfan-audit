@@ -20,6 +20,8 @@ interactions.csv
 !examples/relationship/interactions.csv
 accounts.csv
 dashboard*.html
+lists_snapshot.json
+follow_summary.json
 gold_users*
 notes.csv
 # 密钥

@@ -106,6 +106,8 @@ def scan(repo, names, texts, allow_ids=()):
                              + r")(?![A-Za-z0-9_])", re.I)
     for rel in tracked_files(repo):
         p = os.path.join(repo, rel)
+        if os.path.basename(rel) == "lists_snapshot.json":
+            findings.append((rel, 1, "关系名单快照含真实账号名", "lists_snapshot.json"))
         if os.path.splitext(rel)[1].lower() in BINARY_EXT or not os.path.isfile(p):
             continue
         try:

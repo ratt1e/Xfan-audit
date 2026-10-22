@@ -467,7 +467,7 @@ def validate(raw, rows, stats, filled, lookup, me_id, window_hours, now):
     return warns, missing, window, cov, chain, inc_inbound
 
 
-def snapshot(raw, rows, stats, warns, missing, window, cov, chain, inc_inbound, date):
+def snapshot(raw, rows, stats, warns, missing, window, cov, chain, inc_inbound, date, timezone_name=""):
     talk = [r for r in rows if r["type"] != "like"]
     by = Counter(f"{r['direction']}_{r['type']}" for r in rows)
     accounts = {d: len({r["account_id"] for r in rows if r["direction"] == d}) for d in ("in", "out")}
@@ -475,6 +475,7 @@ def snapshot(raw, rows, stats, warns, missing, window, cov, chain, inc_inbound, 
                {r["account_id"] for r in rows if r["direction"] == "out"})
     snap = {
         "date": date,
+        "timezone": timezone_name,
         "note": "不含任何账号名，只有计数和比例。",
         "profile_public_metrics": (raw.profile or {}).get("public_metrics"),
         "pages": {k: sum(1 for p in raw.pages if p["kind"] == k) for k in sorted({p["kind"] for p in raw.pages})},
@@ -522,8 +523,22 @@ def main(argv=None):
     ap.add_argument("--exclude", default="grok", help="逗号分隔，默认 grok")
     ap.add_argument("--window-hours", type=float, default=0, help="目标窗口小时数，用于提示覆盖不够")
     ap.add_argument("--observed-at", help="采集时间（UTC ISO），默认现在")
-    ap.add_argument("--date", help="快照日期标签，默认 raw-dir 目录名")
+    ap.add_argument("--date", help="快照日期标签，默认 raw-dir 目录名。请按 --tz 的本地日期命名，本参数不改这个默认")
+    ap.add_argument("--tz", help="IANA 时区名，写入快照。优先级：--tz、config.json 的 timezone、系统本地时区")
     a = ap.parse_args(argv)
+    configured = ""
+    if a.greetings and str(a.greetings).endswith(".json") and os.path.exists(a.greetings):
+        try:
+            with open(a.greetings, encoding="utf-8") as fh:
+                configured = ((json.load(fh).get("window") or {}).get("timezone")) or ""
+        except (OSError, json.JSONDecodeError, AttributeError):
+            configured = ""
+    import relationship_stars as stars
+    try:
+        tz_name = stars.resolve_timezone_name(a.tz, configured)
+        stars.zone(tz_name)
+    except ValueError as exc:
+        ap.error(str(exc))
 
     now = datetime.now(timezone.utc)
     observed_at = a.observed_at or fmt_dt(now)
@@ -550,7 +565,7 @@ def main(argv=None):
         f.write("\n".join("⚠ " + x for x in warns) + "\n")
 
     date = a.date or os.path.basename(os.path.normpath(a.raw_dir))
-    snap = snapshot(raw, rows, stats, warns, missing, window, cov, chain, inc_inbound, date)
+    snap = snapshot(raw, rows, stats, warns, missing, window, cov, chain, inc_inbound, date, tz_name)
     os.makedirs(a.snapshot_dir, exist_ok=True)
     with open(os.path.join(a.snapshot_dir, "snapshot.json"), "w", encoding="utf-8") as f:
         json.dump(snap, f, ensure_ascii=False, indent=1)
@@ -568,7 +583,7 @@ def main(argv=None):
     for x in warns:
         print("⚠ " + x, file=sys.stderr)
     print(f"interactions: {len(rows)} 行 -> {out_csv}", file=sys.stderr)
-    print(f"快照 -> {os.path.join(a.snapshot_dir, 'snapshot.json')}；下一晚 since_id: {prev}", file=sys.stderr)
+    print(f"快照 -> {os.path.join(a.snapshot_dir, 'snapshot.json')}（时区 {tz_name}，日期标签 {date}）；下一晚 since_id: {prev}", file=sys.stderr)
     return 0
 
 

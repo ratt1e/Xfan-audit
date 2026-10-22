@@ -34,10 +34,13 @@ if (process.argv[2] === "dashboard") {
   const opt = {
     me: payload.me || "",
     config: payload.config,
-    masked: !!payload.masked,
+    masked: !!payload.masked || !!extra.masked,
     showAll: true,
     gapsAreEmpty: true
   };
+  const embeddedTz = (payload.config && payload.config.window && payload.config.window.timezone) || payload.tz || "";
+  if (extra.tz) opt.tz = extra.tz;
+  else if (embeddedTz) opt.tz = embeddedTz;
   if (extra.allDays) opt.allDays = true;
   else if (extra.latest) {
     opt.days = extra.days;
@@ -69,6 +72,25 @@ if (process.argv[2] === "dashboard") {
       notes: result.diff.notes || []
     } : null
   }));
+  process.exit(0);
+}
+if (process.argv[2] === "score") {
+  const spec = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+  try {
+    const result = fan.analyze(spec.data, spec.options || {});
+    const keys = ["account", "tier", "status", "score", "raw", "active_days"];
+    process.stdout.write(JSON.stringify({
+      ok: true,
+      meta: result.meta,
+      rows: (result.rows || []).map(function (row) {
+        const out = {};
+        keys.forEach(function (key) { out[key] = row[key] == null ? null : row[key]; });
+        return out;
+      })
+    }));
+  } catch (err) {
+    process.stdout.write(JSON.stringify({ok: false, error: String(err && err.message || err)}));
+  }
   process.exit(0);
 }
 if (process.argv[2] === "board") {
@@ -162,7 +184,8 @@ const data = fan.loadTexts([
 const end = process.argv[2];
 const days = Number(process.argv[3]);
 const allDays = process.argv[4] === "1";
-const result = fan.analyze(data, {end: end, days: days, allDays: allDays, gapsAreEmpty: true});
+const tz = process.argv[5] || "";
+const result = fan.analyze(data, {end: end, days: days, allDays: allDays, gapsAreEmpty: true, tz: tz});
 const keys = ["account", "tier", "status", "score", "stars", "O", "I", "O_raw", "I_raw", "rounds", "sub_days", "P", "B", "R", "action", "priority", "mutual", "verified"];
 const rows = result.rows.map(function (row) {
   const out = {};

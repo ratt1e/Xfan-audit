@@ -61,15 +61,27 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
 <button type="button" id="d7" data-mode="7">最近 7 天</button>
 <button type="button" id="d30" data-mode="30">最近 30 天</button>
 <button type="button" id="dall" data-mode="all">全部</button>
+<label>时区<input id="tz" type="text" list="tz-list" autocomplete="off" spellcheck="false"></label>
+<datalist id="tz-list">
+<option value="America/Los_Angeles"></option>
+<option value="America/New_York"></option>
+<option value="America/Chicago"></option>
+<option value="Europe/London"></option>
+<option value="Europe/Paris"></option>
+<option value="Asia/Shanghai"></option>
+<option value="Asia/Tokyo"></option>
+<option value="UTC"></option>
+</datalist>
 <button type="button" id="mask">打码模式</button>
 <button type="button" id="clear">清空</button>
 </div>
+<p class="sub" id="tz-label">当前时区：</p>
 <div id="out"></div>
 <footer>fan-audit 网页版 · 建议仅供参考，工具不会代你执行点赞、关注、取关或发帖等任何操作</footer>
 <script id="fan-audit-engine">
 (function (root) {
   var CONFIG = {
-    window: {days: 30, timezone: "America/Los_Angeles"},
+    window: {days: 30, timezone: ""},
     weights: {persistence: 0.40, bidirectional: 0.35, rounds: 0.25},
     persistence: {alpha: 0.30, greet_day: 0.2, greet_day_cap: 1.0},
     greeting_cap: {share: 0.8, max_score: 39.9},
@@ -113,6 +125,24 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
     else if (!/[zZ]$/.test(t) && !/[+-]\d{2}:?\d{2}$/.test(t)) t += "Z";
     var d = new Date(t);
     return isNaN(d.getTime()) ? null : d;
+  }
+  function defaultTimeZone() {
+    try {
+      var zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      if (zone) return zone;
+    } catch (err) {}
+    return "UTC";
+  }
+  function resolveZone(options) {
+    var configured = CONFIG.window && CONFIG.window.timezone ? String(CONFIG.window.timezone).trim() : "";
+    var picked = options && options.tz ? String(options.tz).trim() : "";
+    var tz = picked || configured || defaultTimeZone();
+    try {
+      new Intl.DateTimeFormat("en-US", {timeZone: tz}).format(new Date());
+    } catch (err) {
+      throw new Error("时区无效，请填 IANA 名称，例如 Asia/Shanghai");
+    }
+    return tz;
   }
   function localDay(date, tz) {
     var parts = new Intl.DateTimeFormat("en-US", {timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit"}).formatToParts(date);
@@ -330,7 +360,7 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
   }
   function analyze(data, options) {
     options = options || {};
-    var tz = CONFIG.window.timezone;
+    var tz = resolveZone(options);
     var words = CONFIG.greetings.words, maxLen = CONFIG.greetings.max_core_len;
     var me = norm(options.me || "");
     var excl = {"grok": 1};
@@ -391,7 +421,7 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
     var span = [];
     for (var i = 0; i <= dayNum(end) - dayNum(start); i++) span.push(addDays(start, i));
     var covered = observed ? span.filter(function (d) { return observed[d]; }) : span.slice();
-    return {rows: res, meta: {start: start, end: end, days: days, covered: covered.length, uncovered: span.length - covered.length, gapsAreEmpty: !!options.gapsAreEmpty}};
+    return {rows: res, meta: {start: start, end: end, days: days, tz: tz, covered: covered.length, uncovered: span.length - covered.length, gapsAreEmpty: !!options.gapsAreEmpty}};
   }
   function usersFrom(records) {
     var map = {};
@@ -757,6 +787,13 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
     return bad;
   }
   function followDiff(data) {
+    if (data && data.followAuto && data.followAuto.waiting) {
+      var waitingNote = data.followAuto.note || "";
+      return {
+        unfollowed_me: null, new_followers: null, i_unfollowed: null, i_followed: null,
+        notes: waitingNote ? [waitingNote] : [], collisions: {}, ready: false
+      };
+    }
     if (!data || (!data.sawPrevFollowers && !data.sawPrevFollowing)) return null;
     var notes = [];
     var unfollowed = null, fresh = null, dropped = null, added = null;
@@ -772,6 +809,7 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
       dropped = onlyIn(oldFol, newFol);
       added = onlyIn(newFol, oldFol);
     } else notes.push("没有同时找到旧的和新的正在关注，我取关的和我新关注的先不算");
+    if (data.followAuto && data.followAuto.note) notes.unshift(data.followAuto.note);
     return {
       unfollowed_me: unfollowed, new_followers: fresh, i_unfollowed: dropped, i_followed: added,
       notes: notes, collisions: collisionMap([unfollowed, fresh, dropped, added]),
@@ -926,6 +964,7 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
     options = options || {};
     applyConfig(options.config);
     var opt = {me: options.me || "", gapsAreEmpty: options.gapsAreEmpty !== false};
+    if (options.tz) opt.tz = options.tz;
     if (options.allDays) opt.allDays = true;
     else {
       if (options.end) opt.end = options.end;
@@ -950,7 +989,7 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
     if (diff) html += followDiffHtml(diff, {masked: !!options.masked, rows: rows});
     return {html: html, rows: rows, meta: result.meta, back: back, diff: diff};
   }
-  root.FanAudit = {CONFIG: CONFIG, TIERS: TIERS, analyze: analyze, loadTexts: loadTexts, parseCsv: parseCsv, fileKind: fileKind, nameKind: nameKind, inferOwner: inferOwner, repliesFromTweets: repliesFromTweets, boardHtml: boardHtml, jumpPlan: jumpPlan, followDiff: followDiff, followDiffHtml: followDiffHtml, notFollowedBack: notFollowedBack, notFollowedBackHtml: notFollowedBackHtml, renderReport: renderReport};
+  root.FanAudit = {CONFIG: CONFIG, TIERS: TIERS, defaultTimeZone: defaultTimeZone, analyze: analyze, loadTexts: loadTexts, parseCsv: parseCsv, fileKind: fileKind, nameKind: nameKind, inferOwner: inferOwner, repliesFromTweets: repliesFromTweets, boardHtml: boardHtml, jumpPlan: jumpPlan, followDiff: followDiff, followDiffHtml: followDiffHtml, notFollowedBack: notFollowedBack, notFollowedBackHtml: notFollowedBackHtml, renderReport: renderReport};
 })(typeof globalThis !== "undefined" ? globalThis : this);
 </script>
 <script>
@@ -958,6 +997,9 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
   if (typeof document === "undefined") return;
   var state = {parts: [], mode: "30", masked: false, open: {}};
   var writingDates = false;
+  var tzInput = document.getElementById("tz");
+  tzInput.value = FanAudit.defaultTimeZone();
+  document.getElementById("tz-label").textContent = "当前时区：" + tzInput.value;
   var drop = document.getElementById("drop");
   var picker = document.getElementById("picker");
   var out = document.getElementById("out");
@@ -1015,6 +1057,11 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
     render();
   };
   document.getElementById("me").onchange = function () { if (!writingDates) render(); };
+  tzInput.onchange = function () {
+    if (!tzInput.value.trim()) tzInput.value = FanAudit.defaultTimeZone();
+    document.getElementById("tz-label").textContent = "当前时区：" + tzInput.value.trim();
+    if (!writingDates) render();
+  };
   out.addEventListener("click", function (e) {
     var el = e.target;
     while (el && el !== out) {
@@ -1093,7 +1140,9 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
       writingDates = false;
       owner = data.owner;
     }
-    var opt = {me: owner, gapsAreEmpty: true};
+    var zoneName = tzInput.value.trim() || FanAudit.defaultTimeZone();
+    document.getElementById("tz-label").textContent = "当前时区：" + zoneName;
+    var opt = {me: owner, gapsAreEmpty: true, tz: zoneName};
     if (state.mode === "all") opt.allDays = true;
     else if (state.mode === "custom") {
       opt.end = document.getElementById("end").value;
@@ -1103,13 +1152,20 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
         if (opt.days < 1) opt.days = 1;
       }
     } else opt.days = state.mode === "7" ? 7 : 30;
-    var result = FanAudit.analyze(data, opt);
+    var result;
+    try {
+      result = FanAudit.analyze(data, opt);
+    } catch (err) {
+      out.innerHTML = filesHtml + askNote + '<div class="warn">' + esc(err && err.message ? err.message : "时区无效，请填 IANA 名称，例如 Asia/Shanghai") + "</div>";
+      return;
+    }
+    document.getElementById("tz-label").textContent = "当前时区：" + result.meta.tz;
     writingDates = true;
     document.getElementById("start").value = result.meta.start;
     document.getElementById("end").value = result.meta.end;
     writingDates = false;
     var rows = result.rows, meta = result.meta;
-    var cover = "区间 " + meta.start + " ~ " + meta.end + "。覆盖 " + meta.covered + " 天";
+    var cover = "区间 " + meta.start + " ~ " + meta.end + "。当前时区：" + meta.tz + "。覆盖 " + meta.covered + " 天";
     if (meta.uncovered) cover += "，" + meta.uncovered + " 天无数据（不算零互动，不进持续性分母）";
     else cover += "，无数据 0 天";
     var back = FanAudit.notFollowedBack(data, rows);

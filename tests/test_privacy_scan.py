@@ -37,6 +37,11 @@ class TestPrivacyScan(unittest.TestCase):
         line = "git clone https://github.com/%s/fan-audit.git\n" % ps.AUTHOR
         self.assertEqual(ps.scan(self.make({"README.md": line, "post.md": line}), set(), set()), [])
 
+    def test_snapshot_name_is_private(self):
+        d = self.make({"lists_snapshot.json": "{}\n"})
+        found = ps.scan(d, set(), set())
+        self.assertTrue(any(item[3] == "lists_snapshot.json" for item in found))
+
     def test_names_from_csv(self):
         d = self.make({"names.csv": "handle,name\n@Fake_Person_Y,Y\nuser_02,Z\n"})
         names = ps.load_names([], [os.path.join(d, "names.csv")])
