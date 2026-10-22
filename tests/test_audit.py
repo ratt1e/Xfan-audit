@@ -74,8 +74,26 @@ class TestAuditSample(unittest.TestCase):
         with open(os.path.join(self.out, "dashboard.html"), encoding="utf-8") as f:
             full = f.read()
         self.assertIn("@user_01", full)
+        self.assertIn('href="https://x.com/user_01"', full)
+        self.assertIn('target="_blank"', full)
         self.assertNotIn("user_", pub)
+        self.assertNotIn("https", pub)
+        self.assertNotIn("x.com", pub)
+        self.assertNotIn('target="_blank"', pub)
         self.assertIn("账号#01", pub)
+        for tier in audit.TIERS:
+            self.assertIn(f'href="#tier-{tier}"', full)
+            self.assertIn(f'id="tier-{tier}"', full)
+            self.assertIn(f'href="#tier-{tier}"', pub)
+            self.assertIn(f">" + tier + "（", full)
+        self.assertIn('href="#not-followed-back"', full)
+        self.assertIn("互关", full.split('class="grid stat-cards"', 1)[1])
+        self.assertIn("统计", full)
+        self.assertIn("星级分布", full)
+        self.assertIn("分层人数", full)
+        self.assertNotIn("🥇", full)
+        self.assertIn("tier-card", audit.dashboard_css())
+        self.assertIn(audit.dashboard_css(), full)
 
     def test_cli_one_liner(self):
         out = tempfile.mkdtemp()

@@ -213,7 +213,7 @@ class TestAuditPrevLists(unittest.TestCase):
         self.assertIn("取关我的", public_section)
         self.assertNotIn("user_", public_section)
         mark = "@"
-        priv_names = re.findall(r"<tr><td>(" + mark + r"user_\d+)</td>", private)
+        priv_names = re.findall(r"<tr><td>(?:<a [^>]*>)?(" + mark + r"user_\d+)", private)
         pub_names = re.findall(r"<tr><td>(账号#\d+)</td>", public)
         mapping = dict(zip(priv_names, pub_names))
         self.assertIn(mapping[mark + "user_03"], public_section)
