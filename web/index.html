@@ -51,8 +51,8 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
 <body>
 <h1 id="top">粉丝体检 · 互动关系星级</h1>
 <p class="privacy">数据只在你的浏览器里处理，不会上传。</p>
-<p class="sub">把 twitter-web-exporter 导出的 JSON（用户推文、正在关注、关注者）或 interactions.csv 拖进来。不联网，没有统计代码。权重仍是初始值。</p>
-<div class="drop" id="drop">把文件拖到这里，或点此选择。可以一次放进多个，不用改名。插件导出的「用户推文 / UserTweets」「正在关注 / Following」「关注者 / Followers」会自动认出来。上一份名单也可以一起拖，在「认成」里选「旧·关注者」或「旧·正在关注」。故意继续关注的人，认成「保留名单」。</div>
+<p class="sub">把 twitter-web-exporter 导出的 JSON（用户推文、正在关注、关注者）或 interactions.csv 拖进来即可。本页面不联网，没有任何统计代码。目前权重仍为初始值。</p>
+<div class="drop" id="drop">把文件拖到这里，或点击选择。支持一次放入多个，无需修改文件名。插件导出的「用户推文 / UserTweets」「正在关注 / Following」「关注者 / Followers」会自动识别。上一份名单也可以一并拖入，在「识别为」下拉框中选「旧·关注者」或「旧·正在关注」。需要持续关注的账号，请选「保留名单」。</div>
 <input id="picker" type="file" multiple hidden>
 <div class="row">
 <label>你的用户名（推文 JSON 需要）<input id="me" type="text" placeholder="不带 @" autocomplete="off"></label>
@@ -65,7 +65,7 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
 <button type="button" id="clear">清空</button>
 </div>
 <div id="out"></div>
-<footer>fan-audit 网页版 · 建议只是文字，不会替你点赞、关注、取关或发帖</footer>
+<footer>fan-audit 网页版 · 建议仅供参考，工具不会代你执行点赞、关注、取关或发帖等任何操作</footer>
 <script id="fan-audit-engine">
 (function (root) {
   var CONFIG = {
@@ -1063,7 +1063,7 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
     });
     if (!state.parts.length) { out.innerHTML = ""; return; }
     var choices = [["tweets", "用户推文"], ["following", "正在关注"], ["followers", "关注者"], ["prev-following", "旧·正在关注"], ["prev-followers", "旧·关注者"], ["keep", "保留名单"], ["interactions", "互动"], ["replies", "回复"], ["likes", "点赞"], ["profiles", "资料"]];
-    var filesHtml = '<div class="card" style="margin-bottom:16px"><h2>读入的文件</h2><table><tr><th>文件</th><th>认成</th></tr>';
+    var filesHtml = '<div class="card" style="margin-bottom:16px"><h2>读入的文件</h2><table><tr><th>文件</th><th>识别为</th></tr>';
     state.parts.forEach(function (p, i) {
       var opts = choices.slice();
       if (p.kind === "ask-users") opts.unshift(["ask-users", "请选择"]);
@@ -1076,7 +1076,7 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
     });
     filesHtml += "</table></div>";
     var askNote = state.parts.some(function (p) { return p.kind === "ask-users"; })
-      ? '<div class="warn">有文件分不清是正在关注还是关注者，请在下拉框里选。旧名单选「旧·关注者」或「旧·正在关注」。故意继续关注的选「保留名单」。没选的这份先不算。</div>' : "";
+      ? '<div class="warn">部分文件无法确认是「正在关注」还是「关注者」，请在下拉框中选择。旧名单请选「旧·关注者」或「旧·正在关注」，需持续关注的账号请选「保留名单」。未选择的文件暂不计入。</div>' : "";
     var owner = document.getElementById("me").value;
     var data;
     try {
@@ -1084,7 +1084,7 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
         return {name: p.name, text: p.text, owner: owner, kind: p.kind};
       }));
     } catch (err) {
-      out.innerHTML = filesHtml + '<div class="warn">这份文件读不了。请确认是 JSON 或 CSV。</div>';
+      out.innerHTML = filesHtml + '<div class="warn">文件读取失败，请确认是否为有效的 JSON 或 CSV 文件。</div>';
       return;
     }
     if (!owner && data.owner) {

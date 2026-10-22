@@ -1,13 +1,13 @@
 # 不用付费 API，怎么收集数据：工具调研
 
-调研时间：2026-10-19。星标数、最后提交时间来自 GitHub API 当天的返回值。这些工具都会随 X 改版失效或变化，用之前请自己再确认一次。
+调研时间：2026-10-19。GitHub 星标数及最后提交时间均取自当天 GitHub API 的返回结果。由于 X 平台前端经常更新，相关工具可能会随时失效或发生行为变动，使用前请务必自行复核。
 
-> **先说风险。** X 的服务条款不允许未经授权的抓取，也不允许自动化的关注、取关、点赞等操作。
-> - **风险最低：**只在浏览器里「记录你自己刷到的页面」，不额外发请求、不点任何按钮。
-> - **风险中等：**用你的登录态，主动调用 X 网页版内部接口（GraphQL）。
-> - **风险最高：**把 `auth_token`、`ct0` 等 cookie 导出给脚本或第三方服务，用多账号、代理批量抓取。社区里有不少锁号、封号的报告。
+> **风险提示**：X 的服务条款明确禁止未经许可的数据抓取，严禁任何自动化的关注、取关、点赞等操作。
+> - **低风险方案**：仅在浏览器中「被动记录你正常浏览加载的数据」，不向平台发送额外请求，不点击任何操作按钮。
+> - **中风险方案**：借助已登录会话，主动调用 X 网页版的内部 GraphQL 接口。
+> - **高风险方案**：将 `auth_token`、`ct0` 等身份凭据导出给脚本或第三方服务，采用多账号轮换或代理批量抓取。开发者社区中已有大量封号和验证锁定的案例。
 >
-> 无论用哪种，都不要拿重要账号去做批量操作。
+> 无论选用哪种方案，切勿使用重要个人账号进行任何批量自动化操作。
 
 ## 推荐方案
 
@@ -16,7 +16,7 @@
 - 仓库：https://github.com/prinsss/twitter-web-exporter
 - 状态：2758★，MIT 许可。最新版本 v1.4.3 发布于 2026-08-31，近几个月持续在适配 X 的接口变化。
 - 形式：油猴脚本，需要先装 Tampermonkey 或 Violentmonkey。
-- 原理：README 原话是脚本「does not send any request to Twitter API」。它拦截网页版自己发出的 GraphQL 请求的响应，所以只能导出你滚动加载过的数据。作者在 FAQ 里对「会不会被封」的回答是「Not likely」，理由是没有自动化操作，行为和手动复制差不多。
+- 工作原理：上游 README 明确指出该脚本「does not send any request to Twitter API」。它通过拦截网页前端自身发起的 GraphQL 响应来实现数据提取，因此只能导出你实际滚动加载过的内容。原作者在 FAQ 中针对「账号是否会被封禁」的回复为「Not likely」，原因在于整个过程没有发起额外的自动化请求，其行为特征与手动复制网页文本基本无异。
 - 能导出：
   - 关注列表、粉丝列表、认证粉丝（源码里 `BlueVerifiedFollowers` 和 Followers 共用一个模块，请分开采集，见下文）
   - 转帖者（Retweeters）
@@ -29,16 +29,16 @@
 - 自动化：README 说不能自动导出，自动滚动需要第三方工具，社区方案在 issue #120（https://github.com/prinsss/twitter-web-exporter/issues/120 ）。
 - 接入本仓库：用 `adapters/twitter_web_exporter.py` 转换，用法见下文。
 
-**一个额外的好处：**每条用户记录带 `followed_by`（对方是否关注你）字段。导出「正在关注」列表时，就能直接知道这些人里谁关注了你，包括没认证的粉丝。这能部分弥补「只能导出认证粉丝」的口径问题。这个字段是否始终准确，请用自己的数据抽查（待核实）。
+**补充优势：**导出的每条用户记录均附带 `followed_by`（对方是否关注了你）字段。在导出「正在关注」列表时，便能直接获知其中哪些人回关了你（涵盖未认证的普通粉丝）。这在一定程度上弥补了「仅能导出认证粉丝」带来的样本口径局限。关于该字段在各种场景下是否始终准确，建议使用自身数据进行小范围抽查（**待核实**）。
 
 ### 方案 B：点赞者用官方免费接口，或者手动、AI 代理读页面
 
-- 点赞列表现在只有帖子作者自己能看到完整名单。
-- 在我们的实测里，作者用自己账号授权的 X 官方接口查自己帖子的点赞用户（`GET /2/tweets/:id/liking_users`），当时没有扣费（账户余额 $0.00 也能调用）。这只是一次观察，X 的计费规则会变，用之前请先看开发者后台。
-- 不想用 API 的话：
-  - 打开 `x.com/<你>/status/<帖子id>/likes` 手动抄；
-  - 或者让 AI 电脑代理（ChatGPT / Codex Computer Use、Claude in Chrome、Gemini、Antigravity 等）只读滚动这个页面并记录用户名；
-  - 等 twitter-web-exporter 合并 PR #150 后，也可以用它捕获。
+- 点赞列表目前仅推文作者本人可在网页端查看完整名单。
+- 在实测中，作者使用经本人账号授权的 X 官方接口查询自己推文的点赞用户（`GET /2/tweets/:id/liking_users`），当时并未扣费（账户余额为 $0.00 时亦可成功调用）。这仅代表单次观察结果，X 的计费政策时有调整，实际使用前请以开发者后台的最新说明为准。
+- 若不希望调用 API，可选用以下替代方式：
+  - 打开 `x.com/<你>/status/<帖子id>/likes` 手动记录用户名；
+  - 或使用 AI 电脑代理（ChatGPT / Codex Computer Use、Claude in Chrome、Gemini、Antigravity 等）只读滚动该页面并记录用户名；
+  - 等待 twitter-web-exporter 合并 PR #150 后，亦可直接使用该脚本捕获。
 
 ## 其他调研过的选项
 
@@ -58,27 +58,27 @@
 | n0madic/twitter-scraper | https://github.com/n0madic/twitter-scraper | 已归档（2023） | — | — | MIT | 不可用 |
 | twitter-api-client | https://github.com/trevorhobenshield/twitter-api-client | 最后推送 2024-05 | — | — | MIT | 不再维护 |
 
-**官方数据归档（设置 → 下载数据归档）：**按 twitter-web-exporter README 的说法，归档里的关注和粉丝只有数字 ID，没有用户名，需要再查一次才能用。社区还有人反映，账号被封后归档里的关注、粉丝是空的。
+**官方数据归档（设置 → 下载数据归档）**：根据 twitter-web-exporter README 说明，官方归档中的关注列表与粉丝列表通常仅包含数字 ID 而无用户名，需二次查询转换后方可使用。此外社区中有用户反馈，若账号遭遇封禁，归档中的关注和粉丝列表可能为空。
 
-**社区口碑（X 上的公开讨论，仅供参考）：**
-- 有中文用户建议「先走官方归档，再用 twitter-web-exporter 补」，并提醒 twikit 这类非官方登录要评估封号和 TOS 风险（来源：社区公开帖子，链接略）。
-- 也有人提到 twikit 被 Cloudflare 403 拦截，还被封号（来源：社区公开帖子，链接略）。
+**社区反馈（X 平台公开讨论，仅供参考）**：
+- 部分中文创作者建议「先导出官方归档作为基础，再使用 twitter-web-exporter 补充近期数据」，并特别提醒像 twikit 这种需要非官方登录态的工具存在封号及违反服务条款的风险（来源：社区公开推文，链接略）。
+- 另有开发者反馈 twikit 容易遭遇 Cloudflare 403 拦截，甚至引发账号封禁（来源：社区公开推文，链接略）。
 
 ## 用 AI 电脑代理配合方案 A 的做法
 
-让代理只做两件事：打开页面、慢慢往下滚。导出由油猴脚本完成。
+让代理仅负责两项操作：打开页面与缓慢向下滚动。数据导出依然交由油猴脚本完成。
 
-1. 在你自己的浏览器里装好 Tampermonkey 和 twitter-web-exporter，保持 X 登录状态。
-2. 每类数据开一次采集：
-   - 采集前在脚本面板里清空已捕获的数据；
-   - 打开对应页面（`x.com/<你>/following`、`/followers`、`/verified_followers`、每条帖子详情页、`/retweets`）；
-   - 让代理滚到底；
-   - 在脚本面板里导出。
+1. 在本地浏览器中安装好 Tampermonkey 与 twitter-web-exporter，并保持 X 账号登录状态。
+2. 每类数据独立进行一次采集：
+   - 采集开始前在脚本面板中清空已捕获的数据；
+   - 打开对应的目标页面（`x.com/<你>/following`、`/followers`、`/verified_followers`、各推文详情页、`/retweets`）；
+   - 让代理匀速滚动到底部；
+   - 在脚本面板中点击导出。
 
-   注意：`followers` 和 `verified_followers` 进的是同一个模块，**两个页面不要在同一次采集里都打开**，否则会混在一起。
-3. 给代理的提示词示例：
+   注意：`followers` 与 `verified_followers` 会进入同一个功能模块，**切勿在同一次采集过程中同时打开这两个页面**，以免数据混杂。
+3. 供代理使用的提示词示例：
 
-   > 你只能做只读操作。在当前标签页 x.com/<我的用户名>/followers 上，每次向下滚动一屏，停 3～5 秒，直到页面不再加载新内容，或者滚动 300 次为止。不要点击任何按钮、链接、关注、点赞或输入框。看到验证码、登录提示或「速率限制」提示时立即停下来告诉我。
+   > 你只能执行只读操作。在当前标签页 x.com/<我的用户名>/followers 上，每次向下滚动一屏，停顿 3～5 秒，直到页面不再加载新内容，或累计滚动达到 300 次为止。不要点击任何按钮、链接、关注、点赞或输入框。若遇到人机验证、重新登录提示或「速率限制」提示，请立即停止操作并通知我。
 
 4. 把导出文件放进 `data/`（已在 `.gitignore` 中排除），用适配器转换。
 
@@ -104,11 +104,11 @@ python3 adapters/generic_csv.py export.csv -o data/followers.csv --handle-col us
 python3 fan_audit.py --following data/following.csv --followers data/followers.csv --engagement data/engagement.csv --keywords keywords.txt --out output --anonymize
 ```
 
-关于回复统计的口径：
-- 给了 `--post-ids` 时，只统计**直接**回复这些帖子的推文；
-- 不给时，导出文件里所有带 `in_reply_to` 的推文都算，包括楼中楼；
-- 作者自己的回复都会被排除；同一个推文 id 重复捕获只算一次。
+关于回复统计的口径说明：
+- 指定 `--post-ids` 时，仅统计**直接**回复这些指定推文的内容；
+- 未指定时，导出文件中所有携带 `in_reply_to` 的推文均会纳入统计（包含楼中楼回复）；
+- 作者本人的自回复均会自动剔除；同一推文 ID 若重复捕获仅计入一次。
 
 `examples/adapters/` 里有按 twitter-web-exporter 字段格式**虚构**的示例文件，可以直接试跑。
 
-字段名依据上游源码中的 exportKey（`src/components/table/columns-user.tsx`、`columns-tweet.tsx`，核对于 2026-10-19）。上游改版后，如果适配器报错，先检查导出文件的列名。
+字段名依据上游源码中的 exportKey（`src/components/table/columns-user.tsx`、`columns-tweet.tsx`，核对于 2026-10-19）。若上游版本迭代导致适配器报错，请先核对导出文件的列名是否发生变动。

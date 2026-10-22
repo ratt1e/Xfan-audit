@@ -120,7 +120,7 @@ def load_accounts(paths):
         try:
             records.extend(twe.load_records(os.fspath(path)))
         except (OSError, UnicodeError, json.JSONDecodeError, csv.Error, ValueError):
-            raise ValueError("有一份名单读不了，请确认是 JSON 或 CSV") from None
+            raise ValueError("名单文件读取失败，请确认是否为有效的 JSON 或 CSV 文件") from None
     return index_accounts(records)
 
 
@@ -146,7 +146,7 @@ def find_role_files(directory, role):
     try:
         entries = sorted(folder.iterdir())
     except OSError:
-        raise ValueError("有一份名单读不了，请确认是 JSON 或 CSV") from None
+        raise ValueError("名单文件读取失败，请确认是否为有效的 JSON 或 CSV 文件") from None
     for path in entries:
         if path.is_file() and path.suffix.lower() in (".csv", ".json") and _name_matches(path.stem, role):
             matched.append(path)
@@ -158,7 +158,7 @@ def load_role(directory, explicit, role):
     if explicit:
         path = Path(explicit).expanduser()
         if not path.is_file():
-            raise ValueError("有一份名单读不了，请确认是 JSON 或 CSV")
+            raise ValueError("名单文件读取失败，请确认是否为有效的 JSON 或 CSV 文件")
         return load_accounts([path])
     paths = find_role_files(directory, role)
     if not paths:
@@ -266,7 +266,7 @@ def write_result(diff, out_dir):
     folder.mkdir(parents=True, exist_ok=True)
     target = folder / "关注变化.md"
     if target.is_symlink() or (target.exists() and not target.is_file()):
-        raise ValueError("结果文件不是普通文件，已停止，没有改动")
+        raise ValueError("结果文件不是普通文件，已停止，未作修改")
     target.write_text(render_markdown(diff), encoding="utf-8")
     return target
 
@@ -302,9 +302,9 @@ def main(argv=None):
         print(str(exc), file=sys.stderr)
         return 1
     print(summary_line(diff))
-    print("账号名写在结果目录的关注变化.md")
+    print("具体账号名单已写入输出目录的关注变化.md")
     if not diff["ready"]:
-        print("名单没齐，关注变化先不算", file=sys.stderr)
+        print("名单不完整，暂不计算关注变化", file=sys.stderr)
         return 1
     return 0
 

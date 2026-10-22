@@ -48,7 +48,7 @@ def load_keep(path):
             raise OSError
         text = file.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeError):
-        raise ValueError("保留名单读不了，请确认是文本文件") from None
+        raise ValueError("保留名单读不了，请确认是否为文本文件") from None
     return parse_keep_text(text)
 
 
@@ -167,7 +167,7 @@ def ensure_writable(directory):
     for name in (MD_NAME, CSV_NAME):
         path = folder / name
         if path.is_symlink() or (path.exists() and not path.is_file()):
-            raise ValueError("结果文件不是普通文件，已停止，没有改动")
+            raise ValueError("结果文件不是普通文件，已停止，未作修改")
 
 
 def write_private(directory, info):
