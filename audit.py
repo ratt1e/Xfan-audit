@@ -21,6 +21,7 @@ from datetime import date, datetime, timedelta, timezone
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "scripts"))
 import follow_diff  # noqa: E402
+import not_followed_back as nfb  # noqa: E402
 import relationship_stars as rs  # noqa: E402
 from daily_root import load_daily_root, check_output, clear_own_outputs, coverage_lines, write_roster  # noqa: E402
 
@@ -279,6 +280,48 @@ def mutual_txt(x):
     return "✔ 互关" if x["mutual"] else "→ 我关注" if x["i_follow"] else "← 关注我" if x["follows_me"] else ""
 
 
+def not_back_block(info, alias, public):
+    """没回关。打码版沿用上面的账号#，并且不放主页链接。"""
+    if not info:
+        return ""
+    head = (
+        '<section class="card" id="not-followed-back" style="margin-bottom:16px"><h2>没回关</h2>'
+        '<p class="muted">我关注了、对方没有回关。零互动的排在前面，然后按分数从低到高。</p>'
+        f'<p class="muted">{html.escape(nfb.SAFETY)}</p>'
+    )
+    if not info["ready"]:
+        count = "—"
+        body = f'<p class="muted">{html.escape(info["note"])}</p>'
+    else:
+        items = info["items"]
+        count = str(len(items))
+        if not items:
+            body = '<p class="muted">（暂时没有）</p>'
+        else:
+            collisions = nfb.collisions_of(items)
+            rows = ["<table><tr><th>账号</th><th>互动</th><th>分数</th><th>分层</th></tr>"]
+            for item in items:
+                if public:
+                    key = follow_diff.public_key(item, collisions)
+                    alias.setdefault(key, f"账号#{len(alias) + 1:02d}")
+                    cell = html.escape(alias[key])
+                else:
+                    label = html.escape(follow_diff.account_text(item, collisions, at=True))
+                    if item["handle"] and item["profile"]:
+                        cell = f'<a href="{html.escape(item["profile"], quote=True)}">{label}</a>'
+                    else:
+                        cell = label
+                rows.append(
+                    f"<tr><td>{cell}</td><td>{item['interactions']}</td>"
+                    f"<td>{html.escape(nfb.score_text(item))}</td>"
+                    f"<td>{html.escape(item['tier'] or '—')}</td></tr>"
+                )
+            rows.append("</table>")
+            body = "\n".join(rows)
+    card = f'<div class="grid"><div class="card"><div class="num">{count}</div><div class="lab">没回关</div></div></div>'
+    return head + card + body + "</section>"
+
+
 def follow_block(diff, alias, public):
     """关注变化。打码时和上面的名单共用同一套账号#，不另起一套。"""
     collisions = diff["collisions"]
@@ -393,6 +436,7 @@ def render(res, meta, public=False):
 <div class="card"><h2>沉睡互关</h2>{small_list('沉睡互关', lambda x: '零互动')}
 <p class="muted">零公开互动 ≠ 没看过，别急着取关；要清理也请手动、分批、慢慢来。</p></div>
 </div>
+{not_back_block(meta.get("not_followed_back"), alias, public)}
 {follow_block(meta["follow_diff"], alias, public) if meta.get("follow_diff") else ""}
 <footer>fan-audit v0.1 · 试用版 · 权重待验证 · 所有建议都只是建议，工具不会执行任何操作</footer>
 </body></html>"""
@@ -414,6 +458,7 @@ def main(argv=None):
     ap.add_argument("--data-root", help="每日数据根目录；也可用 FAN_AUDIT_DATA_ROOT")
     ap.add_argument("--lists", help="每日模式可选关系表目录，只读 following.csv 和 followers.csv")
     ap.add_argument("--prev-lists", help="上一份关系表目录。写了才在看板里加「关注变化」，不写则和以前一样")
+    ap.add_argument("--keep-list", help="故意关注的账号，一行一个用户名或用户 ID，这些人不进没回关名单")
     ap.add_argument("--out", help="输出目录；每日模式默认在数据根目录的 _分析结果/截止日期/")
     ap.add_argument("--overwrite", action="store_true",
                     help="覆盖 --out 里本工具上次生成的结果；目录里有其他文件则停止，不删除")
@@ -461,14 +506,19 @@ def main(argv=None):
         data = load_inputs(a.data or "data")
         res, meta = analyze(data, conf, cfg, a.end, a.days, a.all_days)
         a.out = a.out or "output"
+    lists_dir = a.lists if root else (a.data or "data")
+    if root and not a.lists:
+        lists_dir = None
     if a.prev_lists:
         try:
-            new_dir = a.lists if root else (a.data or "data")
-            if root and not a.lists:
-                new_dir = None
-            meta["follow_diff"] = follow_diff.compare_dirs(a.prev_lists, new_dir)
+            meta["follow_diff"] = follow_diff.compare_dirs(a.prev_lists, lists_dir)
         except ValueError as exc:
             ap.error(str(exc))
+    try:
+        meta["not_followed_back"] = nfb.build(lists_dir, res, a.keep_list)
+        nfb.ensure_writable(a.out)
+    except ValueError as exc:
+        ap.error(str(exc))
     if root and a.overwrite:
         try:
             clear_own_outputs(a.out)
@@ -480,6 +530,10 @@ def main(argv=None):
         f.write(render(res, meta, public=False))
     with open(os.path.join(a.out, "dashboard_public.html"), "w", encoding="utf-8") as f:
         f.write(render(res, meta, public=True))
+    try:
+        nfb.write_private(a.out, meta["not_followed_back"])
+    except ValueError as exc:
+        ap.error(str(exc))
     if root:
         coverage = coverage_lines(data, meta, conf.get("me", ""), conf.get("exclude_accounts", []))
         write_roster(Path(a.out) / "名单.md", res, meta, data, coverage, stars_txt)
@@ -489,16 +543,18 @@ def main(argv=None):
         print("⚠", w)
     if meta.get("follow_diff"):
         print(follow_diff.summary_line(meta["follow_diff"]))
+    print(nfb.summary_line(meta["not_followed_back"]))
     c = Counter(x["tier"] for x in res)
     extra = ""
     if meta.get("covered_days") is not None:
         extra = f"；计分覆盖 {meta['scoring_days']} 天，无数据 {len(meta.get('uncovered_days') or [])} 天"
     print(f"区间 {meta['start']} ~ {meta['end']}{extra}，{len(res)} 个账号：" + "，".join(f"{t} {c.get(t, 0)}" for t in TIERS))
     if root:
-        print("已在仓库外写出 accounts.csv、dashboard.html、dashboard_public.html、名单.md（私有名单不在终端展示）")
+        print("已在仓库外写出 accounts.csv、dashboard.html、dashboard_public.html、名单.md、没回关.md、没回关.csv（私有名单不在终端展示）")
     else:
         print(f"看板：{os.path.join(a.out, 'dashboard.html')}（含账号名，只给自己看）")
         print(f"对外打码版：{os.path.join(a.out, 'dashboard_public.html')}；明细：{os.path.join(a.out, 'accounts.csv')}")
+        print(f"没回关名单：{os.path.join(a.out, nfb.MD_NAME)}（含账号名，只给自己看）")
     return 0
 
 
