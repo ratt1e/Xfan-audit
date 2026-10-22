@@ -12,6 +12,7 @@ from datetime import date
 from pathlib import Path
 
 import audit
+import follow_diff
 
 ROOT = Path(__file__).resolve().parents[1]
 KEYS = ["account", "tier", "status", "score", "stars", "O", "I", "O_raw", "I_raw", "rounds",
@@ -234,3 +235,63 @@ class TestWebScore(unittest.TestCase):
         self.assertEqual(got["empty"]["message"], "这一层暂时没有人")
         self.assertEqual(got["some"]["message"], "")
         self.assertTrue(got["empty"]["scroll"])
+
+    def web_diff(self, parts, rows=None):
+        node = find_node()
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        plan = Path(folder.name) / "diff.json"
+        plan.write_text(json.dumps({"parts": parts, "rows": rows or []}, ensure_ascii=False), encoding="utf-8")
+        return json.loads(subprocess.check_output(
+            [node, str(ROOT / "tests/web_score_runner.mjs"), "diff", str(plan)], cwd=str(ROOT)))
+
+    def test_follow_diff_matches_python_and_masks(self):
+        page = (ROOT / "web/index.html").read_text(encoding="utf-8")
+        self.assertIn('["prev-followers", "旧·关注者"]', page)
+        self.assertIn('["prev-following", "旧·正在关注"]', page)
+        self.assertIn("followDiffHtml(diff, {masked: state.masked", page)
+        sample = self.web_diff([
+            {"name": "followers.csv", "file": "sample_data/followers.csv", "kind": "followers"},
+            {"name": "following.csv", "file": "sample_data/following.csv", "kind": "following"},
+            {"name": "followers.csv", "file": "sample_data/prev/followers.csv", "kind": "prev-followers"},
+            {"name": "following.csv", "file": "sample_data/prev/following.csv", "kind": "prev-following"},
+        ], rows=[{"account": "user_03"}])
+        py = follow_diff.compare_dirs(ROOT / "sample_data/prev", ROOT / "sample_data")
+        for key, _label in follow_diff.GROUP_ORDER:
+            web_pairs = [[item["id"], item["handle"]] for item in sample["diff"][key]]
+            py_pairs = [[item["id"], item["handle"]] for item in py[key]]
+            self.assertEqual(web_pairs, py_pairs)
+        self.assertNotIn("user_90", sample["followers"])
+        self.assertIn("user_03", sample["followers"])
+        self.assertIn("账号#01", sample["masked"].split("新粉丝", 1)[1])
+        self.assertNotIn("user_", sample["masked"])
+        self.assertIn("@user_90", sample["open"])
+        shifted = self.web_diff([
+            {"name": "旧关注者.json", "file": "sample_data/id_shift/old/followers.json"},
+            {"name": "关注者.json", "file": "sample_data/id_shift/new/followers.json"},
+            {"name": "旧正在关注.json", "file": "sample_data/id_shift/old/following.json"},
+            {"name": "正在关注.json", "file": "sample_data/id_shift/new/following.json"},
+        ])
+        py_shift = follow_diff.compare_dirs(ROOT / "sample_data/id_shift/old", ROOT / "sample_data/id_shift/new")
+        for key, _label in follow_diff.GROUP_ORDER:
+            web_pairs = [[item["id"], item["handle"]] for item in shifted["diff"][key]]
+            py_pairs = [[item["id"], item["handle"]] for item in py_shift[key]]
+            self.assertEqual(web_pairs, py_pairs, key)
+        self.assertEqual(shifted["kinds"], ["prev-followers", "followers", "prev-following", "following"])
+        self.assertNotIn("user_", shifted["masked"])
+        self.assertNotIn("8800", shifted["masked"])
+        self.assertIn("账号#01", shifted["masked"])
+        left = shifted["masked"].split("取关我的（1）", 1)[1].split("新粉丝", 1)[0]
+        right = shifted["masked"].split("新粉丝（1）", 1)[1].split("我取关的", 1)[0]
+        self.assertNotEqual(re.search(r"账号#\d+", left).group(0), re.search(r"账号#\d+", right).group(0))
+        self.assertIn("user_42（id 8800102）", shifted["open"])
+        self.assertIn("user_42（id 8800109）", shifted["open"])
+        self.assertNotIn("user_41", shifted["open"])
+        chosen = self.web_diff([
+            {"name": "people.json", "file": "tests/fixtures/twe_following.json", "kind": "prev-following"},
+            {"name": "people.json", "file": "tests/fixtures/twe_following.json", "kind": "following"},
+        ])
+        self.assertEqual(chosen["kinds"], ["ask-users", "ask-users"])
+        self.assertEqual(chosen["diff"]["i_unfollowed"], [])
+        self.assertEqual(chosen["diff"]["i_followed"], [])
+        self.assertNotIn("user_201", chosen["masked"])

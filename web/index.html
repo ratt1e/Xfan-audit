@@ -49,7 +49,7 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
 <h1 id="top">粉丝体检 · 互动关系星级</h1>
 <p class="privacy">数据只在你的浏览器里处理，不会上传。</p>
 <p class="sub">把 twitter-web-exporter 导出的 JSON（用户推文、正在关注、关注者）或 interactions.csv 拖进来。不联网，没有统计代码。权重仍是初始值。</p>
-<div class="drop" id="drop">把文件拖到这里，或点此选择。可以一次放进多个，不用改名。插件导出的「用户推文 / UserTweets」「正在关注 / Following」「关注者 / Followers」会自动认出来。</div>
+<div class="drop" id="drop">把文件拖到这里，或点此选择。可以一次放进多个，不用改名。插件导出的「用户推文 / UserTweets」「正在关注 / Following」「关注者 / Followers」会自动认出来。上一份名单也可以一起拖，在「认成」里选「旧·关注者」或「旧·正在关注」。</div>
 <input id="picker" type="file" multiple hidden>
 <div class="row">
 <label>你的用户名（推文 JSON 需要）<input id="me" type="text" placeholder="不带 @" autocomplete="off"></label>
@@ -466,12 +466,17 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
     if (!Array.isArray(records)) records = [records];
     return {json: json, records: records};
   }
+  function markedOld(base, low) {
+    if (base.indexOf("旧") >= 0) return true;
+    return /(^|[^a-z])(old|prev)([^a-z]|$)/.test(low);
+  }
   function nameKind(name) {
     var base = String(name || "").replace(/\.[^.]+$/, "").replace(/[-_ ]\d{6,}$/, "");
     var low = base.toLowerCase();
+    var oldMark = markedOld(base, low);
     if (base.indexOf("用户推文") >= 0 || low.indexOf("usertweets") >= 0 || low.indexOf("tweets") >= 0) return "tweets";
-    if (base.indexOf("正在关注") >= 0 || low.indexOf("following") >= 0) return "following";
-    if (base.indexOf("关注者") >= 0 || base.indexOf("粉丝") >= 0 || low.indexOf("followers") >= 0) return "followers";
+    if (base.indexOf("正在关注") >= 0 || low.indexOf("following") >= 0) return oldMark ? "prev-following" : "following";
+    if (base.indexOf("关注者") >= 0 || base.indexOf("粉丝") >= 0 || low.indexOf("followers") >= 0) return oldMark ? "prev-followers" : "followers";
     return "";
   }
   function contentKind(records) {
@@ -503,6 +508,28 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
     var add = usersFrom(records);
     Object.keys(add).forEach(function (h) { if (!target[h]) target[h] = add[h]; });
   }
+  function accountId(record) {
+    var keys = ["user_id", "id_str", "rest_id", "id"];
+    for (var i = 0; i < keys.length; i++) {
+      if (record[keys[i]] == null || record[keys[i]] === "") continue;
+      var text = String(record[keys[i]]).trim();
+      var low = text.toLowerCase();
+      if (!text || low === "none" || low === "null" || low === "n/a" || low === "undefined") continue;
+      return text;
+    }
+    return "";
+  }
+  function accountsFrom(records) {
+    var out = [];
+    (records || []).forEach(function (record) {
+      if (!record) return;
+      var handle = norm(record.screen_name || record.handle || record.username);
+      var id = accountId(record);
+      if (!handle && !id) return;
+      out.push({id: id, handle: handle, name: String(record.name || "").replace(/\\n/g, " ").replace(/\s+/g, " ").trim()});
+    });
+    return out;
+  }
   function dedupeRows(rows) {
     var seen = {}, out = [];
     rows.forEach(function (r) {
@@ -514,7 +541,9 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
     return out;
   }
   function loadTexts(parts) {
-    var data = {rows: [], following: {}, followers: {}, profiles: {}, warnings: [], needsChoice: [], owner: ""};
+    var data = {rows: [], following: {}, followers: {}, profiles: {}, warnings: [], needsChoice: [], owner: "",
+      followerAccounts: [], followingAccounts: [], prevFollowerAccounts: [], prevFollowingAccounts: [],
+      sawFollowers: false, sawFollowing: false, sawPrevFollowers: false, sawPrevFollowing: false};
     parts.forEach(function (part, idx) {
       var name = part.name || "";
       var kind = part.kind || fileKind(name, part.text || "");
@@ -533,8 +562,21 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
           data.owner = data.owner || owner;
           data.rows = data.rows.concat(repliesFromTweets(records, owner));
         }
-      } else if (kind === "followers") mergeUsers(data.followers, records);
-      else if (kind === "following") mergeUsers(data.following, records);
+      } else if (kind === "followers") {
+        data.sawFollowers = true;
+        data.followerAccounts = data.followerAccounts.concat(accountsFrom(records));
+        mergeUsers(data.followers, records);
+      } else if (kind === "following") {
+        data.sawFollowing = true;
+        data.followingAccounts = data.followingAccounts.concat(accountsFrom(records));
+        mergeUsers(data.following, records);
+      } else if (kind === "prev-followers") {
+        data.sawPrevFollowers = true;
+        data.prevFollowerAccounts = data.prevFollowerAccounts.concat(accountsFrom(records));
+      } else if (kind === "prev-following") {
+        data.sawPrevFollowing = true;
+        data.prevFollowingAccounts = data.prevFollowingAccounts.concat(accountsFrom(records));
+      }
       else if (kind === "interactions") data.rows = data.rows.concat(rowsFromInteractions(records));
       else if (kind === "replies") data.rows = data.rows.concat(rowsFromReplies(records));
       else if (kind === "likes") data.rows = data.rows.concat(rowsFromLikes(records));
@@ -617,7 +659,121 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
     }).join("");
     return cards + panels + blocks;
   }
-  root.FanAudit = {CONFIG: CONFIG, TIERS: TIERS, analyze: analyze, loadTexts: loadTexts, parseCsv: parseCsv, fileKind: fileKind, nameKind: nameKind, inferOwner: inferOwner, repliesFromTweets: repliesFromTweets, boardHtml: boardHtml, jumpPlan: jumpPlan};
+  function indexAccounts(records) {
+    var items = [], byId = {}, byHandle = {};
+    (records || []).forEach(function (record) {
+      var uid = record.id || "";
+      var handle = record.handle || "";
+      if (!uid && !handle) return;
+      if (uid && byId[uid]) return;
+      if (!uid && byHandle[handle]) return;
+      if (uid && handle && byHandle[handle] && !byHandle[handle].id) {
+        byHandle[handle].id = uid;
+        byId[uid] = byHandle[handle];
+        return;
+      }
+      var item = {id: uid, handle: handle, name: record.name || ""};
+      if (uid && handle && byHandle[handle] && byHandle[handle].id && byHandle[handle].id !== uid) {
+        items.push(item);
+        byId[uid] = item;
+        return;
+      }
+      items.push(item);
+      if (uid) byId[uid] = item;
+      if (handle && !byHandle[handle]) byHandle[handle] = item;
+    });
+    return {items: items, byId: byId, byHandle: byHandle};
+  }
+  function findMatch(item, other) {
+    if (item.id && other.byId[item.id]) return other.byId[item.id];
+    if (!item.handle || !other.byHandle[item.handle]) return null;
+    var cand = other.byHandle[item.handle];
+    if (item.id && cand.id && item.id !== cand.id) return null;
+    return cand;
+  }
+  function onlyIn(left, right) {
+    return left.items.filter(function (item) { return !findMatch(item, right); }).sort(function (a, b) {
+      if (a.handle !== b.handle) return a.handle < b.handle ? -1 : 1;
+      if (a.id !== b.id) return a.id < b.id ? -1 : 1;
+      return 0;
+    });
+  }
+  function collisionMap(groups) {
+    var seen = {}, bad = {};
+    groups.forEach(function (items) {
+      (items || []).forEach(function (item) {
+        if (!item.handle || !item.id) return;
+        if (seen[item.handle] && seen[item.handle] !== item.id) bad[item.handle] = 1;
+        else seen[item.handle] = item.id;
+      });
+    });
+    return bad;
+  }
+  function followDiff(data) {
+    if (!data || (!data.sawPrevFollowers && !data.sawPrevFollowing)) return null;
+    var notes = [];
+    var unfollowed = null, fresh = null, dropped = null, added = null;
+    if (data.sawPrevFollowers && data.sawFollowers) {
+      var oldFer = indexAccounts(data.prevFollowerAccounts || []);
+      var newFer = indexAccounts(data.followerAccounts || []);
+      unfollowed = onlyIn(oldFer, newFer);
+      fresh = onlyIn(newFer, oldFer);
+    } else notes.push("没有同时找到旧的和新的关注者，取关我的和新粉丝先不算");
+    if (data.sawPrevFollowing && data.sawFollowing) {
+      var oldFol = indexAccounts(data.prevFollowingAccounts || []);
+      var newFol = indexAccounts(data.followingAccounts || []);
+      dropped = onlyIn(oldFol, newFol);
+      added = onlyIn(newFol, oldFol);
+    } else notes.push("没有同时找到旧的和新的正在关注，我取关的和我新关注的先不算");
+    return {
+      unfollowed_me: unfollowed, new_followers: fresh, i_unfollowed: dropped, i_followed: added,
+      notes: notes, collisions: collisionMap([unfollowed, fresh, dropped, added]),
+      ready: unfollowed !== null || dropped !== null
+    };
+  }
+  function aliasText(n) {
+    var s = String(n);
+    return "账号#" + (s.length < 2 ? "0" + s : s);
+  }
+  function followDiffHtml(diff, options) {
+    if (!diff) return "";
+    options = options || {};
+    var known = {};
+    (options.rows || []).forEach(function (row, i) { known[row.account] = aliasText(i + 1); });
+    var next = (options.rows || []).length + 1;
+    var assigned = {};
+    var collisions = diff.collisions || {};
+    function label(item) {
+      var key = item.handle || item.id;
+      if (item.handle && item.id && collisions[item.handle]) key = item.handle + "#" + item.id;
+      if (!options.masked) {
+        if (item.handle && item.id && collisions[item.handle]) return "@" + item.handle + "（id " + item.id + "）";
+        return item.handle ? "@" + item.handle : item.id;
+      }
+      if (known[key]) return known[key];
+      if (!assigned[key]) { assigned[key] = aliasText(next); next += 1; }
+      return assigned[key];
+    }
+    var order = [["unfollowed_me", "取关我的"], ["new_followers", "新粉丝"], ["i_unfollowed", "我取关的"], ["i_followed", "我新关注的"]];
+    var notes = (diff.notes || []).map(function (note) { return '<p class="muted">' + escHtml(note) + "</p>"; }).join("");
+    var cards = [], lists = [];
+    order.forEach(function (pair) {
+      var items = diff[pair[0]];
+      var count = items == null ? "—" : String(items.length);
+      cards.push('<div class="card"><div class="num">' + count + '</div><div class="lab">' + escHtml(pair[1]) + "</div></div>");
+      var heading, body;
+      if (items == null) { heading = pair[1]; body = '<p class="muted">先不算</p>'; }
+      else if (!items.length) { heading = pair[1] + "（0）"; body = '<p class="muted">（暂时没有）</p>'; }
+      else {
+        heading = pair[1] + "（" + items.length + "）";
+        body = "<p>" + items.slice(0, 60).map(label).map(escHtml).join("、") + (items.length > 60 ? "…" : "") + "</p>";
+      }
+      lists.push("<p><b>" + escHtml(heading) + "</b></p>" + body);
+    });
+    return '<section class="card" id="follow-diff" style="margin-bottom:16px"><h2>关注变化</h2><p class="muted">和上一份名单比。有用户 ID 时按 ID 对齐，没有就用用户名。只读，不会关注或取关。</p>'
+      + notes + '<div class="grid">' + cards.join("") + "</div>" + lists.join("") + "</section>";
+  }
+  root.FanAudit = {CONFIG: CONFIG, TIERS: TIERS, analyze: analyze, loadTexts: loadTexts, parseCsv: parseCsv, fileKind: fileKind, nameKind: nameKind, inferOwner: inferOwner, repliesFromTweets: repliesFromTweets, boardHtml: boardHtml, jumpPlan: jumpPlan, followDiff: followDiff, followDiffHtml: followDiffHtml};
 })(typeof globalThis !== "undefined" ? globalThis : this);
 </script>
 <script>
@@ -725,7 +881,7 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
       b.classList.toggle("on", b.getAttribute("data-mode") === state.mode);
     });
     if (!state.parts.length) { out.innerHTML = ""; return; }
-    var choices = [["tweets", "用户推文"], ["following", "正在关注"], ["followers", "关注者"], ["interactions", "互动"], ["replies", "回复"], ["likes", "点赞"], ["profiles", "资料"]];
+    var choices = [["tweets", "用户推文"], ["following", "正在关注"], ["followers", "关注者"], ["prev-following", "旧·正在关注"], ["prev-followers", "旧·关注者"], ["interactions", "互动"], ["replies", "回复"], ["likes", "点赞"], ["profiles", "资料"]];
     var filesHtml = '<div class="card" style="margin-bottom:16px"><h2>读入的文件</h2><table><tr><th>文件</th><th>认成</th></tr>';
     state.parts.forEach(function (p, i) {
       var opts = choices.slice();
@@ -739,7 +895,7 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
     });
     filesHtml += "</table></div>";
     var askNote = state.parts.some(function (p) { return p.kind === "ask-users"; })
-      ? '<div class="warn">有文件分不清是正在关注还是关注者，请在下拉框里选。没选的这份先不算。</div>' : "";
+      ? '<div class="warn">有文件分不清是正在关注还是关注者，请在下拉框里选。旧名单选「旧·关注者」或「旧·正在关注」。没选的这份先不算。</div>' : "";
     var owner = document.getElementById("me").value;
     var data;
     try {
@@ -775,8 +931,11 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
     var cover = "区间 " + meta.start + " ~ " + meta.end + "。覆盖 " + meta.covered + " 天";
     if (meta.uncovered) cover += "，" + meta.uncovered + " 天无数据（不算零互动，不进持续性分母）";
     else cover += "，无数据 0 天";
+    var diff = FanAudit.followDiff(data);
+    var diffHtml = diff ? FanAudit.followDiffHtml(diff, {masked: state.masked, rows: rows}) : "";
     out.innerHTML = filesHtml + askNote + '<p class="sub">' + esc(cover) + " · " + rows.length + " 个账号</p>" +
       (data.warnings.length ? '<div class="warn">' + esc(data.warnings.join("；")) + "</div>" : "") +
+      diffHtml +
       FanAudit.boardHtml(rows, {masked: state.masked, open: state.open});
     if (keepScroll) window.scrollTo(0, scrollY);
   }

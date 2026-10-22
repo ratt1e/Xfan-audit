@@ -105,6 +105,18 @@ for fn, lst in (("following.csv", following), ("followers.csv", followers)):
         w = csv.writer(f); w.writerow(["handle", "name", "bio"])
         for h in lst:
             w.writerow([h, *people[h]])
+# 上一份关系快照：少了后来新关注 / 新粉，多了后来取关的人。仍是虚构账号。
+prev_following = ["user_01", "user_02", "user_04", "user_05", "user_06", "user_07", "user_09", "user_10",
+                  "user_11", "user_12", "user_15", "user_16", "user_17", "user_20", "user_92"]
+prev_followers = ["user_01", "user_02", "user_04", "user_05", "user_06", "user_07", "user_08", "user_10",
+                  "user_11", "user_12", "user_13", "user_14", "user_18", "user_20", "user_90"]
+extra = {"user_90": ("示例账号90", "上一份粉丝"), "user_92": ("示例账号92", "上一份关注")}
+os.makedirs(os.path.join(HERE, "prev"), exist_ok=True)
+for fn, lst in (("following.csv", prev_following), ("followers.csv", prev_followers)):
+    with open(os.path.join(HERE, "prev", fn), "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f); w.writerow(["handle", "name", "bio"])
+        for h in lst:
+            w.writerow([h, *(people[h] if h in people else extra[h])])
 with open(os.path.join(HERE, "likes.csv"), "w", newline="", encoding="utf-8") as f:
     w = csv.writer(f); w.writerow(["account", "post_id", "post_created_at", "first_observed_at"])
     for k in range(4):
@@ -117,4 +129,4 @@ with open(os.path.join(HERE, "profiles.csv"), "w", newline="", encoding="utf-8")
     for i, (fc, v) in enumerate([(3200, 1), (850, 1), (4100, 1), (600, 0), (1200, 1), (300, 0), (90, 0), (450, 1),
                                  (2000, 0), (700, 1), (520, 1), (310, 0)], 1):
         w.writerow([f"user_{i:02d}", fc, v])
-print(f"replies.csv {len(rows)} 行；following {len(following)}；followers {len(followers)}")
+print(f"replies.csv {len(rows)} 行；following {len(following)}；followers {len(followers)}；上一份 following {len(prev_following)}；上一份 followers {len(prev_followers)}")

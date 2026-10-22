@@ -20,6 +20,7 @@ from datetime import date, datetime, timedelta, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "scripts"))
+import follow_diff  # noqa: E402
 import relationship_stars as rs  # noqa: E402
 from daily_root import load_daily_root, check_output, clear_own_outputs, coverage_lines, write_roster  # noqa: E402
 
@@ -278,6 +279,42 @@ def mutual_txt(x):
     return "✔ 互关" if x["mutual"] else "→ 我关注" if x["i_follow"] else "← 关注我" if x["follows_me"] else ""
 
 
+def follow_block(diff, alias, public):
+    """关注变化。打码时和上面的名单共用同一套账号#，不另起一套。"""
+    collisions = diff["collisions"]
+
+    def label(item):
+        if not public:
+            return html.escape(follow_diff.account_text(item, collisions, at=True))
+        key = follow_diff.public_key(item, collisions)
+        alias.setdefault(key, f"账号#{len(alias) + 1:02d}")
+        return alias[key]
+
+    notes = "".join(f'<p class="muted">{html.escape(note)}</p>' for note in diff["notes"])
+    cards, lists = [], []
+    for key, title in follow_diff.GROUP_ORDER:
+        items = diff[key]
+        count = "—" if items is None else str(len(items))
+        cards.append(f'<div class="card"><div class="num">{count}</div><div class="lab">{html.escape(title)}</div></div>')
+        if items is None:
+            body = '<p class="muted">先不算</p>'
+            heading = title
+        elif not items:
+            body = '<p class="muted">（暂时没有）</p>'
+            heading = f"{title}（0）"
+        else:
+            shown = [label(item) for item in items[:60]]
+            text = "、".join(shown) + ("…" if len(items) > 60 else "")
+            body = f"<p>{text}</p>"
+            heading = f"{title}（{len(items)}）"
+        lists.append(f"<p><b>{html.escape(heading)}</b></p>{body}")
+    return (
+        '<section class="card" id="follow-diff" style="margin-bottom:16px"><h2>关注变化</h2>'
+        f'<p class="muted">{html.escape(follow_diff.NOTE)}</p>{notes}'
+        f'<div class="grid">{"".join(cards)}</div>{"".join(lists)}</section>'
+    )
+
+
 def bars(items, maxv, cls=""):
     out = []
     for k, v, c in items:
@@ -356,6 +393,7 @@ def render(res, meta, public=False):
 <div class="card"><h2>沉睡互关</h2>{small_list('沉睡互关', lambda x: '零互动')}
 <p class="muted">零公开互动 ≠ 没看过，别急着取关；要清理也请手动、分批、慢慢来。</p></div>
 </div>
+{follow_block(meta["follow_diff"], alias, public) if meta.get("follow_diff") else ""}
 <footer>fan-audit v0.1 · 试用版 · 权重待验证 · 所有建议都只是建议，工具不会执行任何操作</footer>
 </body></html>"""
 
@@ -375,6 +413,7 @@ def main(argv=None):
     ap.add_argument("--data", help="单目录输入，默认 data/；不与 --data-root 同用")
     ap.add_argument("--data-root", help="每日数据根目录；也可用 FAN_AUDIT_DATA_ROOT")
     ap.add_argument("--lists", help="每日模式可选关系表目录，只读 following.csv 和 followers.csv")
+    ap.add_argument("--prev-lists", help="上一份关系表目录。写了才在看板里加「关注变化」，不写则和以前一样")
     ap.add_argument("--out", help="输出目录；每日模式默认在数据根目录的 _分析结果/截止日期/")
     ap.add_argument("--overwrite", action="store_true",
                     help="覆盖 --out 里本工具上次生成的结果；目录里有其他文件则停止，不删除")
@@ -385,6 +424,8 @@ def main(argv=None):
     period.add_argument("--all-days", action="store_true", help="按本地时区从最早互动到最晚互动")
     ap.add_argument("--me", help="你自己的用户名（自己回自己的串推会被排除），也可以写进 config.json 的 me")
     a = ap.parse_args(argv)
+    if a.prev_lists and not os.path.isdir(os.path.expanduser(a.prev_lists)):
+        ap.error("上一份关系表目录不存在，或不是目录")
     root = a.data_root or (os.environ.get("FAN_AUDIT_DATA_ROOT") if not a.data else None)
     if a.data_root and a.data:
         ap.error("--data 与 --data-root 不同用；关系表请使用 --lists")
@@ -420,6 +461,14 @@ def main(argv=None):
         data = load_inputs(a.data or "data")
         res, meta = analyze(data, conf, cfg, a.end, a.days, a.all_days)
         a.out = a.out or "output"
+    if a.prev_lists:
+        try:
+            new_dir = a.lists if root else (a.data or "data")
+            if root and not a.lists:
+                new_dir = None
+            meta["follow_diff"] = follow_diff.compare_dirs(a.prev_lists, new_dir)
+        except ValueError as exc:
+            ap.error(str(exc))
     if root and a.overwrite:
         try:
             clear_own_outputs(a.out)
@@ -438,6 +487,8 @@ def main(argv=None):
             print(line)
     for w in meta["warnings"]:
         print("⚠", w)
+    if meta.get("follow_diff"):
+        print(follow_diff.summary_line(meta["follow_diff"]))
     c = Counter(x["tier"] for x in res)
     extra = ""
     if meta.get("covered_days") is not None:

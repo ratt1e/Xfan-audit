@@ -116,6 +116,8 @@ python3 audit.py
 
 多天合并、`--data-root`、`--overwrite` 这些参数见 [docs/TOOLS.md](docs/TOOLS.md)。
 
+和上一份关注、粉丝名单比取关和新粉，见 [docs/TOOLS.md](docs/TOOLS.md)。
+
 ## 星级怎么算（大白话）
 
 只看这段时间（默认最近 30 天）里**你和每个人之间**的公开回复。请求区间里没有互动时间、也没有点赞观察时间的日期是无数据，不进持续性的分母。`sample_data` 这 30 天实际覆盖 28 天。每个人打 0–100 分：
