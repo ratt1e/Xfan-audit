@@ -26,6 +26,29 @@ if (process.argv[2] === "board") {
   }));
   process.exit(0);
 }
+function partFrom(job) {
+  const file = job.file ? (path.isAbsolute(job.file) ? job.file : path.join(root, job.file)) : "";
+  return {
+    name: job.name, text: job.text != null ? job.text : fs.readFileSync(file, "utf8"),
+    owner: job.owner || "", kind: job.kind || ""
+  };
+}
+if (process.argv[2] === "notback") {
+  const spec = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+  const parts = spec.parts.map(partFrom);
+  const data = fan.loadTexts(parts);
+  const opt = Object.assign({end: "2026-10-19", days: 30, gapsAreEmpty: true}, spec.options || {});
+  const result = spec.skipAnalyze ? {rows: spec.rows || []} : fan.analyze(data, opt);
+  const info = fan.notFollowedBack(data, result.rows);
+  process.stdout.write(JSON.stringify({
+    info: info,
+    accounts: (result.rows || []).map(function (row) { return row.account; }),
+    masked: fan.notFollowedBackHtml(info, {masked: true, rows: result.rows || []}),
+    open: fan.notFollowedBackHtml(info, {masked: false, rows: result.rows || []}),
+    kinds: parts.map(function (part) { return part.kind || fan.fileKind(part.name, part.text); })
+  }));
+  process.exit(0);
+}
 if (process.argv[2] === "diff") {
   const spec = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
   const parts = spec.parts.map(function (job) {

@@ -4,7 +4,7 @@ from datetime import date, timedelta
 from pathlib import Path
 import re
 
-OUTPUT_NAMES = ("accounts.csv", "dashboard.html", "dashboard_public.html", "名单.md")
+OUTPUT_NAMES = ("accounts.csv", "dashboard.html", "dashboard_public.html", "名单.md", "没回关.md", "没回关.csv")
 
 
 def norm(value):

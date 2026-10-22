@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 import follow_diff  # noqa: E402
+from daily_root import OUTPUT_NAMES  # noqa: E402
 
 SAMPLE = ROOT / "sample_data"
 PREV = SAMPLE / "prev"
@@ -197,7 +198,7 @@ class TestAuditPrevLists(unittest.TestCase):
         self.assertIn("关注变化：取关我的 2，新粉丝 1，我取关的 2，我新关注的 1", result.stdout)
         self.assertNotIn("user_", result.stdout)
         self.assertNotIn("user_", result.stderr)
-        self.assertEqual(sorted(os.listdir(out.name)), ["accounts.csv", "dashboard.html", "dashboard_public.html"])
+        self.assertEqual(sorted(os.listdir(out.name)), sorted(name for name in OUTPUT_NAMES if name != "名单.md"))
         self.assertEqual(Path(plain.name, "accounts.csv").read_bytes(), Path(out.name, "accounts.csv").read_bytes())
         private = Path(out.name, "dashboard.html").read_text(encoding="utf-8")
         public = Path(out.name, "dashboard_public.html").read_text(encoding="utf-8")
@@ -240,19 +241,21 @@ class TestAuditPrevLists(unittest.TestCase):
                                  account="user_201", direction="in", type="reply", text="测试实质回复"))
         out = base / "out"
         out.mkdir()
-        for name in ("accounts.csv", "dashboard.html", "dashboard_public.html", "名单.md"):
+        for name in OUTPUT_NAMES:
             (out / name).write_text("old-result", encoding="utf-8")
         result = self.run_audit("--data-root", base / "daily", "--lists", SAMPLE, "--prev-lists", PREV,
                                 "--out", out, "--overwrite")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(sorted(path.name for path in out.iterdir()),
-                         ["accounts.csv", "dashboard.html", "dashboard_public.html", "名单.md"])
+        self.assertEqual(sorted(path.name for path in out.iterdir()), sorted(OUTPUT_NAMES))
         private = (out / "dashboard.html").read_text(encoding="utf-8")
         public = (out / "dashboard_public.html").read_text(encoding="utf-8")
         self.assertIn("关注变化", private)
         self.assertIn("@user_90", private)
         self.assertNotIn("old-result", private)
+        self.assertNotIn("old-result", (out / "没回关.md").read_text(encoding="utf-8"))
         self.assertNotIn("user_", public)
+        self.assertNotIn("https", public)
+        self.assertNotIn("x.com", public)
         self.assertIn("账号#", public.split('id="follow-diff"', 1)[1])
         self.assertNotIn("user_90", result.stdout + result.stderr)
 
