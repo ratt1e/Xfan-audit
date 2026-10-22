@@ -269,6 +269,335 @@ def dashboard_css():
     return text[start + len("<style>"):end].strip()
 
 
+_PROFILE_ANCHOR = """  function profileAnchor(handle, text) {
+    if (!handle) return escHtml(text);
+    var href = "https:" + "//x.com/" + handle;
+    return '<a href="' + escHtml(href) + '" target="_blank" rel="noopener noreferrer">' + escHtml(text) + "</a>";
+  }"""
+
+_PROFILE_ANCHOR_MASKED = """  function profileAnchor(handle, text) {
+    return escHtml(text);
+  }"""
+
+_BOOT_JS = """
+(function () {
+  if (typeof document === "undefined") return;
+  var payload = JSON.parse(document.getElementById("fan-audit-data").textContent);
+  var state = {mode: "custom", open: {}};
+  var writing = false;
+  var startEl = document.getElementById("start");
+  var endEl = document.getElementById("end");
+  var out = document.getElementById("out");
+  function optionsFor() {
+    var opt = {me: payload.me || "", config: payload.config, masked: !!payload.masked, showAll: true, open: state.open};
+    if (state.mode === "all") opt.allDays = true;
+    else if (state.mode === "7" || state.mode === "30") opt.days = state.mode === "7" ? 7 : 30;
+    else {
+      opt.end = endEl.value || payload.view.end;
+      var start = startEl.value || payload.view.start;
+      if (opt.end && start) {
+        var span = Math.round((Date.parse(opt.end + "T00:00:00Z") - Date.parse(start + "T00:00:00Z")) / 86400000) + 1;
+        opt.days = span >= 1 ? span : 1;
+      } else opt.days = payload.view.days;
+    }
+    return opt;
+  }
+  function paint(keep) {
+    var scrollY = keep ? window.scrollY : 0;
+    ["d7", "d30", "dall"].forEach(function (id) {
+      var button = document.getElementById(id);
+      button.classList.toggle("on", button.getAttribute("data-mode") === state.mode);
+    });
+    var view = FanAudit.renderReport(payload.data, optionsFor());
+    writing = true;
+    startEl.value = view.meta.start;
+    endEl.value = view.meta.end;
+    writing = false;
+    var meta = view.meta;
+    var cover = "区间 " + meta.start + " ~ " + meta.end + "（请求 " + meta.days + " 天）";
+    cover += "；覆盖 " + meta.covered + " 天";
+    if (meta.uncovered) cover += "，" + meta.uncovered + " 天无数据（不算零互动）";
+    else cover += "，无数据 0 天";
+    document.getElementById("coverage").textContent = cover + " · 只统计公开回复、引用和点赞 · 分数只是线索，不代表真实关系";
+    out.innerHTML = view.html;
+    if (keep) window.scrollTo(0, scrollY);
+  }
+  ["d7", "d30", "dall"].forEach(function (id) {
+    document.getElementById(id).onclick = function () {
+      state.mode = this.getAttribute("data-mode");
+      paint();
+    };
+  });
+  startEl.onchange = endEl.onchange = function () {
+    if (writing) return;
+    state.mode = "custom";
+    paint();
+  };
+  out.addEventListener("click", function (e) {
+    var el = e.target;
+    while (el && el !== out) {
+      if (el.getAttribute && el.getAttribute("data-expand")) {
+        state.open[el.getAttribute("data-expand")] = true;
+        paint(true);
+        return;
+      }
+      if (el.getAttribute && el.getAttribute("data-jump-id")) {
+        jump(el.getAttribute("data-jump-id"));
+        return;
+      }
+      if (el.getAttribute && el.getAttribute("data-jump")) {
+        jump("tier-" + el.getAttribute("data-jump"));
+        return;
+      }
+      el = el.parentNode;
+    }
+  });
+  function jump(id) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    var plan = FanAudit.jumpPlan(+(el.getAttribute("data-total") || 0));
+    var note = document.getElementById("jump-note");
+    if (note) note.textContent = plan.message;
+    if (plan.scroll) el.scrollIntoView({behavior: "smooth", block: "start"});
+    var title = el.querySelector("h2");
+    if (!title) return;
+    title.classList.remove("flash");
+    void title.offsetWidth;
+    title.classList.add("flash");
+  }
+  paint();
+})();
+"""
+
+
+def dashboard_engine(public=False):
+    """和网页同一段打分脚本。打码版拿掉主页链接，生成的文件不额外请求。"""
+    page = os.path.join(HERE, "web", "index.html")
+    with open(page, encoding="utf-8") as f:
+        text = f.read()
+    start = text.find('<script id="fan-audit-engine">')
+    end = text.find("</script>", start)
+    if start < 0 or end < 0 or _PROFILE_ANCHOR not in text:
+        raise ValueError("网页打分脚本读不了")
+    script = text[start + len('<script id="fan-audit-engine">'):end].strip()
+    if public:
+        script = script.replace(_PROFILE_ANCHOR, _PROFILE_ANCHOR_MASKED, 1)
+        for banned in ("https", "x.com", 'target="_blank"', "user_"):
+            if banned in script:
+                raise ValueError("打码脚本里还有不该出现的内容")
+    return script
+
+
+def _json_for_html(payload):
+    text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return text.replace("&", "\\u0026").replace("<", "\\u003c").replace(">", "\\u003e")
+
+
+class _OrderMask:
+    """打码用的代号。同一真实值始终同一代号，并且按原字符串的顺序编号，排序才和私有版一致。"""
+
+    def __init__(self):
+        self.handles, self.ids, self.tokens = {}, {}, {}
+
+    def add_handle(self, value):
+        key = norm(value)
+        if key:
+            self.handles.setdefault(key, None)
+
+    def add_id(self, value):
+        key = str(value or "").strip()
+        if key:
+            self.ids.setdefault(key, None)
+
+    def add_token(self, value):
+        key = str(value or "").strip()
+        if key:
+            self.tokens.setdefault(key, None)
+
+    def finish(self):
+        for index, key in enumerate(sorted(self.handles), 1):
+            self.handles[key] = "a%04d" % index
+        for index, key in enumerate(sorted(self.ids), 1):
+            self.ids[key] = "i%04d" % index
+        for index, key in enumerate(sorted(self.tokens), 1):
+            self.tokens[key] = "t%04d" % index
+
+    def handle(self, value):
+        key = norm(value)
+        return "" if not key else self.handles[key]
+
+    def uid(self, value):
+        key = str(value or "").strip()
+        return "" if not key else self.ids[key]
+
+    def token(self, value):
+        key = str(value or "").strip()
+        return "" if not key else self.tokens[key]
+
+
+def _role_items(directory, role):
+    if not directory:
+        return None
+    loaded = follow_diff.load_role(directory, None, role)
+    if loaded is None:
+        return None
+    return [{"id": item.get("id") or "", "handle": item.get("handle") or ""} for item in loaded["items"]]
+
+
+def _map_handle(mask, value):
+    return mask.handle(value) if mask else norm(value)
+
+
+def _map_plain(mask, value, kind):
+    text = str(value or "").strip()
+    if not text or not mask:
+        return text
+    return mask.uid(text) if kind == "id" else mask.token(text)
+
+
+def _emit_people(items, mask):
+    if not items:
+        return []
+    out = []
+    for item in items:
+        handle = _map_handle(mask, item.get("handle"))
+        uid = _map_plain(mask, item.get("id"), "id")
+        if handle or uid:
+            out.append({"id": uid, "handle": handle})
+    return out
+
+
+def _people_map(mapping, mask):
+    out = {}
+    for handle, row in (mapping or {}).items():
+        key = _map_handle(mask, handle)
+        if not key:
+            continue
+        count = row.get("followers_count")
+        out[key] = {
+            "verified": row.get("verified") or "",
+            "is_blue_verified": row.get("is_blue_verified") or "",
+            "followers_count": "" if count in (None, "") else count,
+        }
+    return out
+
+
+def _embed_rows(rows, conf, mask):
+    greet = conf.get("greetings") or {}
+    words = greet.get("words") or []
+    max_len = greet.get("max_core_len", 15)
+    from daily_collect import is_greeting
+    embedded = []
+    for row in rows or []:
+        kind = (row.get("type") or "").strip()
+        item = {
+            "id": _map_plain(mask, row.get("id"), "token"),
+            "tweet_id": _map_plain(mask, row.get("tweet_id"), "token"),
+            "ts": row.get("ts") or "",
+            "account": _map_handle(mask, row.get("account")),
+            "direction": row.get("direction") or "",
+            "type": kind,
+            "conversation_id": _map_plain(mask, row.get("conversation_id"), "token"),
+            "in_reply_to_status_id": _map_plain(mask, row.get("in_reply_to_status_id"), "token"),
+            "parent_kind": row.get("parent_kind") or "",
+            "post_created_at": row.get("post_created_at") or "",
+            "first_observed_at": row.get("first_observed_at") or "",
+            "observed_baseline": row.get("observed_baseline") or "",
+        }
+        if kind in ("reply", "quote", "mention"):
+            flag = row.get("is_greeting")
+            if flag not in ("true", "false"):
+                flag = "true" if is_greeting(row.get("text"), words, max_len) else "false"
+            item["is_greeting"] = flag
+        embedded.append(item)
+    return embedded
+
+
+def _scoring_config(conf, mask):
+    cfg = {}
+    for key in ("window", "weights", "persistence", "greeting_cap", "likes", "insufficient", "stars", "tiers", "greetings"):
+        value = conf.get(key)
+        if value is not None:
+            cfg[key] = _strip_notes(value)
+    cfg["exclude_accounts"] = [_map_handle(mask, name) for name in (conf.get("exclude_accounts") or [])]
+    return cfg
+
+
+def _strip_notes(value):
+    if isinstance(value, dict):
+        return {key: _strip_notes(item) for key, item in value.items() if not str(key).startswith("_")}
+    if isinstance(value, list):
+        return [_strip_notes(item) for item in value]
+    return value
+
+
+def dashboard_payload(data, conf, meta, public, lists_dir, prev_dir, keep_path):
+    """嵌进看板的原始行和关系名单。打码版只留代号，不留用户名、用户 ID 和正文。"""
+    mask = _OrderMask() if public else None
+    following_items = _role_items(lists_dir, "following")
+    follower_items = _role_items(lists_dir, "followers")
+    prev_following = _role_items(prev_dir, "following")
+    prev_followers = _role_items(prev_dir, "followers")
+    keep_ids, keep_handles = nfb.load_keep(keep_path)
+    if mask:
+        for row in data.get("rows") or []:
+            mask.add_handle(row.get("account"))
+            mask.add_token(row.get("id"))
+            mask.add_token(row.get("tweet_id"))
+            mask.add_token(row.get("conversation_id"))
+            mask.add_token(row.get("in_reply_to_status_id"))
+        for bucket in (data.get("following"), data.get("followers"), data.get("profiles")):
+            for handle in bucket or {}:
+                mask.add_handle(handle)
+        for group in (following_items, follower_items, prev_following, prev_followers):
+            for item in group or []:
+                mask.add_handle(item.get("handle"))
+                mask.add_id(item.get("id"))
+        for handle in keep_handles:
+            mask.add_handle(handle)
+        for uid in keep_ids:
+            mask.add_id(uid)
+        if norm(conf.get("me")):
+            mask.add_handle(conf.get("me"))
+        for name in conf.get("exclude_accounts") or []:
+            mask.add_handle(name)
+        mask.finish()
+    me = _map_handle(mask, conf.get("me"))
+    kept_ids = {_map_plain(mask, uid, "id"): 1 for uid in keep_ids if _map_plain(mask, uid, "id")}
+    kept_handles = {_map_handle(mask, handle): 1 for handle in keep_handles if _map_handle(mask, handle)}
+    coverage = data.get("coverage") or {}
+    body = {
+        "rows": _embed_rows(data.get("rows"), conf, mask),
+        "following": _people_map(data.get("following"), mask),
+        "followers": _people_map(data.get("followers"), mask),
+        "profiles": _people_map(data.get("profiles"), mask),
+        "coverage": {"read_days": list(coverage.get("read_days") or [])},
+        "sawFollowing": following_items is not None,
+        "sawFollowers": follower_items is not None,
+        "followingAccounts": _emit_people(following_items, mask),
+        "followerAccounts": _emit_people(follower_items, mask),
+        "sawPrevFollowing": prev_following is not None,
+        "sawPrevFollowers": prev_followers is not None,
+        "prevFollowingAccounts": _emit_people(prev_following, mask),
+        "prevFollowerAccounts": _emit_people(prev_followers, mask),
+        "keepIds": kept_ids,
+        "keepHandles": kept_handles,
+        "notBackAlways": True,
+    }
+    payload = {
+        "masked": bool(public),
+        "me": me,
+        "config": _scoring_config(conf, mask),
+        "view": {"start": meta["start"], "end": meta["end"], "days": meta["days"]},
+        "data": body,
+    }
+    if public:
+        blob = json.dumps(payload, ensure_ascii=False)
+        if any(token in blob for token in ("user_", "https", "x.com")):
+            raise ValueError("打码数据里还有不该出现的内容")
+    return payload
+
+
 def profile_link(handle, label):
     url = "https://x.com/" + handle
     return (
@@ -389,7 +718,7 @@ def tier_color(tier):
     return "gray"
 
 
-def render(res, meta, public=False):
+def render(res, meta, data=None, conf=None, public=False, lists_dir=None, prev_dir=None, keep_path=None):
     alias = {}
     if public:
         for index, row in enumerate(res, 1):
@@ -453,11 +782,26 @@ def render(res, meta, public=False):
     warn = "".join(f"<div>⚠ {html.escape(w)}</div>" for w in meta["warnings"])
     title = "粉丝体检 · 互动关系星级（试用版）" + ("· 对外打码版" if public else "")
     sections = "".join(tier_section(tier) for tier in TIERS)
-    return f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+    payload = {}
+    if data is not None and conf is not None:
+        payload = dashboard_payload(data, conf, meta, public, lists_dir, prev_dir, keep_path)
+    engine = dashboard_engine(public)
+    controls = (
+        '<div class="row">'
+        f'<label>开始<input id="start" type="date" value="{html.escape(str(meta["start"]))}"></label>'
+        f'<label>结束<input id="end" type="date" value="{html.escape(str(meta["end"]))}"></label>'
+        '<button type="button" id="d7" data-mode="7">最近 7 天</button>'
+        '<button type="button" id="d30" data-mode="30">最近 30 天</button>'
+        '<button type="button" id="dall" data-mode="all">全部</button>'
+        "</div>"
+    )
+    page = f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(title)}</title><style>{dashboard_css()}</style></head><body>
 <h1 id="top">{html.escape(title)}</h1>
-<div class="sub">区间 {meta['start']} ~ {meta['end']}（请求 {meta['days']} 天，{html.escape(meta['tz'])}）{coverage_note(meta)} · 只统计公开回复、引用和点赞 · 分数只是线索，不代表真实关系</div>
+{controls}
+<div class="sub" id="coverage">区间 {meta['start']} ~ {meta['end']}（请求 {meta['days']} 天，{html.escape(meta['tz'])}）{coverage_note(meta)} · 只统计公开回复、引用和点赞 · 分数只是线索，不代表真实关系</div>
 {f'<div class="warn">{warn}</div>' if warn else ''}
+<div id="out">
 <div class="grid tier-cards">{tier_cards}</div>
 <div class="grid stat-cards">{stat_cards}</div>
 <div class="panels">
@@ -468,8 +812,21 @@ def render(res, meta, public=False):
 {sections}
 {not_back_block(info, alias, public)}
 {follow_block(diff, alias, public) if diff else ""}
-<footer>fan-audit v0.1 · 试用版 · 权重待验证 · 所有建议都只是建议，工具不会自动取关或屏蔽</footer>
+</div>
+<footer>fan-audit v0.1 · 试用版 · 权重待验证 · 所有建议都只是建议，工具不会自动取关或屏蔽。改日期只在这份文件里重算，不联网。</footer>
+<script id="fan-audit-engine">
+{engine}
+</script>
+<script type="application/json" id="fan-audit-data">{_json_for_html(payload)}</script>
+<script>
+{_BOOT_JS}
+</script>
 </body></html>"""
+    if public:
+        for banned in ("user_", "https", "x.com", 'target="_blank"'):
+            if banned in page:
+                raise ValueError("打码看板里还有不该出现的内容")
+    return page
 
 
 def write_csv(res, path):
@@ -556,10 +913,17 @@ def main(argv=None):
             ap.error(str(exc) if isinstance(exc, ValueError) else "输出目录无法更新")
     os.makedirs(a.out, exist_ok=True)
     write_csv(res, os.path.join(a.out, "accounts.csv"))
+    try:
+        private_html = render(res, meta, data, conf, public=False, lists_dir=lists_dir,
+                              prev_dir=a.prev_lists, keep_path=a.keep_list)
+        public_html = render(res, meta, data, conf, public=True, lists_dir=lists_dir,
+                             prev_dir=a.prev_lists, keep_path=a.keep_list)
+    except ValueError as exc:
+        ap.error(str(exc))
     with open(os.path.join(a.out, "dashboard.html"), "w", encoding="utf-8") as f:
-        f.write(render(res, meta, public=False))
+        f.write(private_html)
     with open(os.path.join(a.out, "dashboard_public.html"), "w", encoding="utf-8") as f:
-        f.write(render(res, meta, public=True))
+        f.write(public_html)
     try:
         nfb.write_private(a.out, meta["not_followed_back"])
     except ValueError as exc:

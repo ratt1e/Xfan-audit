@@ -107,7 +107,10 @@ class TestAuditSample(unittest.TestCase):
             page = f.read()
         self.assertIn("覆盖 28 天", page)
         self.assertIn("2 天无数据", page)
-        self.assertNotIn("关注变化", page)
+        self.assertIn('id="start"', page)
+        self.assertIn("最近 30 天", page)
+        visible = page.split('<script id="fan-audit-engine">', 1)[0]
+        self.assertNotIn("关注变化", visible)
 
     def test_missing_data_dir_message(self):
         p = subprocess.run([sys.executable, os.path.join(ROOT, "audit.py"), "--data", tempfile.mkdtemp()],
