@@ -6,7 +6,7 @@ README 只留三步。多天参数、仓库里的其他命令，以及有效曝�
 
 单目录：CSV 放进 `data/`，运行 `python3 audit.py`。它和 `--data-root`、网页用同一套规则：没有互动时间、也没有点赞观察时间的日期是无数据，不进持续性分母，结果里会写出计分覆盖天数。`sample_data` 请求最近 30 天（2026-09-20 ~ 2026-10-19）时，计分覆盖 28 天，无数据 2 天；分层仍是金牌 3，银牌 2，他常来 2，我常去 1，沉睡 3，样本不足 3，其他有分 4，零互动 2。整天都有记录时，分母和按日历天数算相同。已经有每天一份采集时，用下面这些参数。
 
-常用参数：`--data 目录`、`--out 目录`、`--overwrite`（只覆盖本工具自己的旧结果）、`--days 30`、`--all-days`（全部互动日期）、`--end 2026-10-19`、`--me 你的用户名`（排除自己回自己）、`--config config.json`、`--prev-lists 旧名单目录`（多一节关注变化，不写则看板和以前一样）。
+常用参数：`--data 目录`、`--out 目录`、`--overwrite`（只覆盖本工具自己的旧结果）、`--days 30`、`--all-days`（全部互动日期）、`--end 2026-10-19`、`--me 你的用户名`（排除自己回自己）、`--config config.json`、`--prev-lists 旧名单目录`（多一节关注变化，不写则看板和以前一样）、`--keep-list 保留名单.txt`（没回关里去掉故意关注的人）。
 
 ```bash
 python3 audit.py --data-root ~/x-data/ --lists ~/x-lists/ --me 你的用户名 --out ~/x-data/_看板/ --overwrite
@@ -14,7 +14,7 @@ python3 audit.py --data-root ~/x-data/ --lists ~/x-lists/ --me 你的用户名 -
 
 `--data-root` 合并多天的 `interactions.csv`。`--lists` 只读 `following.csv` 和 `followers.csv`，不读该目录里的回复。环境变量 `FAN_AUDIT_DATA_ROOT` 等效于 `--data-root`；显式写了 `--data` 就回到单目录，不受这个变量影响。
 
-每日结果必须写在仓库外，并多一份私有的 `名单.md`。不加 `--overwrite` 时，已有同名结果会拒绝覆盖。`--overwrite` 只替换本工具生成的 `dashboard.html`、`dashboard_public.html`、`accounts.csv`、`名单.md`。目录里还有别的文件就停下，不删除。仓库内和日期输入目录始终不能写。
+每日结果必须写在仓库外，并多一份私有的 `名单.md`。不加 `--overwrite` 时，已有同名结果会拒绝覆盖。`--overwrite` 只替换本工具生成的 `dashboard.html`、`dashboard_public.html`、`accounts.csv`、`名单.md`、`没回关.md`、`没回关.csv`。目录里还有别的文件就停下，不删除。仓库内和日期输入目录始终不能写。
 
 采集目录、额度和覆盖天数的说明见 [DAILY_COLLECT.md](DAILY_COLLECT.md#多天一起分析)。
 
@@ -28,9 +28,23 @@ python3 scripts/follow_diff.py --old ~/x-lists-old/ --new ~/x-lists/ --out ~/x-d
 
 `--old` 和 `--new` 里放 `following.csv`、`followers.csv`，或者 twitter-web-exporter 导出的 JSON（文件名里带「正在关注 / Following」「关注者 / Followers」就能认出来）。也可以用 `--old-following`、`--old-followers`、`--new-following`、`--new-followers` 分别指定文件。账号名只写进 `--out` 里的 `关注变化.md`，终端只打印四组人数：取关我的、新粉丝、我取关的、我新关注的。
 
-`audit.py` 加上 `--prev-lists 旧名单目录` 时，看板末尾多一节「关注变化」，四组和上面一样。新名单就是这次的 `--lists`，或单目录模式里的 `following.csv` / `followers.csv`。不写这个参数时，看板和以前一样。打码版 `dashboard_public.html` 把这些账号也换成账号#01 这种，和上面的名单共用同一套编号。`--overwrite` 仍然只替换原来的四份结果，不会多写文件。
+`audit.py` 加上 `--prev-lists 旧名单目录` 时，看板末尾多一节「关注变化」，四组和上面一样。新名单就是这次的 `--lists`，或单目录模式里的 `following.csv` / `followers.csv`。不写这个参数时，看板里没有这一节。打码版 `dashboard_public.html` 把这些账号也换成账号#01 这种，和上面的名单共用同一套编号。这一节只写在看板里，不另存文件。
 
 网页把旧名单一起拖进去，在每一行的「认成」里选「旧·关注者」或「旧·正在关注」。文件名里带「旧」或 `old` / `prev` 时会预先选上。打码模式同样生效，计算仍在浏览器里完成。
+
+## 没回关
+
+用当前的正在关注和关注者算出「我关注了、对方没回关」。不需要旧名单。有用户 ID 时按 ID 对齐，没有就用用户名。零互动的排在前面，然后按分数从低到高。每一行有用户名、主页、互动次数、分数和当前分层。
+
+```bash
+python3 audit.py --data sample_data --keep-list ~/keep.txt
+```
+
+`--keep-list` 可选。文本文件里一行一个用户名或用户 ID，`#` 开头是注释，用来去掉你故意关注的人。私有的 `没回关.md` 和 `没回关.csv` 写在 `--out`，含用户名和主页。打码版看板用账号#01 这种编号，和上面的名单同一套，并且不放主页链接。`--overwrite` 会连这两份一起替换。
+
+工具不会自动取关或屏蔽。要取关请手动、慢慢来。
+
+网页只要当前的关注者和正在关注就能显示这一节；打码模式同样生效，计算仍在浏览器里完成。故意关注的人拖进去，认成「保留名单」。
 
 ## 仓库里的其他工具
 
@@ -46,6 +60,7 @@ python3 fan_audit.py --following examples/following.csv --followers examples/fol
 - `scripts/daily_collect.py`：把 X 官方只读接口的原始 JSON 转成 `interactions.csv`，见 [DAILY_COLLECT.md](DAILY_COLLECT.md)。
 - `scripts/relationship_stars.py`：只打星的命令行版本。
 - `scripts/follow_diff.py`：对比两份关注和粉丝名单，列出取关和新关注。见上面的「关注变化」。
+- 没回关名单在 `audit.py` 里，见上面的「没回关」。工具不会自动取关或屏蔽。
 - `adapters/`：twitter-web-exporter、X 官方归档、通用 CSV 的转换脚本。
 
 ## 有效曝光规则
