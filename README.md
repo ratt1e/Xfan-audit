@@ -84,9 +84,9 @@ GitHub Pages 的配置在 `.github/workflows/pages.yml`，准备从 `/web` 发�
 python3 audit.py --data-root ~/x-data/ --lists ~/x-lists/ --me 你的用户名 --out ~/x-data/_看板/ --overwrite
 ```
 
-含账号名的看板、`accounts.csv` 和 `名单.md` 只留在你的电脑上。不要部署到公网，也不要放到网盘的公开链接里。要给别人看，用打码的 `dashboard_public.html` 自己截一张图。
+含账号名的看板、`accounts.csv`、`名单.md` 和没回关名单只留在你的电脑上。不要部署到公网，也不要放到网盘的公开链接里。要给别人看，用打码的 `dashboard_public.html` 自己截一张图。
 
-`--overwrite` 只替换这个目录里本工具生成的四份结果：`dashboard.html`、`dashboard_public.html`、`accounts.csv`、`名单.md`。目录里如果还有别的文件，命令会报错停下，不会删除。不加 `--overwrite` 时，已有结果仍然拒绝覆盖。仓库内和日期输入目录始终不能写。
+`--overwrite` 只替换这个目录里本工具生成的结果：`dashboard.html`、`dashboard_public.html`、`accounts.csv`、`名单.md`、`没回关.md`、`没回关.csv`。目录里如果还有别的文件，命令会报错停下，不会删除。不加 `--overwrite` 时，已有结果仍然拒绝覆盖。仓库内和日期输入目录始终不能写。
 
 ### Python 命令行
 
@@ -110,13 +110,14 @@ python3 audit.py
 
 | 文件 | 内容 |
 |---|---|
-| `dashboard.html` | 看板：星级分布、分层、金牌和银牌名单、建议动作。**含真实账号名，只给自己看** |
-| `dashboard_public.html` | 同一个看板的打码版，账号名换成「账号#01」，不列单向和沉睡名单，可以截图分享 |
+| `dashboard.html` | 看板：每层一张可点的数字卡片，点进去是该层名单。用户名链到主页。**含真实账号名，只给自己看** |
+| `dashboard_public.html` | 同一个看板的打码版，账号名换成「账号#01」，没有主页链接，可以截图分享 |
 | `accounts.csv` | 每个账号一行：分层、星级、分数、各项明细 |
+| `没回关.md`、`没回关.csv` | 我关注、对方没回关。含主页链接，**只给自己看**。打码看板里同一节不放链接 |
 
 多天合并、`--data-root`、`--overwrite` 这些参数见 [docs/TOOLS.md](docs/TOOLS.md)。
 
-和上一份关注、粉丝名单比取关和新粉，见 [docs/TOOLS.md](docs/TOOLS.md)。
+和上一份关注、粉丝名单比取关和新粉，见 [docs/TOOLS.md](docs/TOOLS.md)。我关注但对方没回关的名单，也在那里。
 
 ## 星级怎么算（大白话）
 

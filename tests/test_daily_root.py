@@ -11,6 +11,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import audit
+from daily_root import OUTPUT_NAMES
 
 
 class TestDailyRoot(unittest.TestCase):
@@ -173,15 +174,19 @@ class TestDailyRoot(unittest.TestCase):
         self.day("2026-10-01", [self.row()])
         output = self.base / "output"
         output.mkdir()
-        for name in ("accounts.csv", "dashboard.html", "dashboard_public.html", "名单.md"):
+        for name in OUTPUT_NAMES:
             (output / name).write_text("old-result", encoding="utf-8")
         self.cli("--data-root", self.daily, "--out", output, "--overwrite")
         names = sorted(path.name for path in output.iterdir())
-        self.assertEqual(names, ["accounts.csv", "dashboard.html", "dashboard_public.html", "名单.md"])
+        self.assertEqual(names, sorted(OUTPUT_NAMES))
         dashboard = (output / "dashboard.html").read_text(encoding="utf-8")
         self.assertIn("粉丝体检", dashboard)
         self.assertNotIn("old-result", dashboard)
         self.assertIn("user_201", (output / "accounts.csv").read_text(encoding="utf-8-sig"))
+        missing_lists = (output / "没回关.md").read_text(encoding="utf-8")
+        self.assertIn("先不算", missing_lists)
+        self.assertNotIn("user_201", missing_lists)
+        self.assertNotIn("old-result", missing_lists)
 
     def test_overwrite_stops_when_directory_has_other_files(self):
         self.day("2026-10-01", [self.row()])
