@@ -12,7 +12,7 @@
 
 所有数据只在你自己的浏览器或电脑里处理，不会上传。工具全程只读，不会替你点赞、关注、取关，也不会替你发帖。
 
-## 两种用法，选一种
+## 三种用法，选一种
 
 ### 用法一：网页版，（无Grok bot）
 
@@ -37,6 +37,37 @@
 3. **每周导一次关注名单。** 互动数据它每晚会自动采集，关注关系还要用上面的插件导一下，每周发给它一次就行。
 
 平时想看结果随时跟它说一声，它就会用最新数据给你出一份看板。
+
+### 用法三：油猴脚本（不用导出文件）
+
+适合没有 Grok Bot、也不想来回拖 JSON 的情况。装上脚本后打开 X，自己往下翻几个页面，点页面上的「粉丝体检」就能看到和网页版同一套分层。
+
+脚本只读你正在浏览时，页面自己已经收到的内容（主页帖子和回复、`to:你的用户名` 搜索、粉丝、正在关注）。它不另外向 X 发请求，不自动滚动，不点赞、不关注、不取关、不发帖，也不读 cookie 或 token。数据留在脚本管理器里，默认保留 90 天。
+
+X 的服务条款禁止未经授权的自动化抓取。所以这里没有自动翻页，也没有批量操作。只被动记下你翻过的内容，记不全是正常的，尤其是「别人回我」。这不能保证账号不受平台规则影响。
+
+安装步骤：
+
+1. 安装浏览器扩展 [Tampermonkey](https://www.tampermonkey.net/)。这次试用按 Tampermonkey + Chrome 来写。
+2. 让扩展真正能跑用户脚本。
+   - Chrome 138 及以上：地址栏打开 `chrome://extensions`，找到 Tampermonkey，点进详情，打开「允许用户脚本」。
+   - 更早的 Chrome 没有这个开关：在同一页右上角打开「开发者模式」。
+   - 装完脚本却完全没反应时，先回来检查这一步。
+
+   > 截图占位：Chrome 扩展详情页里，Tampermonkey 的「允许用户脚本」开关。图还没放进仓库，之后可以补在 `docs/img/userscript-allow.png`。这次没有附截图。
+
+3. 用浏览器打开下面这个地址。Tampermonkey 会弹出安装页，点安装。以后脚本更新也走这个链接（文件头里的更新地址指向仓库 `main` 分支上的这份文件）：
+
+   `https://raw.githubusercontent.com/ratt1e/Xfan-audit/main/userscript/fan-audit.user.js`
+
+4. 打开 x.com 并登录。页面右下角出现「粉丝体检」。刚装好是空的，按面板里的说明，依次打开自己的关注列表、粉丝列表和主页回复页，手动往下翻几屏。
+5. 「别人回我」要另外补：自己打开搜索，输入 `to:你的用户名`，选「最新」，再往下翻；或者点开自己的几条帖子。翻到哪，脚本记到哪。
+
+面板顶部有「一键打码」，账号名会换成「账号#01」，主页链接也会去掉，这个开关会记住。也可以全部删除本机数据，或导出、导入一份 JSON 备份。时区默认跟浏览器，可以改。
+
+「下载看板 HTML」会试着把当前结果存成一个文件。X 的页面会不会拦住这次下载，还要在你自己的浏览器里看一次（待核实）。下不来就先用 JSON 备份。
+
+源码在 `userscript/`。安装用的单文件是构建结果 `userscript/fan-audit.user.js`，打分引擎在构建时从 `web/index.html` 抽出，公式只维护一份。
 
 ## 星级怎么算
 
@@ -65,7 +96,7 @@
 
 ## English (brief)
 
-**fan-audit** scores two-way public conversations on X (Twitter). Open the [web version](https://ratt1e.github.io/Xfan-audit/) (or `web/index.html` offline) and drop in a twitter-web-exporter JSON export (your tweets, following, followers) or `interactions.csv`. A 「用户推文」 export is only the posts you sent; gold, silver, and round-trip scores stay low until you also export a `to:username` search for replies to you. Scrolling and rate limits can still leave gaps. The page calculates stars and tiers in your browser timezone, shows that timezone, and does not upload anything. A mask button replaces account names before you take a screenshot. The generated private dashboard has the same display-only switch; that file still contains real names, so share `dashboard_public.html`. Nightly runs can pass `--auto-prev` to compare the previous follow export. The Python command line remains for daily collection: a read-only collector such as Grok Bot can write `interactions.csv`, and `python3 audit.py --data sample_data --tz America/Los_Angeles` runs the same scoring offline. `--tz` overrides `config.json`, which overrides the computer's local timezone. Standard library only, Python 3.9+. Weights are initial values, not yet validated. No automatic likes, follows, or posts. The named dashboard stays on your machine. MIT License.
+**fan-audit** scores two-way public conversations on X (Twitter). Open the [web version](https://ratt1e.github.io/Xfan-audit/) (or `web/index.html` offline) and drop in a twitter-web-exporter JSON export (your tweets, following, followers) or `interactions.csv`. A 「用户推文」 export is only the posts you sent; gold, silver, and round-trip scores stay low until you also export a `to:username` search for replies to you. Scrolling and rate limits can still leave gaps. The page calculates stars and tiers in your browser timezone, shows that timezone, and does not upload anything. A mask button replaces account names before you take a screenshot. The generated private dashboard has the same display-only switch; that file still contains real names, so share `dashboard_public.html`. Nightly runs can pass `--auto-prev` to compare the previous follow export. A Tampermonkey script at `userscript/fan-audit.user.js` can show the same board on x.com. It only reads GraphQL responses the page already loaded while you browse, stores short fields in the userscript manager, and does not send its own requests or scroll the page. X's terms prohibit unauthorized automated scraping, so none is included. Chrome 138+ also needs the extension's "Allow User Scripts" switch. The Python command line remains for daily collection: a read-only collector such as Grok Bot can write `interactions.csv`, and `python3 audit.py --data sample_data --tz America/Los_Angeles` runs the same scoring offline. `--tz` overrides `config.json`, which overrides the computer's local timezone. Standard library only, Python 3.9+. Weights are initial values, not yet validated. No automatic likes, follows, or posts. The named dashboard stays on your machine. MIT License.
 
 ---
 

@@ -32,6 +32,8 @@ TEXT_COLS = ("text", "full_text", "正文")
 ALLOWED_HANDLE = re.compile(r"^(user_\d+|me_demo|demo_owner|grok|media|keyframes|import|font-face)$", re.I)
 AUTHOR = "ranger" + "_escape"  # 拆开写，免得本文件自己被扫出来
 AUTHOR_LINE_HINT = "作者正在 X 上连载"
+# 油猴脚本头里、行首那个指令符号后面的 match / grant 不是在点名。只认这种行。
+USERSCRIPT_DIRECTIVE = re.compile(r"^\s*//\s*@([A-Za-z][\w-]*)\b")
 RULES = [
     ("本机绝对路径", re.compile(r"(?<![\w.])(/Users/[A-Za-z0-9._-]+|/home/[a-z][a-z0-9_-]*/|[A-Za-z]:\\Users\\)")),
     ("本机路径", re.compile(r"(?<![\w.])/(workspace|cursor/stores|private/var)/")),
@@ -123,14 +125,19 @@ def scan(repo, names, texts, allow_ids=()):
                     findings.append((rel, i, label, m.group(0)))
             # 仓库地址 github.com/<作者>/... 不算点名（GitHub 用户名可能和 X 账号相同）
             line_a = re.sub(r"github\.com/" + AUTHOR + r"\b", "github.com/", line, flags=re.I)
-            for m in re.finditer(r"(?<![\w.])@([A-Za-z0-9_]{2,15})\b", line_a):
-                h = m.group(1)
-                if h.lower() == AUTHOR:
-                    if not (rel == "README.md" and AUTHOR_LINE_HINT in line):
-                        findings.append((rel, i, "作者账号出现在引流行以外", "@" + h))
-                elif not ALLOWED_HANDLE.match(h):
-                    findings.append((rel, i, "@账号不在白名单（虚构示例请用 user_01 这种）", "@" + h))
-            if AUTHOR in line_a.lower() and "@" + AUTHOR not in line_a.lower() and not (rel == "README.md" and AUTHOR_LINE_HINT in line):
+            directive_match = USERSCRIPT_DIRECTIVE.match(line)
+            directive = directive_match.group(1).lower() if directive_match else ""
+            if not directive:
+                for m in re.finditer(r"(?<![\w.])@([A-Za-z0-9_]{2,15})\b", line_a):
+                    h = m.group(1)
+                    if h.lower() == AUTHOR:
+                        if not (rel == "README.md" and AUTHOR_LINE_HINT in line):
+                            findings.append((rel, i, "作者账号出现在引流行以外", "@" + h))
+                    elif not ALLOWED_HANDLE.match(h):
+                        findings.append((rel, i, "@账号不在白名单（虚构示例请用 user_01 这种）", "@" + h))
+            # 脚本头的 author 指令是安装页署名，和 README 引流行是同一个人，不当成漏出的账号。
+            author_ok = (rel == "README.md" and AUTHOR_LINE_HINT in line) or directive == "author"
+            if AUTHOR in line_a.lower() and "@" + AUTHOR not in line_a.lower() and not author_ok:
                 findings.append((rel, i, "作者账号出现在引流行以外", AUTHOR))
             if name_re:
                 for m in name_re.finditer(line):
