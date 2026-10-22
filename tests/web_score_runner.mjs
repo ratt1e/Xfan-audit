@@ -34,7 +34,7 @@ if (process.argv[2] === "dashboard") {
   const opt = {
     me: payload.me || "",
     config: payload.config,
-    masked: !!payload.masked,
+    masked: !!payload.masked || !!extra.masked,
     showAll: true,
     gapsAreEmpty: true
   };

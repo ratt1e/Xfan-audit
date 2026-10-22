@@ -787,6 +787,13 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
     return bad;
   }
   function followDiff(data) {
+    if (data && data.followAuto && data.followAuto.waiting) {
+      var waitingNote = data.followAuto.note || "";
+      return {
+        unfollowed_me: null, new_followers: null, i_unfollowed: null, i_followed: null,
+        notes: waitingNote ? [waitingNote] : [], collisions: {}, ready: false
+      };
+    }
     if (!data || (!data.sawPrevFollowers && !data.sawPrevFollowing)) return null;
     var notes = [];
     var unfollowed = null, fresh = null, dropped = null, added = null;
@@ -802,6 +809,7 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
       dropped = onlyIn(oldFol, newFol);
       added = onlyIn(newFol, oldFol);
     } else notes.push("没有同时找到旧的和新的正在关注，我取关的和我新关注的先不算");
+    if (data.followAuto && data.followAuto.note) notes.unshift(data.followAuto.note);
     return {
       unfollowed_me: unfollowed, new_followers: fresh, i_unfollowed: dropped, i_followed: added,
       notes: notes, collisions: collisionMap([unfollowed, fresh, dropped, added]),
