@@ -135,7 +135,7 @@ python3 audit.py
 
 ```
 web/index.html            拖入 JSON 或 CSV 的网页（不联网）
-.github/workflows/pages.yml  从 /web 发布的配置，还没开启
+.github/workflows/pages.yml  从 /web 发布到 GitHub Pages（手动运行）
 audit.py                  一行命令出看板（进阶用法）
 config.json               词表、权重、星级线、时间窗口、金牌/银牌定义
 sample_data/              20 个虚构账号的假数据和生成脚本

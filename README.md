@@ -19,7 +19,7 @@
 不用装环境，点开就能用，大概 5 分钟搞定。
 
 1. **导出数据。** 电脑浏览器装 [twitter-web-exporter](https://github.com/prinsss/twitter-web-exporter) 插件，打开 X，导出「用户推文」「正在关注」「关注者」三份 JSON。具体怎么滚动页面，看 [数据导出教程](docs/DATA_EXPORT.md)。
-2. **打开网页。** 直接用浏览器打开本仓库里的 `web/index.html`（双击也行）。
+2. **打开网页。** 点开 [网页版](https://ratt1e.github.io/Xfan-audit/)。不想联网的话，也可以下载本仓库，双击 `web/index.html` 离线用。
 3. **拖进去。** 把三份 JSON 一起拖进页面，不用改文件名，结果马上出来。
 
 要是想截图分享，点一下页面上的「打码模式」，账号名就会自动换成「账号#01」这类代号。
@@ -61,7 +61,7 @@
 
 ## English (brief)
 
-**fan-audit** scores two-way public conversations on X (Twitter). Open `web/index.html` and drop in a twitter-web-exporter JSON export (your tweets, following, followers) or `interactions.csv`. The page calculates stars and tiers in the browser and does not upload anything. A mask button replaces account names before you take a screenshot. The Python command line remains for daily collection: a read-only collector such as Grok Bot can write `interactions.csv`, and `python3 audit.py --data sample_data` runs the same scoring offline. Standard library only, Python 3.9+. Weights are initial values, not yet validated. No automatic likes, follows, or posts. The named dashboard stays on your machine. MIT License.
+**fan-audit** scores two-way public conversations on X (Twitter). Open the [web version](https://ratt1e.github.io/Xfan-audit/) (or `web/index.html` offline) and drop in a twitter-web-exporter JSON export (your tweets, following, followers) or `interactions.csv`. The page calculates stars and tiers in the browser and does not upload anything. A mask button replaces account names before you take a screenshot. The Python command line remains for daily collection: a read-only collector such as Grok Bot can write `interactions.csv`, and `python3 audit.py --data sample_data` runs the same scoring offline. Standard library only, Python 3.9+. Weights are initial values, not yet validated. No automatic likes, follows, or posts. The named dashboard stays on your machine. MIT License.
 
 ---
 
