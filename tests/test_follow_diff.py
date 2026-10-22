@@ -202,7 +202,8 @@ class TestAuditPrevLists(unittest.TestCase):
         self.assertEqual(Path(plain.name, "accounts.csv").read_bytes(), Path(out.name, "accounts.csv").read_bytes())
         private = Path(out.name, "dashboard.html").read_text(encoding="utf-8")
         public = Path(out.name, "dashboard_public.html").read_text(encoding="utf-8")
-        self.assertNotIn("关注变化", Path(plain.name, "dashboard.html").read_text(encoding="utf-8"))
+        plain_page = Path(plain.name, "dashboard.html").read_text(encoding="utf-8")
+        self.assertNotIn("关注变化", plain_page.split('<script id="fan-audit-engine">', 1)[0])
         section = private.split('id="follow-diff"', 1)[1]
         self.assertIn("@user_90", section)
         self.assertIn("@user_03", section)

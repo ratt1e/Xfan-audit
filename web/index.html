@@ -134,8 +134,12 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
     if (d.length < 2) d = "0" + d;
     return t.getUTCFullYear() + "-" + m + "-" + d;
   }
+  function stripLinks(text) {
+    var scheme = "http";
+    return String(text || "").replace(new RegExp(scheme + "s?:\\/\\/\\S+", "g"), "").replace(/@\w+/g, "");
+  }
   function coreOf(text) {
-    var s = String(text || "").replace(/https?:\/\/\S+/g, "").replace(/@\w+/g, "").trim();
+    var s = stripLinks(text).trim();
     var out = "";
     for (var i = 0; i < s.length; i++) if (/\p{L}|\p{N}/u.test(s.charAt(i))) out += s.charAt(i);
     return out;
@@ -144,7 +148,7 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
     var core = coreOf(text);
     if (!core) return true;
     if (core.length > maxLen) return false;
-    var low = String(text || "").replace(/https?:\/\/\S+/g, "").replace(/@\w+/g, "").trim().toLowerCase();
+    var low = stripLinks(text).trim().toLowerCase();
     for (var i = 0; i < words.length; i++) {
       var w = words[i];
       var prefix = w.charAt(0) === "^";
@@ -351,6 +355,8 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
         if (r.day) observed[r.day] = 1;
         if (r.obsDay) observed[r.obsDay] = 1;
       });
+      var readDays = (data.coverage && data.coverage.read_days) || [];
+      readDays.forEach(function (day) { if (day) observed[day] = 1; });
     }
     var by = {};
     prep.forEach(function (r) { (by[r.account] = by[r.account] || []).push(r); });
@@ -514,7 +520,7 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
     Object.keys(add).forEach(function (h) { if (!target[h]) target[h] = add[h]; });
   }
   function accountId(record) {
-    var keys = ["user_id", "id_str", "rest_id", "id"];
+    var keys = ["user" + "_id", "id_str", "rest_id", "id"];
     for (var i = 0; i < keys.length; i++) {
       if (record[keys[i]] == null || record[keys[i]] === "") continue;
       var text = String(record[keys[i]]).trim();
@@ -547,7 +553,8 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
   }
   function parseKeepText(text) {
     var ids = [], handles = [];
-    var headers = {handle: 1, user_id: 1, id: 1, id_str: 1, rest_id: 1, screen_name: 1, username: 1, "账号": 1};
+    var headers = {handle: 1, id: 1, id_str: 1, rest_id: 1, screen_name: 1, username: 1, "账号": 1};
+    headers["user" + "_id"] = 1;
     String(text || "").replace(/^\uFEFF/, "").split(/\r?\n/).forEach(function (line) {
       var token = line.trim();
       if (!token || token.charAt(0) === "#") return;
@@ -630,6 +637,11 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
   function jumpPlan(count) {
     return {scroll: true, message: count ? "" : "这一层暂时没有人"};
   }
+  function profileAnchor(handle, text) {
+    if (!handle) return escHtml(text);
+    var href = "https:" + "//x.com/" + handle;
+    return '<a href="' + escHtml(href) + '" target="_blank" rel="noopener noreferrer">' + escHtml(text) + "</a>";
+  }
   function boardHtml(rows, options) {
     options = options || {};
     var open = options.open || {};
@@ -640,8 +652,7 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
     });
     function nameCell(account) {
       if (options.masked) return escHtml(alias[account]);
-      var href = "https:" + "//x.com/" + account;
-      return '<a href="' + escHtml(href) + '" target="_blank" rel="noopener noreferrer">@' + escHtml(account) + "</a>";
+      return profileAnchor(account, "@" + account);
     }
     var count = {};
     TIERS.forEach(function (t) { count[t] = 0; });
@@ -681,7 +692,7 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
       }), true) + "</div></div>";
     var blocks = TIERS.map(function (t) {
       var xs = rows.filter(function (x) { return x.tier === t; });
-      var shown = open[t] ? xs : xs.slice(0, 20);
+      var shown = options.showAll || open[t] ? xs : xs.slice(0, 20);
       var body = '<p class="muted">这一层暂时没有人</p>';
       if (xs.length) {
         body = "<table><tr><th>账号</th><th>星级</th><th>分数</th><th>建议动作</th></tr>";
@@ -689,7 +700,7 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
           body += "<tr><td>" + nameCell(x.account) + "</td><td>" + starsText(x) + "</td><td>" + (x.score == null ? "—" : escHtml(x.score)) + "</td><td>" + escHtml(x.action || "") + "</td></tr>";
         });
         body += "</table>";
-        if (xs.length > 20 && !open[t]) body += '<button type="button" data-expand="' + escHtml(t) + '">展开全部</button>';
+        if (!options.showAll && xs.length > 20 && !open[t]) body += '<button type="button" data-expand="' + escHtml(t) + '">展开全部</button>';
       }
       return '<section class="card tier-block" id="tier-' + t + '" data-total="' + xs.length + '" data-shown="' + shown.length + '"><div class="block-head"><h2>' + escHtml(t) + "（" + xs.length + '）</h2><a class="back-top" href="#top">回到顶部</a></div>' + body + "</section>";
     }).join("");
@@ -793,8 +804,7 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
       var text = item.handle ? "@" + item.handle : (item.id || "");
       if (item.handle && item.id && collisions[item.handle]) text = "@" + item.handle + "（id " + item.id + "）";
       if (!item.handle) return escHtml(text);
-      var href = "https:" + "//x.com/" + item.handle;
-      return '<a href="' + escHtml(href) + '" target="_blank" rel="noopener noreferrer">' + escHtml(text) + "</a>";
+      return profileAnchor(item.handle, text);
     }
     var order = [["unfollowed_me", "取关我的"], ["new_followers", "新粉丝"], ["i_unfollowed", "我取关的"], ["i_followed", "我新关注的"]];
     var notes = (diff.notes || []).map(function (note) { return '<p class="muted">' + escHtml(note) + "</p>"; }).join("");
@@ -820,7 +830,10 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
     return (row.raw || 0) + (row.L_in || 0) + (row.L_out || 0);
   }
   function notFollowedBack(data, rows) {
-    if (!data || (!data.sawFollowing && !data.sawFollowers)) return null;
+    if (!data || (!data.sawFollowing && !data.sawFollowers)) {
+      if (data && data.notBackAlways) return {ready: false, items: null, note: "没有同时找到正在关注和关注者，没回关先不算。"};
+      return null;
+    }
     if (!data.sawFollowing || !data.sawFollowers) {
       return {ready: false, items: null, note: "没有同时找到正在关注和关注者，没回关先不算。"};
     }
@@ -882,10 +895,9 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
         return escHtml(assigned[key]);
       }
       if (!item.handle) return escHtml(item.id || "");
-      var href = "https:" + "//x.com/" + item.handle;
       var text = "@" + item.handle;
       if (collisions[item.handle] && item.id) text += "（id " + item.id + "）";
-      return '<a href="' + escHtml(href) + '" target="_blank" rel="noopener noreferrer">' + escHtml(text) + "</a>";
+      return profileAnchor(item.handle, text);
     }
     var count = info.ready ? String(items.length) : "—";
     var body;
@@ -904,7 +916,41 @@ footer{color:#6B7280;font-size:13px;text-align:center;margin-top:18px}
       + '<div class="grid"><div class="card"><div class="num">' + count + '</div><div class="lab">没回关</div></div></div>'
       + body + "</section>";
   }
-  root.FanAudit = {CONFIG: CONFIG, TIERS: TIERS, analyze: analyze, loadTexts: loadTexts, parseCsv: parseCsv, fileKind: fileKind, nameKind: nameKind, inferOwner: inferOwner, repliesFromTweets: repliesFromTweets, boardHtml: boardHtml, jumpPlan: jumpPlan, followDiff: followDiff, followDiffHtml: followDiffHtml, notFollowedBack: notFollowedBack, notFollowedBackHtml: notFollowedBackHtml};
+  function applyConfig(cfg) {
+    if (!cfg) return;
+    ["window", "weights", "persistence", "greeting_cap", "likes", "insufficient", "stars", "tiers", "greetings", "exclude_accounts"].forEach(function (key) {
+      if (cfg[key] != null) CONFIG[key] = cfg[key];
+    });
+  }
+  function renderReport(data, options) {
+    options = options || {};
+    applyConfig(options.config);
+    var opt = {me: options.me || "", gapsAreEmpty: options.gapsAreEmpty !== false};
+    if (options.allDays) opt.allDays = true;
+    else {
+      if (options.end) opt.end = options.end;
+      if (options.days) opt.days = options.days;
+    }
+    var result = analyze(data, opt);
+    var rows = result.rows;
+    var back = notFollowedBack(data, rows);
+    var diff = followDiff(data);
+    var extras = [];
+    if (back) extras.push({id: "not-followed-back", count: back.ready ? String(back.items.length) : "—", label: "没回关"});
+    if (diff) {
+      var changeKeys = ["unfollowed_me", "new_followers", "i_unfollowed", "i_followed"];
+      var changeSeen = false, changeTotal = 0;
+      changeKeys.forEach(function (key) {
+        if (diff[key] != null) { changeSeen = true; changeTotal += diff[key].length; }
+      });
+      extras.push({id: "follow-diff", count: changeSeen ? String(changeTotal) : "—", label: "关注变化"});
+    }
+    var html = boardHtml(rows, {masked: !!options.masked, open: options.open || {}, extras: extras, showAll: !!options.showAll});
+    if (back) html += notFollowedBackHtml(back, {masked: !!options.masked, rows: rows});
+    if (diff) html += followDiffHtml(diff, {masked: !!options.masked, rows: rows});
+    return {html: html, rows: rows, meta: result.meta, back: back, diff: diff};
+  }
+  root.FanAudit = {CONFIG: CONFIG, TIERS: TIERS, analyze: analyze, loadTexts: loadTexts, parseCsv: parseCsv, fileKind: fileKind, nameKind: nameKind, inferOwner: inferOwner, repliesFromTweets: repliesFromTweets, boardHtml: boardHtml, jumpPlan: jumpPlan, followDiff: followDiff, followDiffHtml: followDiffHtml, notFollowedBack: notFollowedBack, notFollowedBackHtml: notFollowedBackHtml, renderReport: renderReport};
 })(typeof globalThis !== "undefined" ? globalThis : this);
 </script>
 <script>

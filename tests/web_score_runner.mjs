@@ -17,6 +17,60 @@ const dir = path.join(root, "sample_data");
 function text(name) {
   return fs.readFileSync(path.join(dir, name), "utf8");
 }
+if (process.argv[2] === "dashboard") {
+  const htmlPath = process.argv[3];
+  const extra = process.argv[4] ? JSON.parse(process.argv[4]) : {};
+  const page = fs.readFileSync(htmlPath, "utf8");
+  const engine = page.match(/<script id="fan-audit-engine">([\s\S]*?)<\/script>/);
+  const raw = page.match(/<script type="application\/json" id="fan-audit-data">([\s\S]*?)<\/script>/);
+  if (!engine || !raw) throw new Error("看板里没有打分脚本或数据");
+  const sandbox = {
+    console, Intl, Date, Math, Object, Array, String, Number, RegExp, JSON, isNaN, parseInt
+  };
+  sandbox.globalThis = sandbox;
+  vm.runInNewContext(engine[1], sandbox, {filename: htmlPath});
+  const payload = JSON.parse(raw[1]);
+  const view = payload.view || {};
+  const opt = {
+    me: payload.me || "",
+    config: payload.config,
+    masked: !!payload.masked,
+    showAll: true,
+    gapsAreEmpty: true
+  };
+  if (extra.allDays) opt.allDays = true;
+  else if (extra.latest) {
+    opt.days = extra.days;
+  } else {
+    opt.end = extra.end || view.end;
+    opt.days = extra.days || view.days;
+  }
+  const result = sandbox.FanAudit.renderReport(payload.data, opt);
+  const keys = ["account", "tier", "status", "score", "stars", "O", "I", "O_raw", "I_raw", "rounds", "sub_days", "P", "B", "R", "action", "priority", "mutual", "verified", "raw", "L_in", "L_out"];
+  function slim(row) {
+    const out = {};
+    keys.forEach(function (key) { out[key] = row[key] == null ? null : row[key]; });
+    return out;
+  }
+  function groupCount(diff, key) {
+    if (!diff || diff[key] == null) return null;
+    return diff[key].length;
+  }
+  process.stdout.write(JSON.stringify({
+    meta: result.meta,
+    rows: (result.rows || []).map(slim),
+    html: result.html,
+    back: result.back,
+    diff: result.diff ? {
+      unfollowed_me: groupCount(result.diff, "unfollowed_me"),
+      new_followers: groupCount(result.diff, "new_followers"),
+      i_unfollowed: groupCount(result.diff, "i_unfollowed"),
+      i_followed: groupCount(result.diff, "i_followed"),
+      notes: result.diff.notes || []
+    } : null
+  }));
+  process.exit(0);
+}
 if (process.argv[2] === "board") {
   const spec = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
   process.stdout.write(JSON.stringify({
