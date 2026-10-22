@@ -3,7 +3,8 @@
   "window": {
     "days": 30,
     "end": "auto",
-    "timezone": "America/Los_Angeles",
+    "timezone": "",
+    "_timezone说明": "留空则用运行脚本的电脑本地时区，也可以用 --tz Asia/Shanghai 这类 IANA 名称。网页版默认用浏览器时区。",
     "_end说明": "auto = 用数据里最晚的一天作为截止日；也可以写 2026-10-19"
   },
   "weights": {"persistence": 0.40, "bidirectional": 0.35, "rounds": 0.25},

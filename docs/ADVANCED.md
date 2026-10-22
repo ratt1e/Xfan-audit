@@ -16,7 +16,7 @@
 2. **每天的互动**：Grok Bot 用 X 的只读接口抓取原始 JSON，再由 `scripts/daily_collect.py` 整理成 `interactions.csv`。接口、额度和目录说明看 [docs/DAILY_COLLECT.md](DAILY_COLLECT.md)。
 3. **计算**：用 `audit.py --data-root` 合并多天的 `interactions.csv`；`--lists` 只读那两张关系表，用来判断谁互关了、谁是沉睡互关。
 
-如果没有 Grok Bot，也可以用同一个插件把互动导出成 CSV 代替。不过插件只能记录你自己亲自滚屏浏览过的内容，通常只能拿到单向数据。少了一个方向的数据，互动条数、总分和分层结果都会偏低。
+如果没有 Grok Bot，也可以用同一个插件把互动导出成 CSV 代替。不过插件只能记录你自己亲自滚屏浏览过的内容，通常只能拿到单向数据。只导出「用户推文」时，拿到的是你自己发出的那一半；要补别人回你的，再导出一份搜索 `to:你的用户名` 的结果。两边都可能因为没滚到底或被限流而缺记录。少了一个方向的数据，互动条数、总分和分层结果都会偏低。
 
 ### 合理使用
 
@@ -47,8 +47,23 @@
 每次采集完，在本地跑一次 `audit.py`，把带账号名的完整版 `dashboard.html` 输出到仓库外的固定目录。用浏览器打开它、存个书签，以后每天点开书签就能看到最新的分析看板。
 
 ```bash
-python3 audit.py --data-root ~/x-data/ --lists ~/x-lists/ --me 你的用户名 --out ~/x-data/_看板/ --overwrite
+python3 audit.py --data-root ~/x-data/ --lists ~/x-lists/ --me 你的用户名 --tz Asia/Shanghai --out ~/x-data/_看板/ --overwrite --open
 ```
+
+`--open` 用 Python 自带的浏览器模块打开刚生成的 `dashboard.html`，路径里有中文或空格也能用。也可以自己打开：
+
+```bash
+# macOS
+open ~/x-data/_看板/dashboard.html
+# Windows 命令提示符
+start "" "%USERPROFILE%\x-data\_看板\dashboard.html"
+# Windows PowerShell
+Start-Process "$env:USERPROFILE\x-data\_看板\dashboard.html"
+# Linux
+xdg-open ~/x-data/_看板/dashboard.html
+```
+
+路径里有空格时加上引号。脚本读写文件都显式用 UTF-8。时区优先级是 `--tz`、然后 `config.json` 里的 `timezone`、最后才是这台电脑的本地时区。配置里的时区留空，不再默认洛杉矶。网页版默认用浏览器时区，页面上有「当前时区：…」，也可以改成别的 IANA 名称。生成的两份看板会写明这次用的时区；在页面里改日期时，仍按这个时区重算。Windows 上如果 Python 没有 IANA 时区数据，`--tz` 会报「时区无效，请用 IANA 名称，例如 Asia/Shanghai」，报错里不带路径。`scripts/follow_diff.py` 只对比两份名单，不按天切，所以没有 `--tz`。`scripts/daily_collect.py --tz` 只把时区写进快照，文件夹日期仍用目录名。
 
 带真实账号名的看板、`accounts.csv`、`名单.md` 和未回关名单，全都只留在你自己的电脑上。千万别发到公网或者传上公开网盘。要是想发出来分享，请用打码版的 `dashboard_public.html` 截图。
 
@@ -60,9 +75,14 @@ python3 audit.py --data-root ~/x-data/ --lists ~/x-lists/ --me 你的用户名 -
 # 1. 下载
 git clone https://github.com/ratt1e/Xfan-audit.git fan-audit && cd fan-audit      # 或者下载 zip 解压
 
-# 2. 先用假数据跑一遍（1 秒）
-python3 audit.py --data sample_data
-#    打开 output/dashboard.html 看效果
+# 2. 先用假数据跑一遍（1 秒）。这组人数是 America/Los_Angeles 下的结果
+python3 audit.py --data sample_data --tz America/Los_Angeles
+#    打开看板：
+#      macOS: open output/dashboard.html
+#      Windows 命令提示符: start "" "output\dashboard.html"
+#      Windows PowerShell: Start-Process "output\dashboard.html"
+#      Linux: xdg-open output/dashboard.html
+#    也可以在上面的命令末尾加 --open
 #    请求 30 天，计分覆盖 28 天，无数据 2 天
 #    金牌 3，银牌 2，他常来 2，我常去 1，沉睡 3，样本不足 3，其他有分 4，零互动 2
 

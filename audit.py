@@ -16,7 +16,7 @@ import math
 import os
 import sys
 from collections import Counter, defaultdict
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "scripts"))
@@ -24,11 +24,6 @@ import follow_diff  # noqa: E402
 import not_followed_back as nfb  # noqa: E402
 import relationship_stars as rs  # noqa: E402
 from daily_root import load_daily_root, check_output, clear_own_outputs, coverage_lines, write_roster  # noqa: E402
-
-try:
-    from zoneinfo import ZoneInfo
-except ImportError:  # pragma: no cover
-    ZoneInfo = None
 
 TIERS = ["金牌", "银牌", "单向·他常来我少回", "单向·我常去他没回", "沉睡互关", "样本不足", "其他有分", "零互动"]
 TIER_NOTE = {
@@ -174,7 +169,8 @@ def action(x):
 
 def analyze(data, conf, cfg, end=None, days=None, all_days=False):
     win = conf.get("window", {})
-    tz = ZoneInfo(win.get("timezone", "America/Los_Angeles")) if ZoneInfo else timezone.utc
+    tz_name = rs.resolve_timezone_name(configured=win.get("timezone"))
+    tz = rs.zone(tz_name)
     g = conf.get("greetings", {})
     excl = {norm(a) for a in conf.get("exclude_accounts", []) + [conf.get("me") or ""] if norm(a)}
     rows = [r for r in data["rows"] if r["account"] not in excl]
@@ -182,7 +178,7 @@ def analyze(data, conf, cfg, end=None, days=None, all_days=False):
     dts = [r["dt"].date() for r in prep if r.get("dt")]
     if end in (None, "auto"):
         end = win.get("end", "auto")
-    e = (max(dts) if dts else date.today()) if end == "auto" else date.fromisoformat(end)
+    e = (max(dts) if dts else datetime.now(tz).date()) if end == "auto" else date.fromisoformat(end)
     days = days or win.get("days", 30)
     s = e - timedelta(days=days - 1)
     if all_days:
@@ -228,7 +224,7 @@ def analyze(data, conf, cfg, end=None, days=None, all_days=False):
         x["action"] = action(x)
         res.append(x)
     res.sort(key=lambda x: (TIERS.index(x["tier"]), -x["priority"], x["account"]))
-    meta = dict(start=str(s), end=str(e), days=days, tz=str(tz), n_rows=len(rows),
+    meta = dict(start=str(s), end=str(e), days=days, tz=tz_name, n_rows=len(rows),
                 n_following=len(fol), n_followers=len(fer), n_mutual=sum(1 for a in fol if a in fer),
                 warnings=data["warnings"])
     if observed is not None:
@@ -287,9 +283,20 @@ _BOOT_JS = """
   var writing = false;
   var startEl = document.getElementById("start");
   var endEl = document.getElementById("end");
+  var tzEl = document.getElementById("tz");
+  var tzLabel = document.getElementById("tz-label");
   var out = document.getElementById("out");
+  function chosenZone() {
+    var value = tzEl && tzEl.value ? String(tzEl.value).trim() : "";
+    if (value) return value;
+    if (payload.tz) return payload.tz;
+    var win = payload.config && payload.config.window;
+    return win && win.timezone ? String(win.timezone).trim() : "";
+  }
   function optionsFor() {
     var opt = {me: payload.me || "", config: payload.config, masked: !!payload.masked, showAll: true, open: state.open};
+    var zoneName = chosenZone();
+    if (zoneName) opt.tz = zoneName;
     if (state.mode === "all") opt.allDays = true;
     else if (state.mode === "7" || state.mode === "30") opt.days = state.mode === "7" ? 7 : 30;
     else {
@@ -302,22 +309,43 @@ _BOOT_JS = """
     }
     return opt;
   }
+  function showZoneError(message) {
+    if (tzLabel) tzLabel.textContent = "当前时区：" + chosenZone();
+    var warn = document.getElementById("tz-warn");
+    if (!warn && tzLabel && tzLabel.parentNode) {
+      warn = document.createElement("div");
+      warn.id = "tz-warn";
+      warn.className = "warn";
+      tzLabel.parentNode.insertBefore(warn, tzLabel.nextSibling);
+    }
+    if (warn) warn.textContent = message || "时区无效，请填 IANA 名称，例如 Asia/Shanghai";
+  }
   function paint(keep) {
     var scrollY = keep ? window.scrollY : 0;
     ["d7", "d30", "dall"].forEach(function (id) {
       var button = document.getElementById(id);
       button.classList.toggle("on", button.getAttribute("data-mode") === state.mode);
     });
-    var view = FanAudit.renderReport(payload.data, optionsFor());
+    var view;
+    try {
+      view = FanAudit.renderReport(payload.data, optionsFor());
+    } catch (err) {
+      showZoneError(err && err.message);
+      return;
+    }
+    var warn = document.getElementById("tz-warn");
+    if (warn) warn.textContent = "";
     writing = true;
     startEl.value = view.meta.start;
     endEl.value = view.meta.end;
     writing = false;
     var meta = view.meta;
+    if (tzLabel) tzLabel.textContent = "当前时区：" + (meta.tz || chosenZone());
     var cover = "区间 " + meta.start + " ~ " + meta.end + "（请求 " + meta.days + " 天）";
     cover += "；覆盖 " + meta.covered + " 天";
     if (meta.uncovered) cover += "，" + meta.uncovered + " 天无数据（不算零互动）";
     else cover += "，无数据 0 天";
+    if (meta.tz) cover += " · 当前时区：" + meta.tz;
     document.getElementById("coverage").textContent = cover + " · 只统计公开回复、引用和点赞 · 分数只是线索，不代表真实关系";
     out.innerHTML = view.html;
     if (keep) window.scrollTo(0, scrollY);
@@ -331,6 +359,10 @@ _BOOT_JS = """
   startEl.onchange = endEl.onchange = function () {
     if (writing) return;
     state.mode = "custom";
+    paint();
+  };
+  if (tzEl) tzEl.onchange = function () {
+    if (!String(tzEl.value || "").trim()) tzEl.value = payload.tz || "";
     paint();
   };
   out.addEventListener("click", function (e) {
@@ -588,6 +620,7 @@ def dashboard_payload(data, conf, meta, public, lists_dir, prev_dir, keep_path):
         "masked": bool(public),
         "me": me,
         "config": _scoring_config(conf, mask),
+        "tz": meta.get("tz") or "",
         "view": {"start": meta["start"], "end": meta["end"], "days": meta["days"]},
         "data": body,
     }
@@ -793,13 +826,20 @@ def render(res, meta, data=None, conf=None, public=False, lists_dir=None, prev_d
         '<button type="button" id="d7" data-mode="7">最近 7 天</button>'
         '<button type="button" id="d30" data-mode="30">最近 30 天</button>'
         '<button type="button" id="dall" data-mode="all">全部</button>'
+        f'<label>时区<input id="tz" type="text" list="tz-list" value="{html.escape(str(meta["tz"]))}" autocomplete="off" spellcheck="false"></label>'
         "</div>"
+        '<datalist id="tz-list">'
+        '<option value="America/Los_Angeles"><option value="America/New_York"><option value="America/Chicago">'
+        '<option value="Europe/London"><option value="Europe/Paris"><option value="Asia/Shanghai">'
+        '<option value="Asia/Tokyo"><option value="UTC">'
+        "</datalist>"
+        f'<p class="sub" id="tz-label">当前时区：{html.escape(str(meta["tz"]))}</p>'
     )
     page = f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(title)}</title><style>{dashboard_css()}</style></head><body>
 <h1 id="top">{html.escape(title)}</h1>
 {controls}
-<div class="sub" id="coverage">区间 {meta['start']} ~ {meta['end']}（请求 {meta['days']} 天，{html.escape(meta['tz'])}）{coverage_note(meta)} · 只统计公开回复、引用和点赞 · 分数只是线索，不代表真实关系</div>
+<div class="sub" id="coverage">区间 {meta['start']} ~ {meta['end']}（请求 {meta['days']} 天）{coverage_note(meta)} · 当前时区：{html.escape(meta['tz'])} · 只统计公开回复、引用和点赞 · 分数只是线索，不代表真实关系</div>
 {f'<div class="warn">{warn}</div>' if warn else ''}
 <div id="out">
 <div class="grid tier-cards">{tier_cards}</div>
@@ -829,6 +869,20 @@ def render(res, meta, data=None, conf=None, public=False, lists_dir=None, prev_d
     return page
 
 
+def open_dashboard(path):
+    """用系统浏览器打开看板。file URI 会转义中文和空格；打不开也不让整次分析失败。"""
+    import webbrowser
+    from pathlib import Path
+    uri = Path(os.path.abspath(path)).resolve().as_uri()
+    try:
+        opened = bool(webbrowser.open(uri))
+    except OSError:
+        opened = False
+    if not opened:
+        print("浏览器没有打开，请手动打开看板")
+    return 0
+
+
 def write_csv(res, path):
     keys = ["account", "tier", "status", "score", "stars", "priority", "O", "I", "O_raw", "I_raw", "greet", "rounds", "T",
             "unconfirmed", "active_days", "sub_days", "L_in", "P", "B", "R", "greet_cap", "mutual", "i_follow",
@@ -855,6 +909,8 @@ def main(argv=None):
     period.add_argument("--days", type=int, help="区间天数，默认取 config")
     period.add_argument("--all-days", action="store_true", help="按本地时区从最早互动到最晚互动")
     ap.add_argument("--me", help="你自己的用户名（自己回自己的串推会被排除），也可以写进 config.json 的 me")
+    ap.add_argument("--tz", help="IANA 时区，例如 Asia/Shanghai。不写则用 config.json 的 timezone，再没有就用本机时区")
+    ap.add_argument("--open", action="store_true", help="生成后用系统浏览器打开 dashboard.html")
     a = ap.parse_args(argv)
     if a.prev_lists and not os.path.isdir(os.path.expanduser(a.prev_lists)):
         ap.error("上一份关系表目录不存在，或不是目录")
@@ -870,6 +926,14 @@ def main(argv=None):
     conf, cfg = rs.load_config(a.config)
     if a.me:
         conf["me"] = a.me
+    try:
+        tz_name = rs.resolve_timezone_name(a.tz, (conf.get("window") or {}).get("timezone"))
+        rs.zone(tz_name)
+    except ValueError as exc:
+        ap.error(str(exc))
+    window = dict(conf.get("window") or {})
+    window["timezone"] = tz_name
+    conf["window"] = window
     if root:
         try:
             if a.out:
@@ -942,13 +1006,15 @@ def main(argv=None):
     extra = ""
     if meta.get("covered_days") is not None:
         extra = f"；计分覆盖 {meta['scoring_days']} 天，无数据 {len(meta.get('uncovered_days') or [])} 天"
-    print(f"区间 {meta['start']} ~ {meta['end']}{extra}，{len(res)} 个账号：" + "，".join(f"{t} {c.get(t, 0)}" for t in TIERS))
+    print(f"区间 {meta['start']} ~ {meta['end']}（{meta['tz']}）{extra}，{len(res)} 个账号：" + "，".join(f"{t} {c.get(t, 0)}" for t in TIERS))
     if root:
         print("已在仓库外写出 accounts.csv、dashboard.html、dashboard_public.html、名单.md、没回关.md、没回关.csv（私有名单不在终端展示）")
     else:
         print(f"看板：{os.path.join(a.out, 'dashboard.html')}（含账号名，只给自己看）")
         print(f"对外打码版：{os.path.join(a.out, 'dashboard_public.html')}；明细：{os.path.join(a.out, 'accounts.csv')}")
         print(f"没回关名单：{os.path.join(a.out, nfb.MD_NAME)}（含账号名，只给自己看）")
+    if a.open:
+        open_dashboard(os.path.join(a.out, "dashboard.html"))
     return 0
 
 

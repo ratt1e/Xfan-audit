@@ -9,7 +9,7 @@ ts 存 UTC，切日期和周前先转成 --tz 时区。所有参数都是初始�
   python3 scripts/relationship_stars.py --interactions data/interactions.csv \
       --end 2026-10-19 [--days 30] [--tz America/Los_Angeles] [--like-time strict|observed] \
       [--config config.json] [--out output/relationship/relationship.csv]
-  天数、时区、点赞计时不写就用 config.json 里的值。
+  天数和点赞计时不写就用 config.json。时区优先级：--tz、config.json 的 timezone、系统本地时区。
 """
 import argparse
 import csv
@@ -62,6 +62,53 @@ def stars_of(S, cfg=CFG):
             return n
     return 1
 TALK = ("reply", "quote", "mention")
+
+
+_TZ_ERROR = "时区无效，请用 IANA 名称，例如 Asia/Shanghai"
+
+
+def local_timezone_name():
+    """本机 IANA 时区名。读不到时用 UTC，不返回路径。"""
+    current = datetime.now().astimezone().tzinfo
+    key = getattr(current, "key", None)
+    if key:
+        name = str(key)
+    else:
+        name = ""
+        env = os.environ.get("TZ", "").strip()
+        if env.upper() in ("UTC", "GMT"):
+            name = "UTC"
+        elif env:
+            picked = env[1:] if env.startswith(":") else env
+            if "/" in picked and " " not in picked and "\\" not in picked:
+                name = picked
+        if not name:
+            try:
+                target = os.path.realpath("/etc/localtime").replace("\\", "/")
+            except OSError:
+                target = ""
+            marker = "zoneinfo/"
+            if marker in target:
+                name = target.split(marker, 1)[1]
+    if name in ("Etc/UTC", "Etc/GMT"):
+        return "UTC"
+    return name or "UTC"
+
+
+def resolve_timezone_name(explicit=None, configured=None):
+    """--tz 优先，其次配置里的 timezone，都空着就用本机时区。"""
+    name = str(explicit or "").strip() or str(configured or "").strip()
+    return name or local_timezone_name()
+
+
+def zone(name):
+    """把 IANA 名变成时区对象。没有 zoneinfo 模块时退回 UTC；名字无效则报固定中文，不带路径。"""
+    if ZoneInfo is None:
+        return timezone.utc
+    try:
+        return ZoneInfo(name)
+    except Exception:
+        raise ValueError(_TZ_ERROR) from None
 
 
 def to_local(s, tz):
@@ -194,9 +241,9 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="互动关系星级（离线）")
     ap.add_argument("--interactions", required=True)
     ap.add_argument("--config", default=CONFIG_PATH)
-    ap.add_argument("--end", default=date.today().isoformat())
+    ap.add_argument("--end", help="截止日 YYYY-MM-DD，默认该时区的今天")
     ap.add_argument("--days", type=int)
-    ap.add_argument("--tz")
+    ap.add_argument("--tz", help="IANA 时区。不写则用 config.json 的 timezone，再没有就用本机时区")
     ap.add_argument("--like-time", choices=["strict", "observed"])
     ap.add_argument("--out")
     a = ap.parse_args(argv)
@@ -204,11 +251,15 @@ def main(argv=None):
     win = conf.get("window", {})
     a.days = a.days or win.get("days", 30)
     a.like_time = a.like_time or conf.get("likes", {}).get("time_mode", "strict")
-    tz = ZoneInfo(a.tz or win.get("timezone", "America/Los_Angeles")) if ZoneInfo else timezone.utc
+    try:
+        tz_name = resolve_timezone_name(a.tz, win.get("timezone"))
+        tz = zone(tz_name)
+    except ValueError as exc:
+        ap.error(str(exc))
     g = conf.get("greetings", {})
     with open(a.interactions, encoding="utf-8") as f:
         rows = prepare(list(csv.DictReader(f)), tz, g.get("words", []), g.get("max_core_len", 15))
-    e = date.fromisoformat(a.end)
+    e = date.fromisoformat(a.end) if a.end else datetime.now(tz).date()
     s = e - timedelta(days=a.days - 1)
     by = defaultdict(list)
     for r in rows:
@@ -219,7 +270,7 @@ def main(argv=None):
         res["account"] = acc
         results.append(res)
     results.sort(key=lambda r: (r["status"] != "ok", -r.get("score", 0), r["account"]))
-    print(f"互动关系星级 · 最近 {a.days} 天（{s} ~ {e}）· 点赞计时：{a.like_time}")
+    print(f"互动关系星级 · 最近 {a.days} 天（{s} ~ {e}，{tz_name}）· 点赞计时：{a.like_time}")
     print("这里只统计公开的回复、引用和点赞。分数只是线索，不代表真实关系。")
     for r in results:
         lab = f"{'★' * r['stars']}{'☆' * (5 - r['stars'])} {r['score']}" if r["status"] == "ok" else "样本不足"

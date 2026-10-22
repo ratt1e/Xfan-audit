@@ -8,6 +8,7 @@
 
 旧目录、新目录里可以放 following.csv / followers.csv，或 twitter-web-exporter 的 JSON。
 账号名只写进 --out，终端只打印人数。
+这份对比不按天切分，所以没有时区参数。
 """
 import argparse
 import csv
