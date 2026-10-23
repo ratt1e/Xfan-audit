@@ -33,7 +33,7 @@ const header = [
   "// ==UserScript==",
   at("name") + "         fan-audit 粉丝体检",
   at("namespace") + "    https://github.com/ratt1e/Xfan-audit",
-  at("version") + "      0.1.2",
+  at("version") + "      0.1.3",
   at("description") + "  在 X 上边逛边记下公开回复和关注名单，在页面里出粉丝体检。只读，不自己发请求，不自动翻页。",
   at("author") + "       " + author,
   at("match") + "        *://x.com/*",

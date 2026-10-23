@@ -39,7 +39,7 @@ export function emptyStore() {
     posts: {},
     following: {},
     followers: {},
-    meta: {sawFollowing: false, sawFollowers: false, sawBlueFollowers: false}
+    meta: {sawFollowing: false, sawFollowers: false, sawBlueFollowers: false, sawNotifications: false}
   };
 }
 
@@ -48,12 +48,21 @@ export function norm(value) {
 }
 
 export function operationName(url) {
-  var match = String(url || "").match(/\/graphql\/[^/?#]+\/([A-Za-z0-9_]+)/);
-  return match ? match[1] : "";
+  var text = String(url || "");
+  var match = text.match(/\/graphql\/[^/?#]+\/([A-Za-z0-9_]+)/);
+  if (match) return match[1];
+  if (/\/notifications\/all\.json(?:\?|#|$)/.test(text)) return "NotificationsAll";
+  if (/\/notifications\/mentions\.json(?:\?|#|$)/.test(text)) return "NotificationsMentions";
+  if (/\/notifications\/verified\.json(?:\?|#|$)/.test(text)) return "NotificationsVerified";
+  return "";
 }
 
 export function classifyUrl(url) {
-  return OPS[operationName(url)] || "";
+  var op = operationName(url);
+  if (OPS[op]) return OPS[op];
+  if (/^Notifications[A-Za-z0-9]*Timeline$/.test(op)) return "notifications";
+  if (op === "NotificationsAll" || op === "NotificationsMentions" || op === "NotificationsVerified") return "notifications";
+  return "";
 }
 
 export function listKindFromPath(pathname, owner) {
@@ -64,6 +73,30 @@ export function listKindFromPath(pathname, owner) {
   if (match[2] === "following") return "following";
   if (match[2] === "verified_followers") return "blue-followers";
   return "followers";
+}
+
+export function badgeText(label, count, base) {
+  if (!label) return "";
+  var n = count | 0;
+  var extra = base != null && n > base ? " +" + (n - base) : "";
+  return " " + label + " " + n + extra;
+}
+
+export function pageContext(pathname, search, owner) {
+  var path = String(pathname || "");
+  var query = "";
+  var raw = String(search || "");
+  var found = raw.match(/(?:^|[?&])q=([^&]*)/);
+  if (found) {
+    try { query = decodeURIComponent(found[1].replace(/\+/g, " ")); } catch (err) { query = found[1]; }
+  }
+  if (/^\/notifications(?:\/mentions)?\/?$/.test(path)) return {kind: "notifications", label: "通知"};
+  if ((path === "/search" || path.indexOf("/search/") === 0) && queryMentionsTo(query, owner)) return {kind: "inbound", label: "别人回我"};
+  var list = listKindFromPath(path, owner);
+  if (list === "following") return {kind: "following", label: "关注"};
+  if (list === "followers" || list === "blue-followers") return {kind: "followers", label: "粉丝"};
+  if (timelineKindFromPath(path, owner) === "replies") return {kind: "replies", label: "主页回复"};
+  return {kind: "", label: ""};
 }
 
 export function timelineKindFromPath(pathname, owner) {
@@ -265,8 +298,57 @@ function readTweet(result) {
   };
 }
 
+function notificationIcon(content) {
+  if (!content) return "";
+  var icon = content.notification_icon || content.notificationIcon || "";
+  if (icon && typeof icon === "object") icon = icon.id || "";
+  return String(icon || "").toLowerCase();
+}
+
+function isNotificationItem(content) {
+  var kind = String((content && (content.itemType || content.__typename)) || "");
+  return kind.indexOf("Notification") >= 0 || !!notificationIcon(content) || !!(content && content.template);
+}
+
+function replyLikeIcon(icon) {
+  return icon.indexOf("reply") >= 0 || icon.indexOf("mention") >= 0;
+}
+
+function noiseIcon(icon) {
+  if (!icon || replyLikeIcon(icon)) return false;
+  return /heart|like|favorite|person|follow|retweet|repost|bell/.test(icon);
+}
+
+function keepNotification(content) {
+  var icon = notificationIcon(content);
+  if (noiseIcon(icon)) return false;
+  var kind = String(content.itemType || content.__typename || "");
+  if (kind.indexOf("Aggregate") >= 0 && !replyLikeIcon(icon)) return false;
+  return true;
+}
+
+function absorbTweetish(node, tweets, users) {
+  if (!node || typeof node !== "object") return;
+  if (node.tweet_results || node.tweetResults || node.user_results || node.userResults) fromItemContent(node, tweets, users);
+  var wrapped = node.tweet && (node.tweet.result || node.tweet);
+  if (wrapped && wrapped !== node) {
+    var nested = readTweet(wrapped);
+    if (nested) tweets.push(nested);
+  }
+  if (node.rest_id || node.restId || (node.legacy && node.legacy.full_text)) {
+    var direct = readTweet(node);
+    if (direct) tweets.push(direct);
+  }
+}
+
 function fromItemContent(content, tweets, users) {
   if (!content || typeof content !== "object") return;
+  if (isNotificationItem(content)) {
+    if (!keepNotification(content)) return;
+    var template = content.template || {};
+    var targets = template.target_objects || template.targetObjects || [];
+    for (var t = 0; t < targets.length; t++) absorbTweetish(targets[t], tweets, users);
+  }
   if (content.tweet_results) {
     var tweet = readTweet(content.tweet_results.result);
     if (tweet) tweets.push(tweet);
@@ -459,6 +541,78 @@ function relatedTweets(tweets, owner) {
   return Object.keys(keep).map(function (id) { return keep[id]; });
 }
 
+function repliesToOwner(tweets, owner) {
+  var me = norm(owner);
+  if (!me) return [];
+  var seen = {};
+  var out = [];
+  for (var i = 0; i < tweets.length; i++) {
+    var tweet = tweets[i];
+    var handle = norm(tweet.handle);
+    var target = norm(tweet.replyToHandle);
+    if (!tweet.id || seen[tweet.id] || !tweet.replyTo || !handle || handle === me || target !== me) continue;
+    seen[tweet.id] = 1;
+    out.push(tweet);
+  }
+  return out;
+}
+
+function parseNotificationsRest(json, owner) {
+  var global = json.globalObjects || json.global_objects || {};
+  var tweets = global.tweets || {};
+  var users = global.users || {};
+  var notes = global.notifications || {};
+  var posts = [];
+  function personOf(id) {
+    var user = users[String(id || "")] || {};
+    return {
+      id: String(id || user.id_str || ""),
+      handle: norm(user.screen_name || user.screenName || ""),
+      name: String(user.name || ""),
+      verified: !!(user.verified || user.is_blue_verified)
+    };
+  }
+  Object.keys(notes).forEach(function (key) {
+    var note = notes[key] || {};
+    var icon = notificationIcon(note);
+    if (!icon && note.icon) icon = notificationIcon({notification_icon: note.icon});
+    if (icon !== "reply" && icon !== "mention" && icon !== "reply_to_you") return;
+    var template = note.template || {};
+    var agg = template.aggregateUserActionsV1 || template.aggregate_user_actions_v1 || template;
+    var targets = agg.targetObjects || agg.target_objects || [];
+    var fromUsers = agg.fromUsers || agg.from_users || [];
+    var author = fromUsers[0] && (fromUsers[0].user || fromUsers[0]);
+    var authorId = author && (author.id || author.id_str || author.rest_id);
+    var person = personOf(authorId);
+    targets.forEach(function (target) {
+      var tweetRef = target && (target.tweet || target);
+      var tid = tweetRef && (tweetRef.id || tweetRef.id_str || tweetRef.rest_id);
+      var raw = tid && tweets[String(tid)];
+      if (!raw) return;
+      var legacy = raw.legacy || raw;
+      var replyTo = String(legacy.in_reply_to_status_id_str || legacy.in_reply_to_status_id || "");
+      var replyToHandle = norm(legacy.in_reply_to_screen_name || "");
+      if (!replyTo || replyToHandle !== norm(owner)) return;
+      var uid = String(raw.user_id_str || raw.user_id || person.id || "");
+      var who = person.handle ? person : personOf(uid);
+      posts.push({
+        id: String(raw.id_str || raw.id || tid),
+        uid: uid,
+        handle: who.handle,
+        name: who.name,
+        verified: !!who.verified,
+        replyTo: replyTo,
+        replyToHandle: replyToHandle,
+        conv: String(legacy.conversation_id_str || ""),
+        ts: toIso(legacy.created_at || ""),
+        text: textForStore(legacy.full_text || legacy.text || ""),
+        src: "notifications"
+      });
+    });
+  });
+  return posts;
+}
+
 function stamp(tweets, src) {
   return tweets.map(function (tweet) {
     return {
@@ -523,7 +677,8 @@ export function parseCapture(url, text, options) {
     return finish({kind: kind, skip: "", posts: stamp(relatedTweets(collected.tweets, owner), "search"), users: [], profile: profile, query: query});
   }
   if (kind === "notifications") {
-    return finish({kind: kind, skip: "", posts: stamp(relatedTweets(collected.tweets, owner), "notifications"), users: [], profile: profile});
+    var noted = (json.globalObjects || json.global_objects) ? parseNotificationsRest(json, owner) : stamp(repliesToOwner(collected.tweets, owner), "notifications");
+    return finish({kind: kind, skip: "", posts: noted, users: [], profile: profile});
   }
   return finish({kind: kind, skip: "", posts: stamp(relatedTweets(collected.tweets, owner), "detail"), users: [], profile: profile});
 }
@@ -594,6 +749,7 @@ export function applyCapture(store, captured, now) {
   var bucket = "";
   if (captured.kind === "following") bucket = "following";
   if (captured.kind === "followers" || captured.kind === "blue-followers") bucket = "followers";
+  if (captured.kind === "notifications" && !store.meta.sawNotifications) { store.meta.sawNotifications = true; changed = true; }
   if (bucket) {
     if (captured.kind === "following" && !store.meta.sawFollowing) { store.meta.sawFollowing = true; changed = true; }
     if (captured.kind === "followers" && !store.meta.sawFollowers) { store.meta.sawFollowers = true; changed = true; }
@@ -706,7 +862,8 @@ export function coverageReport(store, owner, tz) {
     followers: Object.keys(store.followers || {}).length,
     sawFollowing: !!meta.sawFollowing,
     sawFollowers: !!meta.sawFollowers,
-    sawBlueFollowers: !!meta.sawBlueFollowers
+    sawBlueFollowers: !!meta.sawBlueFollowers,
+    sawNotifications: !!meta.sawNotifications
   };
 }
 
@@ -792,6 +949,7 @@ export function normalizeStore(input) {
   store.meta.sawFollowing = !!meta.sawFollowing;
   store.meta.sawFollowers = !!meta.sawFollowers;
   store.meta.sawBlueFollowers = !!meta.sawBlueFollowers;
+  store.meta.sawNotifications = !!meta.sawNotifications;
   Object.keys(input.posts || {}).forEach(function (id) {
     var post = input.posts[id];
     if (!post || typeof post !== "object") return;
@@ -871,7 +1029,18 @@ function attachHooks(page, emit) {
   var origOpen = page.XMLHttpRequest.prototype.open;
   var origSend = page.XMLHttpRequest.prototype.send;
   var origFetch = page.fetch;
-  var interesting = /\/(UserRepliesTimeline|UserTweetsAndReplies|UserOriginalsTimeline|UserTweets|SearchTimeline|BlueVerifiedFollowers|Followers|Following|TweetDetail|ModeratedTimeline|NotificationsTimeline)(?:\?|#|$)/;
+  var interesting = /\/(UserRepliesTimeline|UserTweetsAndReplies|UserOriginalsTimeline|UserTweets|SearchTimeline|BlueVerifiedFollowers|Followers|Following|TweetDetail|ModeratedTimeline|NotificationsTimeline|NotificationsMentionsTimeline)(?:\?|#|$)/;
+  function isNotificationsRest(url) {
+    return /\/i\/api\/2\/notifications\/(?:all|mentions|verified)\.json(?:\?|#|$)/.test(String(url || ""));
+  }
+  function wantsBody(url) {
+    var text = String(url || "");
+    if (isNotificationsRest(text) || interesting.test(text)) return true;
+    return /\/graphql\/[^/?#]+\/[A-Za-z0-9_]*Notification[A-Za-z0-9_]*/.test(text);
+  }
+  function shouldWatch(url) {
+    return isGraphql(url) || isNotificationsRest(url);
+  }
   function requestUrl(input) {
     try {
       if (typeof input === "string") return input;
@@ -902,12 +1071,12 @@ function attachHooks(page, emit) {
   function hookedOpen(method, url) {
     var xhr = this;
     try { xhr.__fanUrl = url; } catch (err) {}
-    if (isGraphql(url)) {
+    if (shouldWatch(url)) {
       xhr.addEventListener("load", function () {
         try {
           if (xhr.status && xhr.status >= 400) return;
           var current = String(xhr.__fanUrl || "");
-          var text = interesting.test(current) ? readXhrBody(xhr) : "";
+          var text = wantsBody(current) ? readXhrBody(xhr) : "";
           emit(current, text, xhr.__fanBody || "");
         } catch (err) {}
       });
@@ -924,11 +1093,11 @@ function attachHooks(page, emit) {
     var body = "";
     try { if (init && typeof init.body === "string") body = init.body; } catch (err) {}
     var ret = origFetch.apply(this, arguments);
-    if (!ret || typeof ret.then !== "function" || !isGraphql(url)) return ret;
+    if (!ret || typeof ret.then !== "function" || !shouldWatch(url)) return ret;
     return ret.then(function (res) {
       try {
         if (!res || res.ok === false) return res;
-        if (!interesting.test(String(url))) {
+        if (!wantsBody(url)) {
           emit(String(url), "", body);
           return res;
         }

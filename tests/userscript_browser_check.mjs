@@ -34,18 +34,34 @@ if (!host || !host.shadowRoot) {
   var mask = shadow.getElementById("mask");
   var list = shadow.getElementById("checklist");
   var leaked = "";
+  var mentions = "";
   if (list) {
     var anchors = list.querySelectorAll("a");
     for (var n = 0; n < anchors.length; n++) {
       if (anchors[n].getAttribute("target")) leaked = anchors[n].getAttribute("target");
+      if (anchors[n].textContent === "通知") mentions = anchors[n].getAttribute("href") || "";
     }
   }
+  var diagBox = shadow.getElementById("diag-box");
+  var copy = shadow.getElementById("copy-diag");
+  var badge = shadow.getElementById("badge");
+  var widen = shadow.getElementById("widen");
+  var panel = shadow.getElementById("panel");
   rootEl.setAttribute("data-guide", empty ? empty.textContent : "");
   rootEl.setAttribute("data-footer", footer ? footer.textContent : "");
   rootEl.setAttribute("data-checklist", list ? "yes" : "no");
   rootEl.setAttribute("data-limit", list && list.textContent.indexOf("别一次翻太久") >= 0 ? "yes" : "no");
   rootEl.setAttribute("data-miss", list && list.textContent.indexOf("未采集") >= 0 ? "yes" : "no");
+  rootEl.setAttribute("data-notes", list && list.textContent.indexOf("通知") >= 0 ? "yes" : "no");
+  rootEl.setAttribute("data-mentions", mentions);
   rootEl.setAttribute("data-target", leaked);
+  rootEl.setAttribute("data-diagopen", diagBox && diagBox.open ? "yes" : "no");
+  rootEl.setAttribute("data-diagsum", diagBox && diagBox.querySelector("summary") ? diagBox.querySelector("summary").textContent : "");
+  rootEl.setAttribute("data-copyin", copy && diagBox && copy.parentNode === diagBox ? "yes" : "no");
+  rootEl.setAttribute("data-badge", badge ? badge.textContent : "missing");
+  if (widen) widen.click();
+  rootEl.setAttribute("data-wide", panel && panel.classList.contains("wide") ? "yes" : "no");
+  rootEl.setAttribute("data-widentext", widen ? widen.textContent : "");
   mask.click();
   rootEl.setAttribute("data-mask", mask.getAttribute("aria-pressed") || "");
   rootEl.setAttribute("data-masktext", mask.textContent || "");
@@ -82,7 +98,15 @@ const maskText = attr("masktext");
 const checklist = attr("checklist");
 const limit = attr("limit");
 const miss = attr("miss");
+const notes = attr("notes");
+const mentions = attr("mentions");
 const target = attr("target");
+const diagOpen = attr("diagopen");
+const diagSum = attr("diagsum");
+const copyIn = attr("copyin");
+const badge = attr("badge");
+const wide = attr("wide");
+const widenText = attr("widentext");
 if (probe !== "ok") {
   console.error(dom.slice(0, 1500));
   console.error("panel probe", probe || "missing");
@@ -96,8 +120,16 @@ if (footer !== "fan-audit（油猴版）· GitHub 开源") {
   console.error("footer", footer);
   process.exit(1);
 }
-if (checklist !== "yes" || limit !== "yes" || miss !== "yes" || target) {
-  console.error("checklist", checklist, limit, miss, target);
+if (checklist !== "yes" || limit !== "yes" || miss !== "yes" || notes !== "yes" || mentions !== "https://x.com/notifications/mentions" || target) {
+  console.error("checklist", checklist, limit, miss, notes, mentions, target);
+  process.exit(1);
+}
+if (diagOpen !== "no" || diagSum !== "诊断信息" || copyIn !== "yes") {
+  console.error("diag", diagOpen, diagSum, copyIn);
+  process.exit(1);
+}
+if (badge !== "" || wide !== "yes" || widenText !== "退出全屏") {
+  console.error("badge", JSON.stringify(badge), wide, widenText);
   process.exit(1);
 }
 if (mask !== "true" || maskText.indexOf("已开") < 0) {

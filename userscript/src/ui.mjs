@@ -1,4 +1,4 @@
-import { EMPTY_GUIDE, RETENTION_DAYS, BOARD_CSS, emptyStore, normalizeStore, prune, parseCapture, applyCapture, coverageReport, toEngineData, contextProblems, installHooks, pageHookProgram, exportBackup, importBackup, standaloneHtml, norm, operationName, classifyUrl, listKindFromPath, userFromVisible, diagnosticsCopy, sameRealm } from "./logic.mjs";
+import { EMPTY_GUIDE, RETENTION_DAYS, BOARD_CSS, emptyStore, normalizeStore, prune, parseCapture, applyCapture, coverageReport, toEngineData, contextProblems, installHooks, pageHookProgram, exportBackup, importBackup, standaloneHtml, norm, operationName, classifyUrl, listKindFromPath, userFromVisible, diagnosticsCopy, sameRealm, pageContext, badgeText } from "./logic.mjs";
 
 var STORE_KEY = "fan-audit-v1";
 
@@ -59,6 +59,7 @@ function boot() {
   var pending = [];
   var flushing = false;
   var diag = {hook: "no", world: "unknown", sameRealm: false, pageApp: false, graphqlSeen: 0, matched: {}, unmatched: [], domAccepted: 0, skips: {}, skipsByOp: {}};
+  var visit = {key: "", base: 0};
 
   function persist() {
     try {
@@ -249,8 +250,16 @@ function boot() {
       "#launcher.warn{background:#B45309;border-color:#B45309}",
       "#panel{position:fixed;right:16px;bottom:64px;z-index:2147483646;width:min(440px,calc(100vw - 24px));background:#F7F8FA;color:#1F2937;border:1px solid #E5E7EB;border-radius:16px;font:14px -apple-system,'PingFang SC','Noto Sans CJK SC','Microsoft YaHei',sans-serif}",
       "#panel[hidden]{display:none !important}",
+      "#panel.wide{top:0;right:0;bottom:0;left:0;width:100vw;height:100vh;max-width:none;border-radius:0}",
       "#scroller{position:relative;overflow:auto;padding:14px 14px 8px;max-height:min(78vh,760px)}",
+      "#panel.wide #scroller{max-height:100vh;height:100vh;padding:28px 32px 24px;box-sizing:border-box}",
       "#scroller h1{font-size:18px}",
+      "#panel.wide h1{font-size:28px}",
+      "#panel.wide .panels{grid-template-columns:1fr 1fr}",
+      "#panel.wide .bar .k{width:210px}",
+      "@media(max-width:820px){#panel.wide .panels{grid-template-columns:1fr}}",
+      "#diag-box{margin:8px 0 12px;font-size:13px;color:#6B7280}",
+      "#diag-box summary{cursor:pointer;color:#374151;font-weight:650}",
       ".row{display:flex;flex-wrap:wrap;gap:8px;align-items:end;margin:8px 0}",
       "label.field{font-size:12px;color:#374151;display:flex;flex-direction:column;gap:4px}",
       "input[type=text]{border:1px solid #D1D5DB;border-radius:8px;padding:6px 8px;background:#fff;color:#1F2937}",
@@ -284,11 +293,17 @@ function boot() {
     var title = el("h1", "", "粉丝体检");
     title.id = "top";
     var lead = el("p", "privacy", "只被动记录你正在浏览时页面已经收到的内容。脚本自己不发请求，也不会点赞、关注、取关或发帖。");
+    var diagBox = el("details");
+    diagBox.id = "diag-box";
+    var diagSummary = el("summary", "", "诊断信息");
     var diagLine = el("p", "muted");
     diagLine.id = "diag";
     var copyDiag = el("button", "ctrl", "复制诊断");
     copyDiag.type = "button";
     copyDiag.id = "copy-diag";
+    diagBox.appendChild(diagSummary);
+    diagBox.appendChild(diagLine);
+    diagBox.appendChild(copyDiag);
     var maskBtn = el("button", "ctrl", "一键打码");
     maskBtn.type = "button";
     maskBtn.id = "mask";
@@ -340,6 +355,15 @@ function boot() {
     importBtn.type = "button";
     var downloadBtn = el("button", "ctrl", "下载看板 HTML");
     downloadBtn.type = "button";
+    var widenBtn = el("button", "ctrl", "全屏");
+    widenBtn.type = "button";
+    widenBtn.id = "widen";
+    widenBtn.setAttribute("aria-pressed", "false");
+    var openTabBtn = el("button", "ctrl", "新标签打开");
+    openTabBtn.type = "button";
+    openTabBtn.id = "open-tab";
+    row3.appendChild(widenBtn);
+    row3.appendChild(openTabBtn);
     row3.appendChild(delBtn);
     row3.appendChild(exportBtn);
     row3.appendChild(importBtn);
@@ -368,8 +392,7 @@ function boot() {
 
     scroller.appendChild(title);
     scroller.appendChild(lead);
-    scroller.appendChild(diagLine);
-    scroller.appendChild(copyDiag);
+    scroller.appendChild(diagBox);
     scroller.appendChild(row1);
     scroller.appendChild(row2);
     scroller.appendChild(row3);
@@ -380,7 +403,14 @@ function boot() {
     scroller.appendChild(status);
     scroller.appendChild(results);
     scroller.appendChild(footer);
-    ui = {owner: owner, tz: tz, maskBtn: maskBtn, shadow: shadow, scroller: scroller, results: results, warnings: warnings, coverage: coverage, status: status, tzLine: tzLine, launcher: launcher, badge: badge, panel: panel, diagLine: diagLine};
+    ui = {owner: owner, tz: tz, maskBtn: maskBtn, shadow: shadow, scroller: scroller, results: results, warnings: warnings, coverage: coverage, status: status, tzLine: tzLine, launcher: launcher, badge: badge, panel: panel, diagLine: diagLine, widenBtn: widenBtn};
+    var wide = false;
+    function setWide(next) {
+      wide = !!next;
+      panel.classList.toggle("wide", wide);
+      widenBtn.textContent = wide ? "退出全屏" : "全屏";
+      widenBtn.setAttribute("aria-pressed", wide ? "true" : "false");
+    }
 
     launcher.addEventListener("click", function () {
       panelOpen = !panelOpen;
@@ -476,6 +506,28 @@ function boot() {
       };
       reader.readAsText(picked);
     });
+    widenBtn.addEventListener("click", function () { setWide(!wide); });
+    openTabBtn.addEventListener("click", function () {
+      var openedUrl = "";
+      try {
+        var view = buildView();
+        if (view.error) { status.textContent = view.error; return; }
+        var note = store.prefs.masked ? "打开时打码是开的，页面里用账号编号。" : "打开时打码是关的，页面里有账号名，请只留在自己电脑上。";
+        var blob = new Blob([standaloneHtml(view.fragment, note)], {type: "text/html"});
+        openedUrl = URL.createObjectURL(blob);
+        var opened = window.open(openedUrl, "_blank", "noopener");
+        if (!opened) {
+          URL.revokeObjectURL(openedUrl);
+          status.textContent = "没能打开新标签。请改用全屏。数据没有离开这台电脑。";
+          return;
+        }
+        status.textContent = "已在新标签打开本机看板，没有上传。若页面是空的，用全屏看。";
+        setTimeout(function () { URL.revokeObjectURL(openedUrl); }, 120000);
+      } catch (err) {
+        if (openedUrl) URL.revokeObjectURL(openedUrl);
+        status.textContent = "没能打开新标签。请改用全屏。数据没有离开这台电脑。";
+      }
+    });
     downloadBtn.addEventListener("click", function () {
       try {
         var view = buildView();
@@ -523,10 +575,10 @@ function boot() {
       page && page.addEventListener("pagehide", persist);
     } catch (err) {}
     document.addEventListener("keydown", function (event) {
-      if (event.key === "Escape" && panelOpen) {
-        panelOpen = false;
-        panel.hidden = true;
-      }
+      if (event.key !== "Escape" || !panelOpen) return;
+      if (wide) { setWide(false); return; }
+      panelOpen = false;
+      panel.hidden = true;
     });
   }
 
@@ -590,14 +642,31 @@ function boot() {
     row("粉丝列表", home ? home + "/followers" : "", !!report.sawFollowers, report.sawFollowers ? (report.followers + " 人") : "");
     row("认证粉丝", home ? home + "/verified_followers" : "", !!report.sawBlueFollowers, report.sawBlueFollowers ? "已采集" : "");
     row("主页回复", home ? home + "/with_replies" : "", replies, replies ? (report.srcCount.replies + " 条 / " + report.srcDays.replies + " 天") : "");
+    var noted = ((report.srcCount && report.srcCount.notifications) || 0) > 0;
+    var sawNotes = !!report.sawNotifications;
+    row("通知", "https://x.com/notifications/mentions", noted || sawNotes, noted ? (report.srcCount.notifications + " 条 / " + report.srcDays.notifications + " 天") : (sawNotes ? "已打开，回复 0 条" : ""));
     box.appendChild(el("p", "warn", "别人回我是搜索页，别一次翻太久。X 会限流，被限了就停下来等一等再翻。脚本不会替你滚动，也不会自己发请求。"));
     return box;
   }
 
   function updateBadge() {
     if (!ui.badge) return;
+    var owner = norm(ui.owner ? ui.owner.value : store.prefs.owner);
+    var ctx = pageContext(location.pathname, location.search, owner);
+    var report = coverageReport(store, owner, effectiveTz());
+    var count = 0;
+    if (ctx.kind === "followers") count = report.followers;
+    else if (ctx.kind === "following") count = report.following;
+    else if (ctx.kind === "replies") count = report.srcCount.replies;
+    else if (ctx.kind === "inbound") count = report.inbound;
+    else if (ctx.kind === "notifications") count = report.srcCount.notifications;
+    var key = ctx.kind + ":" + location.pathname + location.search;
+    if (key !== visit.key) {
+      visit.key = key;
+      visit.base = count;
+    }
+    ui.badge.textContent = badgeText(ctx.label, count, visit.base);
     var total = Object.keys(store.posts).length + Object.keys(store.following).length + Object.keys(store.followers).length;
-    ui.badge.textContent = total ? " " + total : "";
     var bad = problems().some(function (item) { return item.level === "error"; });
     ui.launcher.classList.toggle("warn", bad && !total);
   }
@@ -632,25 +701,26 @@ function boot() {
   function render() {
     if (!ui.results) return;
     if (ui.diagLine) {
-      var matched = Object.keys(diag.matched).map(function (key) { return key + " " + diag.matched[key]; }).join("、") || "无";
-      var unmatched = diag.unmatched.join("、") || "无";
+      var matched = Object.keys(diag.matched).sort().map(function (key) { return key + " " + diag.matched[key]; }).join("、") || "无";
+      var notable = [];
+      diag.unmatched.forEach(function (op) {
+        if (/Notification/i.test(op) && notable.indexOf(op) < 0) notable.push(op);
+      });
       var skipBits = [];
       Object.keys(diag.skipsByOp).sort().forEach(function (op) {
         var reasons = diag.skipsByOp[op] || {};
         Object.keys(reasons).sort().forEach(function (reason) {
-          if (skipBits.length >= 6) return;
+          if (reason === "不在采集名单" && !/Notification/i.test(op)) return;
+          if (skipBits.length >= 4) return;
           skipBits.push(op + " " + reason + " " + reasons[reason]);
         });
       });
-      var ownerNow = norm(store.prefs.owner);
       var hookLabel = (diag.hook === "page" || diag.hook === "page-script") ? "已装" : "没装上";
-      ui.diagLine.textContent = "诊断：钩子" + hookLabel + "（" + diag.hook + "，世界 " + diag.world + (diag.sameRealm ? "，同一环境" : "，隔离环境") + "）"
-        + " · GraphQL " + diag.graphqlSeen
+      ui.diagLine.textContent = "钩子" + hookLabel
         + " · 匹配 " + matched
-        + " · 未识别 " + unmatched
-        + " · 跳过 " + (skipBits.join("、") || "无")
-        + " · 用户名 " + (ownerNow || "未识别")
-        + " · 页面格子新记 " + diag.domAccepted;
+        + (notable.length ? " · 通知接口还没接上 " + notable.join("、") : "")
+        + (skipBits.length ? " · 跳过 " + skipBits.join("、") : "")
+        + "。装饰接口和完整次数在「复制诊断」里。";
     }
     ui.maskBtn.classList.toggle("on", !!store.prefs.masked);
     ui.maskBtn.textContent = store.prefs.masked ? "一键打码（已开）" : "一键打码";
@@ -671,13 +741,13 @@ function boot() {
       guide.id = "empty-guide";
       ui.coverage.appendChild(guide);
       ui.coverage.appendChild(el("p", "muted", norm(ui.owner.value)
-        ? "名单还是空的。请确认打开的是你自己的关注、粉丝或主页回复页，再手动往下翻。上面的诊断能看出钩子有没有接到请求。默认保留 " + RETENTION_DAYS + " 天。"
+        ? "名单还是空的。请确认打开的是你自己的关注、粉丝或主页回复页，再手动往下翻。钩子有没有接上，展开「诊断信息」。默认保留 " + RETENTION_DAYS + " 天。"
         : "如果用户名是空的，先打开自己的主页，或在上面填上，再手动往下翻。默认保留 " + RETENTION_DAYS + " 天。"));
     }
     ui.coverage.appendChild(captureChecklist(norm(ui.owner.value), report));
     if (!empty) {
       ui.coverage.appendChild(el("p", "sub", "数据完整度（按当前时区算天数）"));
-      ui.coverage.appendChild(el("p", "muted", "别人回我：" + report.inbound + " 条，覆盖 " + report.inboundDays + " 天。搜索记下 " + report.srcCount.search + " 条（" + report.srcDays.search + " 天），帖子详情 " + report.srcCount.detail + " 条（" + report.srcDays.detail + " 天）。"));
+      ui.coverage.appendChild(el("p", "muted", "别人回我：" + report.inbound + " 条，覆盖 " + report.inboundDays + " 天。搜索记下 " + report.srcCount.search + " 条（" + report.srcDays.search + " 天），帖子详情 " + report.srcCount.detail + " 条（" + report.srcDays.detail + " 天），通知 " + report.srcCount.notifications + " 条（" + report.srcDays.notifications + " 天）。"));
       ui.coverage.appendChild(el("p", "muted", "我发出的回复：" + report.outbound + " 条，覆盖 " + report.outboundDays + " 天。主页回复页 " + report.srcCount.replies + " 条（" + report.srcDays.replies + " 天），主页帖子页 " + report.srcCount.originals + " 条（" + report.srcDays.originals + " 天）。"));
       ui.coverage.appendChild(el("p", "muted", "正在关注：" + report.following + " 人" + (report.sawFollowing ? "（已打开过列表）" : "（还没打开过列表）") + "。关注者：" + report.followers + " 人" + (report.sawFollowers ? "（已打开过普通粉丝列表）" : "（还没打开过普通粉丝列表）") + (report.sawBlueFollowers ? "，另看到过认证粉丝。" : "。")));
       if (report.sawBlueFollowers && !report.sawFollowers) {
@@ -712,13 +782,13 @@ function boot() {
   var scanTimer = 0;
   function scheduleScan() {
     if (scanTimer) return;
-    scanTimer = setTimeout(function () { scanTimer = 0; scanCells(); }, 400);
+    scanTimer = setTimeout(function () { scanTimer = 0; scanCells(); updateBadge(); }, 400);
   }
   try {
     var observer = new MutationObserver(scheduleScan);
     observer.observe(document.documentElement, {childList: true, subtree: true});
   } catch (err) {}
-  setInterval(scanCells, 2000);
+  setInterval(function () { scanCells(); updateBadge(); }, 2000);
 
   if (document.body) mount();
   else document.addEventListener("DOMContentLoaded", mount);

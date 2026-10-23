@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         fan-audit 粉丝体检
 // @namespace    https://github.com/ratt1e/Xfan-audit
-// @version      0.1.2
+// @version      0.1.3
 // @description  在 X 上边逛边记下公开回复和关注名单，在页面里出粉丝体检。只读，不自己发请求，不自动翻页。
 // @author       ranger_escape
 // @match        *://x.com/*
@@ -1046,7 +1046,7 @@ function emptyStore() {
     posts: {},
     following: {},
     followers: {},
-    meta: {sawFollowing: false, sawFollowers: false, sawBlueFollowers: false}
+    meta: {sawFollowing: false, sawFollowers: false, sawBlueFollowers: false, sawNotifications: false}
   };
 }
 
@@ -1055,12 +1055,21 @@ function norm(value) {
 }
 
 function operationName(url) {
-  var match = String(url || "").match(/\/graphql\/[^/?#]+\/([A-Za-z0-9_]+)/);
-  return match ? match[1] : "";
+  var text = String(url || "");
+  var match = text.match(/\/graphql\/[^/?#]+\/([A-Za-z0-9_]+)/);
+  if (match) return match[1];
+  if (/\/notifications\/all\.json(?:\?|#|$)/.test(text)) return "NotificationsAll";
+  if (/\/notifications\/mentions\.json(?:\?|#|$)/.test(text)) return "NotificationsMentions";
+  if (/\/notifications\/verified\.json(?:\?|#|$)/.test(text)) return "NotificationsVerified";
+  return "";
 }
 
 function classifyUrl(url) {
-  return OPS[operationName(url)] || "";
+  var op = operationName(url);
+  if (OPS[op]) return OPS[op];
+  if (/^Notifications[A-Za-z0-9]*Timeline$/.test(op)) return "notifications";
+  if (op === "NotificationsAll" || op === "NotificationsMentions" || op === "NotificationsVerified") return "notifications";
+  return "";
 }
 
 function listKindFromPath(pathname, owner) {
@@ -1071,6 +1080,30 @@ function listKindFromPath(pathname, owner) {
   if (match[2] === "following") return "following";
   if (match[2] === "verified_followers") return "blue-followers";
   return "followers";
+}
+
+function badgeText(label, count, base) {
+  if (!label) return "";
+  var n = count | 0;
+  var extra = base != null && n > base ? " +" + (n - base) : "";
+  return " " + label + " " + n + extra;
+}
+
+function pageContext(pathname, search, owner) {
+  var path = String(pathname || "");
+  var query = "";
+  var raw = String(search || "");
+  var found = raw.match(/(?:^|[?&])q=([^&]*)/);
+  if (found) {
+    try { query = decodeURIComponent(found[1].replace(/\+/g, " ")); } catch (err) { query = found[1]; }
+  }
+  if (/^\/notifications(?:\/mentions)?\/?$/.test(path)) return {kind: "notifications", label: "通知"};
+  if ((path === "/search" || path.indexOf("/search/") === 0) && queryMentionsTo(query, owner)) return {kind: "inbound", label: "别人回我"};
+  var list = listKindFromPath(path, owner);
+  if (list === "following") return {kind: "following", label: "关注"};
+  if (list === "followers" || list === "blue-followers") return {kind: "followers", label: "粉丝"};
+  if (timelineKindFromPath(path, owner) === "replies") return {kind: "replies", label: "主页回复"};
+  return {kind: "", label: ""};
 }
 
 function timelineKindFromPath(pathname, owner) {
@@ -1272,8 +1305,57 @@ function readTweet(result) {
   };
 }
 
+function notificationIcon(content) {
+  if (!content) return "";
+  var icon = content.notification_icon || content.notificationIcon || "";
+  if (icon && typeof icon === "object") icon = icon.id || "";
+  return String(icon || "").toLowerCase();
+}
+
+function isNotificationItem(content) {
+  var kind = String((content && (content.itemType || content.__typename)) || "");
+  return kind.indexOf("Notification") >= 0 || !!notificationIcon(content) || !!(content && content.template);
+}
+
+function replyLikeIcon(icon) {
+  return icon.indexOf("reply") >= 0 || icon.indexOf("mention") >= 0;
+}
+
+function noiseIcon(icon) {
+  if (!icon || replyLikeIcon(icon)) return false;
+  return /heart|like|favorite|person|follow|retweet|repost|bell/.test(icon);
+}
+
+function keepNotification(content) {
+  var icon = notificationIcon(content);
+  if (noiseIcon(icon)) return false;
+  var kind = String(content.itemType || content.__typename || "");
+  if (kind.indexOf("Aggregate") >= 0 && !replyLikeIcon(icon)) return false;
+  return true;
+}
+
+function absorbTweetish(node, tweets, users) {
+  if (!node || typeof node !== "object") return;
+  if (node.tweet_results || node.tweetResults || node.user_results || node.userResults) fromItemContent(node, tweets, users);
+  var wrapped = node.tweet && (node.tweet.result || node.tweet);
+  if (wrapped && wrapped !== node) {
+    var nested = readTweet(wrapped);
+    if (nested) tweets.push(nested);
+  }
+  if (node.rest_id || node.restId || (node.legacy && node.legacy.full_text)) {
+    var direct = readTweet(node);
+    if (direct) tweets.push(direct);
+  }
+}
+
 function fromItemContent(content, tweets, users) {
   if (!content || typeof content !== "object") return;
+  if (isNotificationItem(content)) {
+    if (!keepNotification(content)) return;
+    var template = content.template || {};
+    var targets = template.target_objects || template.targetObjects || [];
+    for (var t = 0; t < targets.length; t++) absorbTweetish(targets[t], tweets, users);
+  }
   if (content.tweet_results) {
     var tweet = readTweet(content.tweet_results.result);
     if (tweet) tweets.push(tweet);
@@ -1466,6 +1548,78 @@ function relatedTweets(tweets, owner) {
   return Object.keys(keep).map(function (id) { return keep[id]; });
 }
 
+function repliesToOwner(tweets, owner) {
+  var me = norm(owner);
+  if (!me) return [];
+  var seen = {};
+  var out = [];
+  for (var i = 0; i < tweets.length; i++) {
+    var tweet = tweets[i];
+    var handle = norm(tweet.handle);
+    var target = norm(tweet.replyToHandle);
+    if (!tweet.id || seen[tweet.id] || !tweet.replyTo || !handle || handle === me || target !== me) continue;
+    seen[tweet.id] = 1;
+    out.push(tweet);
+  }
+  return out;
+}
+
+function parseNotificationsRest(json, owner) {
+  var global = json.globalObjects || json.global_objects || {};
+  var tweets = global.tweets || {};
+  var users = global.users || {};
+  var notes = global.notifications || {};
+  var posts = [];
+  function personOf(id) {
+    var user = users[String(id || "")] || {};
+    return {
+      id: String(id || user.id_str || ""),
+      handle: norm(user.screen_name || user.screenName || ""),
+      name: String(user.name || ""),
+      verified: !!(user.verified || user.is_blue_verified)
+    };
+  }
+  Object.keys(notes).forEach(function (key) {
+    var note = notes[key] || {};
+    var icon = notificationIcon(note);
+    if (!icon && note.icon) icon = notificationIcon({notification_icon: note.icon});
+    if (icon !== "reply" && icon !== "mention" && icon !== "reply_to_you") return;
+    var template = note.template || {};
+    var agg = template.aggregateUserActionsV1 || template.aggregate_user_actions_v1 || template;
+    var targets = agg.targetObjects || agg.target_objects || [];
+    var fromUsers = agg.fromUsers || agg.from_users || [];
+    var author = fromUsers[0] && (fromUsers[0].user || fromUsers[0]);
+    var authorId = author && (author.id || author.id_str || author.rest_id);
+    var person = personOf(authorId);
+    targets.forEach(function (target) {
+      var tweetRef = target && (target.tweet || target);
+      var tid = tweetRef && (tweetRef.id || tweetRef.id_str || tweetRef.rest_id);
+      var raw = tid && tweets[String(tid)];
+      if (!raw) return;
+      var legacy = raw.legacy || raw;
+      var replyTo = String(legacy.in_reply_to_status_id_str || legacy.in_reply_to_status_id || "");
+      var replyToHandle = norm(legacy.in_reply_to_screen_name || "");
+      if (!replyTo || replyToHandle !== norm(owner)) return;
+      var uid = String(raw.user_id_str || raw.user_id || person.id || "");
+      var who = person.handle ? person : personOf(uid);
+      posts.push({
+        id: String(raw.id_str || raw.id || tid),
+        uid: uid,
+        handle: who.handle,
+        name: who.name,
+        verified: !!who.verified,
+        replyTo: replyTo,
+        replyToHandle: replyToHandle,
+        conv: String(legacy.conversation_id_str || ""),
+        ts: toIso(legacy.created_at || ""),
+        text: textForStore(legacy.full_text || legacy.text || ""),
+        src: "notifications"
+      });
+    });
+  });
+  return posts;
+}
+
 function stamp(tweets, src) {
   return tweets.map(function (tweet) {
     return {
@@ -1530,7 +1684,8 @@ function parseCapture(url, text, options) {
     return finish({kind: kind, skip: "", posts: stamp(relatedTweets(collected.tweets, owner), "search"), users: [], profile: profile, query: query});
   }
   if (kind === "notifications") {
-    return finish({kind: kind, skip: "", posts: stamp(relatedTweets(collected.tweets, owner), "notifications"), users: [], profile: profile});
+    var noted = (json.globalObjects || json.global_objects) ? parseNotificationsRest(json, owner) : stamp(repliesToOwner(collected.tweets, owner), "notifications");
+    return finish({kind: kind, skip: "", posts: noted, users: [], profile: profile});
   }
   return finish({kind: kind, skip: "", posts: stamp(relatedTweets(collected.tweets, owner), "detail"), users: [], profile: profile});
 }
@@ -1601,6 +1756,7 @@ function applyCapture(store, captured, now) {
   var bucket = "";
   if (captured.kind === "following") bucket = "following";
   if (captured.kind === "followers" || captured.kind === "blue-followers") bucket = "followers";
+  if (captured.kind === "notifications" && !store.meta.sawNotifications) { store.meta.sawNotifications = true; changed = true; }
   if (bucket) {
     if (captured.kind === "following" && !store.meta.sawFollowing) { store.meta.sawFollowing = true; changed = true; }
     if (captured.kind === "followers" && !store.meta.sawFollowers) { store.meta.sawFollowers = true; changed = true; }
@@ -1713,7 +1869,8 @@ function coverageReport(store, owner, tz) {
     followers: Object.keys(store.followers || {}).length,
     sawFollowing: !!meta.sawFollowing,
     sawFollowers: !!meta.sawFollowers,
-    sawBlueFollowers: !!meta.sawBlueFollowers
+    sawBlueFollowers: !!meta.sawBlueFollowers,
+    sawNotifications: !!meta.sawNotifications
   };
 }
 
@@ -1799,6 +1956,7 @@ function normalizeStore(input) {
   store.meta.sawFollowing = !!meta.sawFollowing;
   store.meta.sawFollowers = !!meta.sawFollowers;
   store.meta.sawBlueFollowers = !!meta.sawBlueFollowers;
+  store.meta.sawNotifications = !!meta.sawNotifications;
   Object.keys(input.posts || {}).forEach(function (id) {
     var post = input.posts[id];
     if (!post || typeof post !== "object") return;
@@ -1878,7 +2036,18 @@ function attachHooks(page, emit) {
   var origOpen = page.XMLHttpRequest.prototype.open;
   var origSend = page.XMLHttpRequest.prototype.send;
   var origFetch = page.fetch;
-  var interesting = /\/(UserRepliesTimeline|UserTweetsAndReplies|UserOriginalsTimeline|UserTweets|SearchTimeline|BlueVerifiedFollowers|Followers|Following|TweetDetail|ModeratedTimeline|NotificationsTimeline)(?:\?|#|$)/;
+  var interesting = /\/(UserRepliesTimeline|UserTweetsAndReplies|UserOriginalsTimeline|UserTweets|SearchTimeline|BlueVerifiedFollowers|Followers|Following|TweetDetail|ModeratedTimeline|NotificationsTimeline|NotificationsMentionsTimeline)(?:\?|#|$)/;
+  function isNotificationsRest(url) {
+    return /\/i\/api\/2\/notifications\/(?:all|mentions|verified)\.json(?:\?|#|$)/.test(String(url || ""));
+  }
+  function wantsBody(url) {
+    var text = String(url || "");
+    if (isNotificationsRest(text) || interesting.test(text)) return true;
+    return /\/graphql\/[^/?#]+\/[A-Za-z0-9_]*Notification[A-Za-z0-9_]*/.test(text);
+  }
+  function shouldWatch(url) {
+    return isGraphql(url) || isNotificationsRest(url);
+  }
   function requestUrl(input) {
     try {
       if (typeof input === "string") return input;
@@ -1909,12 +2078,12 @@ function attachHooks(page, emit) {
   function hookedOpen(method, url) {
     var xhr = this;
     try { xhr.__fanUrl = url; } catch (err) {}
-    if (isGraphql(url)) {
+    if (shouldWatch(url)) {
       xhr.addEventListener("load", function () {
         try {
           if (xhr.status && xhr.status >= 400) return;
           var current = String(xhr.__fanUrl || "");
-          var text = interesting.test(current) ? readXhrBody(xhr) : "";
+          var text = wantsBody(current) ? readXhrBody(xhr) : "";
           emit(current, text, xhr.__fanBody || "");
         } catch (err) {}
       });
@@ -1931,11 +2100,11 @@ function attachHooks(page, emit) {
     var body = "";
     try { if (init && typeof init.body === "string") body = init.body; } catch (err) {}
     var ret = origFetch.apply(this, arguments);
-    if (!ret || typeof ret.then !== "function" || !isGraphql(url)) return ret;
+    if (!ret || typeof ret.then !== "function" || !shouldWatch(url)) return ret;
     return ret.then(function (res) {
       try {
         if (!res || res.ok === false) return res;
-        if (!interesting.test(String(url))) {
+        if (!wantsBody(url)) {
           emit(String(url), "", body);
           return res;
         }
@@ -2074,6 +2243,7 @@ function boot() {
   var pending = [];
   var flushing = false;
   var diag = {hook: "no", world: "unknown", sameRealm: false, pageApp: false, graphqlSeen: 0, matched: {}, unmatched: [], domAccepted: 0, skips: {}, skipsByOp: {}};
+  var visit = {key: "", base: 0};
 
   function persist() {
     try {
@@ -2264,8 +2434,16 @@ function boot() {
       "#launcher.warn{background:#B45309;border-color:#B45309}",
       "#panel{position:fixed;right:16px;bottom:64px;z-index:2147483646;width:min(440px,calc(100vw - 24px));background:#F7F8FA;color:#1F2937;border:1px solid #E5E7EB;border-radius:16px;font:14px -apple-system,'PingFang SC','Noto Sans CJK SC','Microsoft YaHei',sans-serif}",
       "#panel[hidden]{display:none !important}",
+      "#panel.wide{top:0;right:0;bottom:0;left:0;width:100vw;height:100vh;max-width:none;border-radius:0}",
       "#scroller{position:relative;overflow:auto;padding:14px 14px 8px;max-height:min(78vh,760px)}",
+      "#panel.wide #scroller{max-height:100vh;height:100vh;padding:28px 32px 24px;box-sizing:border-box}",
       "#scroller h1{font-size:18px}",
+      "#panel.wide h1{font-size:28px}",
+      "#panel.wide .panels{grid-template-columns:1fr 1fr}",
+      "#panel.wide .bar .k{width:210px}",
+      "@media(max-width:820px){#panel.wide .panels{grid-template-columns:1fr}}",
+      "#diag-box{margin:8px 0 12px;font-size:13px;color:#6B7280}",
+      "#diag-box summary{cursor:pointer;color:#374151;font-weight:650}",
       ".row{display:flex;flex-wrap:wrap;gap:8px;align-items:end;margin:8px 0}",
       "label.field{font-size:12px;color:#374151;display:flex;flex-direction:column;gap:4px}",
       "input[type=text]{border:1px solid #D1D5DB;border-radius:8px;padding:6px 8px;background:#fff;color:#1F2937}",
@@ -2299,11 +2477,17 @@ function boot() {
     var title = el("h1", "", "粉丝体检");
     title.id = "top";
     var lead = el("p", "privacy", "只被动记录你正在浏览时页面已经收到的内容。脚本自己不发请求，也不会点赞、关注、取关或发帖。");
+    var diagBox = el("details");
+    diagBox.id = "diag-box";
+    var diagSummary = el("summary", "", "诊断信息");
     var diagLine = el("p", "muted");
     diagLine.id = "diag";
     var copyDiag = el("button", "ctrl", "复制诊断");
     copyDiag.type = "button";
     copyDiag.id = "copy-diag";
+    diagBox.appendChild(diagSummary);
+    diagBox.appendChild(diagLine);
+    diagBox.appendChild(copyDiag);
     var maskBtn = el("button", "ctrl", "一键打码");
     maskBtn.type = "button";
     maskBtn.id = "mask";
@@ -2355,6 +2539,15 @@ function boot() {
     importBtn.type = "button";
     var downloadBtn = el("button", "ctrl", "下载看板 HTML");
     downloadBtn.type = "button";
+    var widenBtn = el("button", "ctrl", "全屏");
+    widenBtn.type = "button";
+    widenBtn.id = "widen";
+    widenBtn.setAttribute("aria-pressed", "false");
+    var openTabBtn = el("button", "ctrl", "新标签打开");
+    openTabBtn.type = "button";
+    openTabBtn.id = "open-tab";
+    row3.appendChild(widenBtn);
+    row3.appendChild(openTabBtn);
     row3.appendChild(delBtn);
     row3.appendChild(exportBtn);
     row3.appendChild(importBtn);
@@ -2383,8 +2576,7 @@ function boot() {
 
     scroller.appendChild(title);
     scroller.appendChild(lead);
-    scroller.appendChild(diagLine);
-    scroller.appendChild(copyDiag);
+    scroller.appendChild(diagBox);
     scroller.appendChild(row1);
     scroller.appendChild(row2);
     scroller.appendChild(row3);
@@ -2395,7 +2587,14 @@ function boot() {
     scroller.appendChild(status);
     scroller.appendChild(results);
     scroller.appendChild(footer);
-    ui = {owner: owner, tz: tz, maskBtn: maskBtn, shadow: shadow, scroller: scroller, results: results, warnings: warnings, coverage: coverage, status: status, tzLine: tzLine, launcher: launcher, badge: badge, panel: panel, diagLine: diagLine};
+    ui = {owner: owner, tz: tz, maskBtn: maskBtn, shadow: shadow, scroller: scroller, results: results, warnings: warnings, coverage: coverage, status: status, tzLine: tzLine, launcher: launcher, badge: badge, panel: panel, diagLine: diagLine, widenBtn: widenBtn};
+    var wide = false;
+    function setWide(next) {
+      wide = !!next;
+      panel.classList.toggle("wide", wide);
+      widenBtn.textContent = wide ? "退出全屏" : "全屏";
+      widenBtn.setAttribute("aria-pressed", wide ? "true" : "false");
+    }
 
     launcher.addEventListener("click", function () {
       panelOpen = !panelOpen;
@@ -2491,6 +2690,28 @@ function boot() {
       };
       reader.readAsText(picked);
     });
+    widenBtn.addEventListener("click", function () { setWide(!wide); });
+    openTabBtn.addEventListener("click", function () {
+      var openedUrl = "";
+      try {
+        var view = buildView();
+        if (view.error) { status.textContent = view.error; return; }
+        var note = store.prefs.masked ? "打开时打码是开的，页面里用账号编号。" : "打开时打码是关的，页面里有账号名，请只留在自己电脑上。";
+        var blob = new Blob([standaloneHtml(view.fragment, note)], {type: "text/html"});
+        openedUrl = URL.createObjectURL(blob);
+        var opened = window.open(openedUrl, "_blank", "noopener");
+        if (!opened) {
+          URL.revokeObjectURL(openedUrl);
+          status.textContent = "没能打开新标签。请改用全屏。数据没有离开这台电脑。";
+          return;
+        }
+        status.textContent = "已在新标签打开本机看板，没有上传。若页面是空的，用全屏看。";
+        setTimeout(function () { URL.revokeObjectURL(openedUrl); }, 120000);
+      } catch (err) {
+        if (openedUrl) URL.revokeObjectURL(openedUrl);
+        status.textContent = "没能打开新标签。请改用全屏。数据没有离开这台电脑。";
+      }
+    });
     downloadBtn.addEventListener("click", function () {
       try {
         var view = buildView();
@@ -2538,10 +2759,10 @@ function boot() {
       page && page.addEventListener("pagehide", persist);
     } catch (err) {}
     document.addEventListener("keydown", function (event) {
-      if (event.key === "Escape" && panelOpen) {
-        panelOpen = false;
-        panel.hidden = true;
-      }
+      if (event.key !== "Escape" || !panelOpen) return;
+      if (wide) { setWide(false); return; }
+      panelOpen = false;
+      panel.hidden = true;
     });
   }
 
@@ -2605,14 +2826,31 @@ function boot() {
     row("粉丝列表", home ? home + "/followers" : "", !!report.sawFollowers, report.sawFollowers ? (report.followers + " 人") : "");
     row("认证粉丝", home ? home + "/verified_followers" : "", !!report.sawBlueFollowers, report.sawBlueFollowers ? "已采集" : "");
     row("主页回复", home ? home + "/with_replies" : "", replies, replies ? (report.srcCount.replies + " 条 / " + report.srcDays.replies + " 天") : "");
+    var noted = ((report.srcCount && report.srcCount.notifications) || 0) > 0;
+    var sawNotes = !!report.sawNotifications;
+    row("通知", "https://x.com/notifications/mentions", noted || sawNotes, noted ? (report.srcCount.notifications + " 条 / " + report.srcDays.notifications + " 天") : (sawNotes ? "已打开，回复 0 条" : ""));
     box.appendChild(el("p", "warn", "别人回我是搜索页，别一次翻太久。X 会限流，被限了就停下来等一等再翻。脚本不会替你滚动，也不会自己发请求。"));
     return box;
   }
 
   function updateBadge() {
     if (!ui.badge) return;
+    var owner = norm(ui.owner ? ui.owner.value : store.prefs.owner);
+    var ctx = pageContext(location.pathname, location.search, owner);
+    var report = coverageReport(store, owner, effectiveTz());
+    var count = 0;
+    if (ctx.kind === "followers") count = report.followers;
+    else if (ctx.kind === "following") count = report.following;
+    else if (ctx.kind === "replies") count = report.srcCount.replies;
+    else if (ctx.kind === "inbound") count = report.inbound;
+    else if (ctx.kind === "notifications") count = report.srcCount.notifications;
+    var key = ctx.kind + ":" + location.pathname + location.search;
+    if (key !== visit.key) {
+      visit.key = key;
+      visit.base = count;
+    }
+    ui.badge.textContent = badgeText(ctx.label, count, visit.base);
     var total = Object.keys(store.posts).length + Object.keys(store.following).length + Object.keys(store.followers).length;
-    ui.badge.textContent = total ? " " + total : "";
     var bad = problems().some(function (item) { return item.level === "error"; });
     ui.launcher.classList.toggle("warn", bad && !total);
   }
@@ -2647,25 +2885,26 @@ function boot() {
   function render() {
     if (!ui.results) return;
     if (ui.diagLine) {
-      var matched = Object.keys(diag.matched).map(function (key) { return key + " " + diag.matched[key]; }).join("、") || "无";
-      var unmatched = diag.unmatched.join("、") || "无";
+      var matched = Object.keys(diag.matched).sort().map(function (key) { return key + " " + diag.matched[key]; }).join("、") || "无";
+      var notable = [];
+      diag.unmatched.forEach(function (op) {
+        if (/Notification/i.test(op) && notable.indexOf(op) < 0) notable.push(op);
+      });
       var skipBits = [];
       Object.keys(diag.skipsByOp).sort().forEach(function (op) {
         var reasons = diag.skipsByOp[op] || {};
         Object.keys(reasons).sort().forEach(function (reason) {
-          if (skipBits.length >= 6) return;
+          if (reason === "不在采集名单" && !/Notification/i.test(op)) return;
+          if (skipBits.length >= 4) return;
           skipBits.push(op + " " + reason + " " + reasons[reason]);
         });
       });
-      var ownerNow = norm(store.prefs.owner);
       var hookLabel = (diag.hook === "page" || diag.hook === "page-script") ? "已装" : "没装上";
-      ui.diagLine.textContent = "诊断：钩子" + hookLabel + "（" + diag.hook + "，世界 " + diag.world + (diag.sameRealm ? "，同一环境" : "，隔离环境") + "）"
-        + " · GraphQL " + diag.graphqlSeen
+      ui.diagLine.textContent = "钩子" + hookLabel
         + " · 匹配 " + matched
-        + " · 未识别 " + unmatched
-        + " · 跳过 " + (skipBits.join("、") || "无")
-        + " · 用户名 " + (ownerNow || "未识别")
-        + " · 页面格子新记 " + diag.domAccepted;
+        + (notable.length ? " · 通知接口还没接上 " + notable.join("、") : "")
+        + (skipBits.length ? " · 跳过 " + skipBits.join("、") : "")
+        + "。装饰接口和完整次数在「复制诊断」里。";
     }
     ui.maskBtn.classList.toggle("on", !!store.prefs.masked);
     ui.maskBtn.textContent = store.prefs.masked ? "一键打码（已开）" : "一键打码";
@@ -2686,13 +2925,13 @@ function boot() {
       guide.id = "empty-guide";
       ui.coverage.appendChild(guide);
       ui.coverage.appendChild(el("p", "muted", norm(ui.owner.value)
-        ? "名单还是空的。请确认打开的是你自己的关注、粉丝或主页回复页，再手动往下翻。上面的诊断能看出钩子有没有接到请求。默认保留 " + RETENTION_DAYS + " 天。"
+        ? "名单还是空的。请确认打开的是你自己的关注、粉丝或主页回复页，再手动往下翻。钩子有没有接上，展开「诊断信息」。默认保留 " + RETENTION_DAYS + " 天。"
         : "如果用户名是空的，先打开自己的主页，或在上面填上，再手动往下翻。默认保留 " + RETENTION_DAYS + " 天。"));
     }
     ui.coverage.appendChild(captureChecklist(norm(ui.owner.value), report));
     if (!empty) {
       ui.coverage.appendChild(el("p", "sub", "数据完整度（按当前时区算天数）"));
-      ui.coverage.appendChild(el("p", "muted", "别人回我：" + report.inbound + " 条，覆盖 " + report.inboundDays + " 天。搜索记下 " + report.srcCount.search + " 条（" + report.srcDays.search + " 天），帖子详情 " + report.srcCount.detail + " 条（" + report.srcDays.detail + " 天）。"));
+      ui.coverage.appendChild(el("p", "muted", "别人回我：" + report.inbound + " 条，覆盖 " + report.inboundDays + " 天。搜索记下 " + report.srcCount.search + " 条（" + report.srcDays.search + " 天），帖子详情 " + report.srcCount.detail + " 条（" + report.srcDays.detail + " 天），通知 " + report.srcCount.notifications + " 条（" + report.srcDays.notifications + " 天）。"));
       ui.coverage.appendChild(el("p", "muted", "我发出的回复：" + report.outbound + " 条，覆盖 " + report.outboundDays + " 天。主页回复页 " + report.srcCount.replies + " 条（" + report.srcDays.replies + " 天），主页帖子页 " + report.srcCount.originals + " 条（" + report.srcDays.originals + " 天）。"));
       ui.coverage.appendChild(el("p", "muted", "正在关注：" + report.following + " 人" + (report.sawFollowing ? "（已打开过列表）" : "（还没打开过列表）") + "。关注者：" + report.followers + " 人" + (report.sawFollowers ? "（已打开过普通粉丝列表）" : "（还没打开过普通粉丝列表）") + (report.sawBlueFollowers ? "，另看到过认证粉丝。" : "。")));
       if (report.sawBlueFollowers && !report.sawFollowers) {
@@ -2727,13 +2966,13 @@ function boot() {
   var scanTimer = 0;
   function scheduleScan() {
     if (scanTimer) return;
-    scanTimer = setTimeout(function () { scanTimer = 0; scanCells(); }, 400);
+    scanTimer = setTimeout(function () { scanTimer = 0; scanCells(); updateBadge(); }, 400);
   }
   try {
     var observer = new MutationObserver(scheduleScan);
     observer.observe(document.documentElement, {childList: true, subtree: true});
   } catch (err) {}
-  setInterval(scanCells, 2000);
+  setInterval(function () { scanCells(); updateBadge(); }, 2000);
 
   if (document.body) mount();
   else document.addEventListener("DOMContentLoaded", mount);
