@@ -4,22 +4,113 @@
 
 **试用版 v0.1 · 权重待验证**
 
-![看板示例（假数据生成，已打码）](docs/img/dashboard.png)
-
 看看谁在跟你认真聊天（金牌用户），
 谁互关了却很久没说过话（沉睡互关），
 谁是你一直在回、对方却基本没回过的（单向）。
 
 所有数据只在你自己的浏览器或电脑里处理，不会上传。工具全程只读，不会替你点赞、关注、取关，也不会替你发帖。
 
-## 三种用法，选一种
+## 最简单：油猴版（3 步）
 
-### 用法一：网页版，（无Grok bot）
+不用导出 JSON，也不用 Grok Bot。装上脚本，打开 X，自己往下翻几屏，点页面右下角的「粉丝体检」。分层和网页版是同一套。
 
-不用装环境，点开就能用，大概 5 分钟搞定。
+这次试用按 Tampermonkey + Chrome 来写。需要 Tampermonkey 5.3 及以上。开关名称按 [Tampermonkey 中文 FAQ Q209「执行用户脚本的权限」](https://www.tampermonkey.net/faq.php?locale=zh&q=Q209) 核对过：Chrome 138+ 是「允许用户脚本」，更早的 Chrome 是「开发者模式」。
 
-1. **导出数据。** 电脑浏览器装 [twitter-web-exporter](https://github.com/prinsss/twitter-web-exporter) 插件，打开 X，导出「用户推文」「正在关注」「关注者」三份 JSON。具体怎么滚动页面，看 [数据导出教程](docs/DATA_EXPORT.md)。
-2. **打开网页。** 点开 [网页版](https://ratt1e.github.io/Xfan-audit/)。不想联网的话，也可以下载本仓库，双击 `web/index.html` 离线用。
+### 第 1 步：安装 Tampermonkey
+
+安装浏览器扩展 [Tampermonkey](https://www.tampermonkey.net/)。
+
+### 第 2 步：打开「允许用户脚本」
+
+`chrome://` 开头的地址没法做成可点击的链接，请自己贴到地址栏。
+
+**Chrome 138 及以上**
+
+1. 地址栏打开 `chrome://extensions`。
+2. 找到 Tampermonkey，点卡片上的「详细信息」。这一页和 FAQ 里写的「右键点击 Tampermonkey 图标，选择『管理扩展程序』」是同一页。
+3. 打开「允许用户脚本」。FAQ 的原文是：找到并启用「允许用户脚本」切换开关。
+
+FAQ 也写了，打开浏览器右上角的「开发者模式」同样能让脚本运行。138 及以上建议只用「允许用户脚本」，不必把整个浏览器的开发者模式打开。
+
+**更早的 Chrome**
+
+没有「允许用户脚本」这一项。地址栏打开 `chrome://extensions`，点右上角的开关，启用「开发者模式」。FAQ 的原文是：点击右上角的切换开关启用开发者模式。
+
+装完脚本却完全没反应时，先回来检查这一步。
+
+> 截图占位：`docs/img/userscript-allow.png` 还没放进仓库。要拍的内容和另外一张面板图，写在下面「请补的截图」里。这次没有附截图。
+
+### 第 3 步：点这个链接安装
+
+用浏览器打开：
+
+https://raw.githubusercontent.com/ratt1e/Xfan-audit/main/userscript/fan-audit.user.js
+
+Tampermonkey 会弹出安装页，点安装。以后脚本更新也走这个链接（文件头里的更新地址指向仓库 `main` 分支上的这份文件）。
+
+然后打开 x.com 并登录。右下角出现「粉丝体检」。刚装好是空的，按下面的清单自己往下翻。脚本不自己发请求，也不自动滚动。
+
+### 采集清单
+
+面板里每一项都是普通链接，在当前页打开，标 ✓ 或「未采集」，并带上条数或天数。请依次打开，手动往下翻几屏：
+
+1. **别人回我。** 搜索 `to:你的用户名`，选「最新」。翻到的回复算别人回你。
+2. **关注。** 打开自己的关注列表。
+3. **粉丝。** 打开自己的粉丝列表。
+4. **认证粉丝。** 打开自己的认证粉丝列表。只翻了这一页时，普通粉丝还没记全，没回关会偏多。
+5. **主页回复。** 打开自己主页的「回复」页，记下你发出的回复。
+6. **通知。** 打开通知的「全部」和「提及」。清单上的按钮指向 `https://x.com/notifications/mentions`。这里只收别人回复你的帖子，和上面的搜索按帖子编号去重。赞、关注、转发那些汇总不记。打开过、但没有回复你的帖子时，写成「已打开，回复 0 条」。
+
+别人回我是搜索页，别一次翻太久。X 会限流，被限了就停下来等一等再翻。脚本不会替你滚动，也不会自己发请求。
+
+### 互动要够才分层
+
+只滑了关注和粉丝、还没采到回复时，互关不会被记成沉睡互关、零互动或单向。互动天数只从回复来，名单快照不算。
+
+分层要等两边都有数据：至少 1 天你发出的回复，并且至少 1 天别人回复你，两边合计不少于 2 个不同日期。没到这个门槛时，面板只保留互关和没回关这些名单统计。网页拖拽版只放下名单、没有回复文件时，用的是同一条规则。
+
+### 全屏、打码、备份
+
+- 点「全屏」把面板铺满窗口，再点「退出全屏」或按 Esc 收回。
+- 截图前点「一键打码」。账号名会换成「账号#01」，主页链接也会去掉。这个开关会记住。
+- 「导出 JSON 备份」和「导入 JSON 备份」只含打分用的短字段，没有 cookie。换电脑时用这两项。默认保留 90 天，要重计可以先「全部删除」，再重新往下翻。
+- 「下载看板 HTML」若被 X 页面拦住，先用 JSON 备份。这一步还要在你自己的浏览器里看一次（待核实）。
+
+### 只读、隐私、平台规则
+
+脚本只读你正在浏览时，页面自己已经收到的内容。它不另外向 X 发请求，不自动滚动，不点赞、不关注、不取关、不发帖，也不读 cookie 或 token。数据留在脚本管理器里。
+
+X 的服务条款禁止未经授权的自动化抓取。所以这里没有自动翻页，也没有批量操作。只被动记下你翻过的内容，记不全是正常的，尤其是「别人回我」。这不能保证账号不受平台规则影响。
+
+### 面板是 0？
+
+展开「诊断信息」，点「复制诊断」，把整段文字发到 [Issues](https://github.com/ratt1e/Xfan-audit/issues)。里面只有接口名和次数，没有账号名。
+
+复制出来的诊断里 GraphQL 一直是 0 时，多半是钩子没进页面环境，或第 2 步的开关没开。这时你自己的关注页、粉丝页上已经显示出来的账号仍可能记下，帖子和回复还是要等钩子接住响应。
+
+### 请补的截图
+
+下面两张图都还没放进仓库。请按文件名保存，不要改名，也不要用别的图顶上。仓库里现有的 `docs/img/dashboard.png` 是网页版假数据看板，不能代替这两张。
+
+1. `docs/img/userscript-allow.png`
+   - 画面：Chrome 扩展程序详情页里，Tampermonkey 的「允许用户脚本」开关处于打开。
+   - 路径：地址栏 `chrome://extensions` → Tampermonkey「详细信息」。FAQ 里的右键图标 →「管理扩展程序」是同一页。
+   - 只留这一张卡片和这个开关。不要拍到其他扩展、谷歌账号或邮箱。
+2. `docs/img/userscript-panel-masked.png`
+   - 画面：已登录的 x.com 上，点右下角「粉丝体检」，再点「全屏」。先打开「一键打码」，账号名变成「账号#01」之后再截。
+   - 画面里要能看见采集清单：别人回我、关注、粉丝、认证粉丝、主页回复、通知，以及分层卡片。
+   - 不要地址栏，不要左侧真实用户名，不要通知原文。打码关着的时候不要截。
+
+源码在 `userscript/`。安装用的单文件是构建结果 `userscript/fan-audit.user.js`，打分引擎在构建时从 `web/index.html` 抽出，公式只维护一份。
+
+## 也可以：网页拖拽
+
+适合已经会用导出插件、想一次丢进三份 JSON 的情况。大概 5 分钟。在线页面：[网页版](https://ratt1e.github.io/Xfan-audit/)。
+
+![看板示例（假数据生成，已打码）](docs/img/dashboard.png)
+
+1. **导出数据。** 电脑浏览器装 [twitter-web-exporter](https://github.com/prinsss/twitter-web-exporter)，打开 X，导出「用户推文」「正在关注」「关注者」三份 JSON。具体怎么滚动页面，看 [数据导出教程](docs/DATA_EXPORT.md)。
+2. **打开网页。** 点开 [网页版](https://ratt1e.github.io/Xfan-audit/)。不想联网的话，下载本仓库，双击 `web/index.html` 离线用。
 3. **拖进去。** 把三份 JSON 一起拖进页面，不用改文件名，结果马上出来。
 
 只导出「用户推文」时，里面主要是你自己发出的回复，对方回你的那一半不在这份文件里，金银牌和往返会偏少。可以再在 X 搜索 `to:你的用户名`，用插件导出搜索结果，补上别人回你的部分。搜索要自己往下滚，也受平台限流，仍然可能不全。想要两边都齐、而且每天自动更新，用下面的 Grok Bot 模板。
@@ -28,54 +119,15 @@
 
 要是想截图分享，点一下页面上的「打码模式」，账号名就会自动换成「账号#01」这类代号。
 
-### 用法二：交给 Grok Bot，每天自动更新
+## 也可以：Grok Bot 模板
 
-适合想长期看互动变化的朋友，特别是正在冲 X 创作者收益的账号。
+适合想长期看互动变化、每晚自动更新的情况。
 
 1. **导入机器人。** 在 Grok Bot 里导入[「粉丝体检」机器人模板](https://x.ai/bot/AYInVUfN_IOql2b7QpzDB)。
 2. **回答几个问题。** 它会问你的 X 用户名、结果放哪里、每晚几点采集。
-3. **每周导一次关注名单。** 互动数据它每晚会自动采集，关注关系还要用上面的插件导一下，每周发给它一次就行。
+3. **每周导一次关注名单。** 互动数据它每晚会自动采集。关注关系还要用上面的插件导一下，每周发给它一次。
 
-平时想看结果随时跟它说一声，它就会用最新数据给你出一份看板。
-
-### 用法三：油猴脚本（不用导出文件）
-
-适合没有 Grok Bot、也不想来回拖 JSON 的情况。装上脚本后打开 X，自己往下翻几个页面，点页面上的「粉丝体检」就能看到和网页版同一套分层。
-
-脚本只读你正在浏览时，页面自己已经收到的内容（主页帖子和回复、`to:你的用户名` 搜索、通知页里别人回复你的帖子、粉丝、正在关注）。它不另外向 X 发请求，不自动滚动，不点赞、不关注、不取关、不发帖，也不读 cookie 或 token。数据留在脚本管理器里，默认保留 90 天。
-
-X 的服务条款禁止未经授权的自动化抓取。所以这里没有自动翻页，也没有批量操作。只被动记下你翻过的内容，记不全是正常的，尤其是「别人回我」。这不能保证账号不受平台规则影响。
-
-安装步骤：
-
-1. 安装浏览器扩展 [Tampermonkey](https://www.tampermonkey.net/)。这次试用按 Tampermonkey + Chrome 来写。
-2. 让扩展真正能跑用户脚本。
-   - Chrome 138 及以上：地址栏打开 `chrome://extensions`，找到 Tampermonkey，点进详情，打开「允许用户脚本」。
-   - 更早的 Chrome 没有这个开关：在同一页右上角打开「开发者模式」。
-   - 装完脚本却完全没反应时，先回来检查这一步。
-
-   > 截图占位：Chrome 扩展详情页里，Tampermonkey 的「允许用户脚本」开关。图还没放进仓库，之后可以补在 `docs/img/userscript-allow.png`。这次没有附截图。
-
-3. 用浏览器打开下面这个地址。Tampermonkey 会弹出安装页，点安装。以后脚本更新也走这个链接（文件头里的更新地址指向仓库 `main` 分支上的这份文件）：
-
-   `https://raw.githubusercontent.com/ratt1e/Xfan-audit/main/userscript/fan-audit.user.js`
-
-4. 打开 x.com 并登录。页面右下角出现「粉丝体检」。刚装好是空的，按面板里的说明，依次打开自己的关注列表、粉丝列表和主页回复页，手动往下翻几屏。
-5. 「别人回我」要另外补：自己打开搜索，输入 `to:你的用户名`，选「最新」，再往下翻；或者点开自己的几条帖子。通知页的「全部」和「提及」里，别人回复你的帖子也会记下，和搜索按帖子编号去重。翻到哪，脚本记到哪。
-
-面板顶部有「一键打码」，账号名会换成「账号#01」，主页链接也会去掉，这个开关会记住。也可以全部删除本机数据，或导出、导入一份 JSON 备份。时区默认跟浏览器，可以改。点「全屏」会把面板铺满窗口，再点「退出全屏」或按 Esc 收回。右下角按钮只显示当前页相关的数量（粉丝、关注、主页回复、别人回我、通知），这一轮新记下的会多一个 +N；别的页面只写「粉丝体检」。
-
-诊断收在「诊断信息」里，默认折起来。「复制诊断」在里面，只复制接口名和次数，不带账号名。展开后能看到钩子有没有装进页面自己的环境、这一轮匹配了哪些接口；装饰性的、没认出来的接口名不铺在面板上，完整名单仍在复制文本里。通知相关的接口名（包括还没接上的）会留在展开后的摘要里，方便下一次对照。x.com 的内容安全策略会拦住普通内联脚本；脚本会尽量把钩子放进页面环境。若复制出来的诊断里 GraphQL 一直是 0，多半是钩子没进页面环境。这时你自己的关注页、粉丝页上已经显示出来的账号仍会记下，帖子和回复还是要等钩子接住响应。脚本仍然不自己发请求，也不自动滚动。
-
-面板里有一组只负责打开页面的按钮（普通链接，当前页跳转，脚本不发请求）：别人回我（搜索 `to:你的用户名`，最新）、关注列表、粉丝列表、认证粉丝、主页回复、通知（打开 `x.com/notifications/mentions`）。每一项标 ✓ 或「未采集」，并带上条数或天数。通知页打开过但没有回复你的帖子时，会写成「已打开，回复 0 条」。别人回我是搜索页，别一次翻太久；X 会限流，被限了就停下来等一等。
-
-通知只收别人回复你的帖子，算进「别人回我」。赞、关注、转发那些汇总不记。公开资料里，网页现在拉的是 GraphQL `NotificationsTimeline`（全部 / 提及 / 认证用同一个名字，靠请求参数区分）；较旧的 `all.json`、`mentions.json` 也会解析。0.1.2 写过会读通知，但真实诊断里没出现过这个接口名。请再打开通知的全部和提及，往下翻几屏，展开「诊断信息」点「复制诊断」。匹配里应出现 `NotificationsTimeline`，或 `NotificationsAll` / `NotificationsMentions`。若是别的带 Notification 的名字、条数仍是 0，把诊断贴回来即可。
-
-只滑了关注和粉丝、还没采到回复时，互关不会被记成沉睡互关、零互动或单向。互动天数只从回复来，名单快照不算。分层要等两边都有数据：至少 1 天你发出的回复，并且至少 1 天别人回复你，两边合计不少于 2 个不同日期。没到这个门槛时，面板只保留互关和没回关这些名单统计。网页拖拽版只放下名单、没有回复文件时，用的是同一条规则。
-
-「下载看板 HTML」会试着把当前结果存成一个文件。X 的页面会不会拦住这次下载，还要在你自己的浏览器里看一次（待核实）。下不来就先用 JSON 备份。
-
-源码在 `userscript/`。安装用的单文件是构建结果 `userscript/fan-audit.user.js`，打分引擎在构建时从 `web/index.html` 抽出，公式只维护一份。
+平时想看结果随时跟它说一声，它就会用最新数据给你出一份看板。看板页面仍是 [网页版](https://ratt1e.github.io/Xfan-audit/)。
 
 ## 星级怎么算
 
@@ -104,7 +156,7 @@ X 的服务条款禁止未经授权的自动化抓取。所以这里没有自动
 
 ## English (brief)
 
-**fan-audit** scores two-way public conversations on X (Twitter). Open the [web version](https://ratt1e.github.io/Xfan-audit/) (or `web/index.html` offline) and drop in a twitter-web-exporter JSON export (your tweets, following, followers) or `interactions.csv`. A 「用户推文」 export is only the posts you sent; gold, silver, and round-trip scores stay low until you also export a `to:username` search for replies to you. Scrolling and rate limits can still leave gaps. The page calculates stars and tiers in your browser timezone, shows that timezone, and does not upload anything. A mask button replaces account names before you take a screenshot. The generated private dashboard has the same display-only switch; that file still contains real names, so share `dashboard_public.html`. Nightly runs can pass `--auto-prev` to compare the previous follow export. A Tampermonkey script at `userscript/fan-audit.user.js` can show the same board on x.com. It only reads responses the page already loaded while you browse (including notification timelines, keeping replies to you and skipping like, follow, and repost bundles), stores short fields in the userscript manager, and does not send its own requests or scroll the page. X's terms prohibit unauthorized automated scraping, so none is included. Chrome 138+ also needs the extension's "Allow User Scripts" switch. The Python command line remains for daily collection: a read-only collector such as Grok Bot can write `interactions.csv`, and `python3 audit.py --data sample_data --tz America/Los_Angeles` runs the same scoring offline. `--tz` overrides `config.json`, which overrides the computer's local timezone. Standard library only, Python 3.9+. Weights are initial values, not yet validated. No automatic likes, follows, or posts. The named dashboard stays on your machine. MIT License.
+**fan-audit** scores two-way public conversations on X (Twitter). The easiest try is the Tampermonkey script: install Tampermonkey 5.3+, turn on Chrome’s “Allow User Scripts” (Chrome 138+: `chrome://extensions` → Tampermonkey details; earlier Chrome: Developer Mode; see [Tampermonkey FAQ Q209](https://www.tampermonkey.net/faq.php?locale=en&q=Q209)), then open `https://raw.githubusercontent.com/ratt1e/Xfan-audit/main/userscript/fan-audit.user.js`. On x.com, scroll your following, followers, replies, a `to:username` search, and notifications. The script only reads responses the page already loaded, keeps replies to you, skips like, follow, and repost bundles, stores short fields for 90 days, and does not send its own requests or scroll. Mask names before a screenshot. X's terms prohibit unauthorized automated scraping, so none is included, and this does not promise the account will be unaffected. Alternatives: drag a twitter-web-exporter JSON export into the [web version](https://ratt1e.github.io/Xfan-audit/) (or `web/index.html` offline), or import the [Grok Bot template](https://x.ai/bot/AYInVUfN_IOql2b7QpzDB) for a nightly read-only collect. A 「用户推文」 export is only the posts you sent; gold, silver, and round-trip scores stay low until replies to you are included. The page calculates stars in your browser timezone and does not upload anything. Share `dashboard_public.html` when a file still contains real names. The Python command line remains for daily files: `python3 audit.py --data sample_data --tz America/Los_Angeles`. `--tz` overrides `config.json`, which overrides the computer's local timezone. Standard library only, Python 3.9+. Weights are initial values, not yet validated. No automatic likes, follows, or posts. MIT License.
 
 ---
 
