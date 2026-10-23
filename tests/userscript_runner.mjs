@@ -5,7 +5,8 @@ import {fileURLToPath} from "url";
 import {
   EMPTY_GUIDE, RETENTION_DAYS, classifyUrl, textForStore, snippet, parseCapture, applyCapture,
   emptyStore, coverageReport, toEngineData, prune, exportBackup, importBackup, contextProblems,
-  installHooks, pageHookProgram, norm, operationName, listKindFromPath, timelineKindFromPath, userFromVisible, diagnosticsCopy
+  installHooks, pageHookProgram, norm, operationName, listKindFromPath, timelineKindFromPath, userFromVisible, diagnosticsCopy,
+  pageContext, badgeText
 } from "../userscript/src/logic.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -47,7 +48,7 @@ check(built.includes("document.cookie") === false, "不读 cookie");
 check(built.includes("scrollBy") === false, "不自动滚动");
 check(built.includes(EMPTY_GUIDE), "空状态文案在安装文件里");
 const meta = "// " + "@";
-check(built.includes(meta + "version      0.1.2"), "版本号");
+check(built.includes(meta + "version      0.1.3"), "版本号");
 check(built.includes(meta + "sandbox      raw"), "要求页面环境");
 check(built.includes(meta + "grant        GM_addElement"), "可以用元素注入把钩子送进页面");
 check(built.includes(meta + "run-at       document-start"), "document-start");
@@ -212,6 +213,13 @@ home.send(null);
 home.listeners.load.forEach(function (fn) { fn(); });
 check(seen.length === 3 && seen[2].indexOf("HomeTimeline") >= 0 && seen[2].endsWith(" 0"), "未识别的 GraphQL 只记操作名，不读正文");
 check(seen[2].indexOf("user_01") < 0, "未识别响应的正文不会交给上层");
+const notesXhr = new page.XMLHttpRequest();
+notesXhr.open("GET", "https://x.com/i/api/2/notifications/all.json?cursor=1");
+notesXhr.responseText = "{\"globalObjects\":{\"tweets\":{}}}";
+notesXhr.send(null);
+check(notesXhr.listeners && notesXhr.listeners.load && notesXhr.listeners.load.length === 1, "通知 REST 会挂上 load 监听");
+notesXhr.listeners.load.forEach(function (fn) { fn(); });
+check(seen.length === 4 && seen[3].indexOf("/notifications/all.json") >= 0 && !seen[3].endsWith(" 0"), "通知 REST 会读响应正文");
 
 function ThrowingXHR() { this.listeners = {}; this.status = 200; this.response = {data: {ok: 1}}; }
 ThrowingXHR.prototype.open = function () {};
@@ -325,12 +333,27 @@ check(maskedNames.split("tier-").length > 2, "分层卡片还在");
 check(maskedNames.indexOf("color:#1F2937") < 0, "看板片段本身不写死颜色，颜色在样式里");
 check(built.indexOf(".num{font-size:32px;font-weight:700;color:#1F2937}") >= 0, "分层数字用深色，不靠按钮默认字色");
 check(built.indexOf("别人回我") >= 0 && built.indexOf("f=live") >= 0 && built.indexOf("别一次翻太久") >= 0, "采集清单和限流说明在安装文件里");
+check(built.indexOf("诊断信息") >= 0 && built.indexOf("全屏") >= 0 && built.indexOf("退出全屏") >= 0, "诊断可折叠，面板可全屏");
+check(built.indexOf("https://x.com/notifications/mentions") >= 0, "通知清单指向提及页");
 check(built.indexOf("GM_openInTab") < 0 && built.indexOf("GM_xmlhttpRequest") < 0, "清单只是普通链接，脚本不自己打开也不自己请求");
 
 check(timelineKindFromPath("/demo_owner/with_replies", "demo_owner") === "replies", "主页回复页路径");
 check(timelineKindFromPath("/demo_owner", "demo_owner") === "originals", "自己的主页路径");
 check(timelineKindFromPath("/demo_owner/followers", "demo_owner") === "", "粉丝页不是主页时间线");
 check(classifyUrl("https://x.com/i/api/graphql/hash/NotificationsTimeline") === "notifications", "通知时间线在采集名单里");
+check(classifyUrl("https://x.com/i/api/graphql/hash/NotificationsMentionsTimeline") === "notifications", "提及时间线名字也能认");
+check(operationName("https://x.com/i/api/2/notifications/all.json?cursor=1") === "NotificationsAll", "all.json 记成 NotificationsAll");
+check(operationName("https://x.com/i/api/2/notifications/mentions.json") === "NotificationsMentions", "mentions.json 记成 NotificationsMentions");
+check(classifyUrl("https://x.com/i/api/2/notifications/mentions.json") === "notifications", "提及 REST 在采集名单里");
+check(pageContext("/demo_owner/followers", "", "demo_owner").label === "粉丝", "粉丝页角标");
+check(pageContext("/demo_owner/verified_followers", "", "demo_owner").kind === "followers", "认证粉丝页也算粉丝");
+check(pageContext("/demo_owner/following", "", "demo_owner").label === "关注", "关注页角标");
+check(pageContext("/demo_owner/with_replies", "", "demo_owner").label === "主页回复", "主页回复页角标");
+check(pageContext("/search", "?q=" + encodeURIComponent("to:demo_owner") + "&f=live", "demo_owner").label === "别人回我", "别人回我搜索页角标");
+check(pageContext("/notifications", "", "demo_owner").label === "通知" && pageContext("/notifications/mentions", "", "demo_owner").kind === "notifications", "通知页角标");
+check(pageContext("/user_09/followers", "", "demo_owner").label === "" && pageContext("/home", "", "demo_owner").label === "", "别人的粉丝页和首页不显示数量");
+check(badgeText("", 4625, 0) === "", "没有对应页面时角标不加总条数");
+check(badgeText("粉丝", 559, 559) === " 粉丝 559" && badgeText("粉丝", 561, 559) === " 粉丝 561 +2", "角标带本页数量和这一轮新增");
 
 function bareTweet(id, handle, uid, text, replyTo, replyToHandle, created) {
   return {
@@ -385,6 +408,73 @@ const notice = {data: {viewer_v2: {user_results: {result: {notification_timeline
 ]}]}}}}}}};
 const noted = parseCapture("https://x.com/i/api/graphql/hash/NotificationsTimeline", JSON.stringify(notice), {owner: "demo_owner"});
 check(noted.skip === "" && noted.posts.length === 1 && noted.posts[0].id === "1008101" && noted.posts[0].src === "notifications", "通知里只留下回复你的那条");
+
+function noteEntry(id, content) {
+  return {entryId: "notification-" + id, content: {itemContent: content}};
+}
+function noteTimeline(entries) {
+  return {data: {viewer_v2: {user_results: {result: {notification_timeline: {timeline: {instructions: [{type: "TimelineAddEntries", entries: entries}]}}}}}}};
+}
+const shaped = parseCapture(
+  "https://x.com/i/api/graphql/hash/NotificationsTimeline?variables=" + encodeURIComponent(JSON.stringify({timeline_type: "Mentions", count: 20})),
+  JSON.stringify(noteTimeline([
+    noteEntry("a", {__typename: "TimelineNotification", itemType: "TimelineNotification", notification_icon: "reply", template: {target_objects: [{tweet_results: {result: bareTweet("1008201", "user_04", "1000005", "从模板里回复你", "1003001", "demo_owner", "Wed Oct 21 16:00:00 +0000 2026")}}]}}),
+    noteEntry("b", {__typename: "TimelineNotification", itemType: "TimelineNotification", notification_icon: "mention", template: {target_objects: [bareTweet("1008205", "user_06", "1000006", "提及并回复你", "1003002", "demo_owner", "Wed Oct 21 17:00:00 +0000 2026")]}}),
+    noteEntry("c", {__typename: "TimelineNotificationAggregateUserActions", itemType: "TimelineNotificationAggregateUserActions", notification_icon: "heart", template: {target_objects: [{tweet_results: {result: bareTweet("1008202", "user_04", "1000005", "赞了你的回复", "1003001", "demo_owner", "Wed Oct 21 16:00:00 +0000 2026")}}]}}),
+    noteEntry("d", {__typename: "TimelineNotification", itemType: "TimelineNotification", notification_icon: "person", template: {from_users: [{rest_id: "1000008"}]}}),
+    noteEntry("e", {__typename: "TimelineNotificationAggregateUserActions", itemType: "TimelineNotificationAggregateUserActions", notification_icon: "retweet", template: {target_objects: [{tweet_results: {result: bareTweet("1008203", "demo_owner", "1000001", "你的原帖被转发", "", "", "Wed Oct 21 16:00:00 +0000 2026")}}]}}),
+    noteEntry("f", {__typename: "TimelineNotification", itemType: "TimelineNotification", notification_icon: "reply", template: {target_objects: [{tweet_results: {result: bareTweet("1008204", "user_03", "1000004", "回复了别人", "1008209", "user_05", "Wed Oct 21 16:00:00 +0000 2026")}}]}})
+  ])),
+  {owner: "demo_owner"}
+);
+const shapedIds = shaped.posts.map(function (post) { return post.id; }).sort();
+check(shaped.skip === "" && shapedIds.join(",") === "1008201,1008205", "通知 GraphQL 只留下回复你的帖子，赞和转发丢掉");
+
+function restNote(icon, tweetId, userId) {
+  return {icon: {id: icon}, template: {aggregateUserActionsV1: {fromUsers: [{user: {id: userId}}], targetObjects: [{tweet: {id: tweetId}}]}}};
+}
+const restBody = {
+  globalObjects: {
+    tweets: {
+      "1008301": {id_str: "1008301", full_text: "REST 回复你", user_id_str: "1000005", in_reply_to_status_id_str: "1003001", in_reply_to_screen_name: "demo_owner", created_at: "Thu Oct 22 16:00:00 +0000 2026", conversation_id_str: "1003001"},
+      "1008302": {id_str: "1008302", full_text: "被赞的帖", user_id_str: "1000001", created_at: "Thu Oct 22 16:00:00 +0000 2026"},
+      "1008303": {id_str: "1008303", full_text: "被转发的帖", user_id_str: "1000001", created_at: "Thu Oct 22 16:00:00 +0000 2026"},
+      "1008304": {id_str: "1008304", full_text: "只是提及不是回复", user_id_str: "1000007", created_at: "Thu Oct 22 16:00:00 +0000 2026"}
+    },
+    users: {
+      "1000005": {id_str: "1000005", screen_name: "user_04", name: "甲"},
+      "1000007": {id_str: "1000007", screen_name: "user_06", name: "乙"}
+    },
+    notifications: {
+      R1: restNote("reply", "1008301", "1000005"),
+      R2: restNote("heart", "1008302", "1000005"),
+      R3: restNote("retweet", "1008303", "1000008"),
+      R4: restNote("person", "1008302", "1000008"),
+      R5: restNote("mention", "1008304", "1000007")
+    }
+  }
+};
+const restCap = parseCapture("https://x.com/i/api/2/notifications/mentions.json", JSON.stringify(restBody), {owner: "demo_owner"});
+check(restCap.posts.length === 1 && restCap.posts[0].id === "1008301" && restCap.posts[0].handle === "user_04" && restCap.posts[0].src === "notifications", "REST 通知只留下回复你的那条");
+const likesOnly = parseCapture("https://x.com/i/api/2/notifications/all.json", JSON.stringify({globalObjects: {tweets: {"1008302": restBody.globalObjects.tweets["1008302"]}, users: {}, notifications: {H1: restNote("heart", "1008302", "1000005")}}}), {owner: "demo_owner"});
+const likeStore = emptyStore();
+check(likesOnly.posts.length === 0 && applyCapture(likeStore, likesOnly, Date.parse("2026-10-22T00:00:00Z")) && likeStore.meta.sawNotifications === true && Object.keys(likeStore.posts).length === 0, "只有赞的通知页算打开过，但不入库");
+
+function searchWrap(tweet) {
+  return {data: {search_by_raw_query: {search_timeline: {timeline: {instructions: [{type: "TimelineAddEntries", entries: [{entryId: "tweet-" + tweet.rest_id, content: {itemContent: {tweet_results: {result: tweet}}}}]}]}}}}};
+}
+const searchUrl = "https://x.com/i/api/graphql/hash/SearchTimeline?variables=" + encodeURIComponent(JSON.stringify({rawQuery: "to:demo_owner", product: "Latest"}));
+const sharedTweet = bareTweet("1008101", "user_04", "1000005", "回复了你的帖", "1003001", "demo_owner", "Tue Oct 20 16:00:00 +0000 2026");
+const searchCap = parseCapture(searchUrl, JSON.stringify(searchWrap(sharedTweet)), {owner: "demo_owner"});
+const dedupeStore = emptyStore();
+applyCapture(dedupeStore, searchCap, Date.parse("2026-10-22T00:00:00Z"));
+applyCapture(dedupeStore, noted, Date.parse("2026-10-22T00:00:01Z"));
+const deduped = coverageReport(dedupeStore, "demo_owner", "UTC");
+check(Object.keys(dedupeStore.posts).length === 1 && dedupeStore.posts["1008101"].src === "search" && deduped.srcCount.search === 1 && deduped.srcCount.notifications === 0 && deduped.sawNotifications === true && deduped.inbound === 1, "同一条帖子搜索和通知只留一份，来源用先看到的");
+const noteFirst = emptyStore();
+applyCapture(noteFirst, noted, Date.parse("2026-10-22T00:00:00Z"));
+applyCapture(noteFirst, searchCap, Date.parse("2026-10-22T00:00:01Z"));
+check(Object.keys(noteFirst.posts).length === 1 && noteFirst.posts["1008101"].src === "notifications", "先从通知看到的帖子不会被搜索覆盖来源");
 
 function absenceOpts(rows) {
   return fan.analyze({

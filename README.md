@@ -42,7 +42,7 @@
 
 适合没有 Grok Bot、也不想来回拖 JSON 的情况。装上脚本后打开 X，自己往下翻几个页面，点页面上的「粉丝体检」就能看到和网页版同一套分层。
 
-脚本只读你正在浏览时，页面自己已经收到的内容（主页帖子和回复、`to:你的用户名` 搜索、粉丝、正在关注）。它不另外向 X 发请求，不自动滚动，不点赞、不关注、不取关、不发帖，也不读 cookie 或 token。数据留在脚本管理器里，默认保留 90 天。
+脚本只读你正在浏览时，页面自己已经收到的内容（主页帖子和回复、`to:你的用户名` 搜索、通知页里别人回复你的帖子、粉丝、正在关注）。它不另外向 X 发请求，不自动滚动，不点赞、不关注、不取关、不发帖，也不读 cookie 或 token。数据留在脚本管理器里，默认保留 90 天。
 
 X 的服务条款禁止未经授权的自动化抓取。所以这里没有自动翻页，也没有批量操作。只被动记下你翻过的内容，记不全是正常的，尤其是「别人回我」。这不能保证账号不受平台规则影响。
 
@@ -61,13 +61,15 @@ X 的服务条款禁止未经授权的自动化抓取。所以这里没有自动
    `https://raw.githubusercontent.com/ratt1e/Xfan-audit/main/userscript/fan-audit.user.js`
 
 4. 打开 x.com 并登录。页面右下角出现「粉丝体检」。刚装好是空的，按面板里的说明，依次打开自己的关注列表、粉丝列表和主页回复页，手动往下翻几屏。
-5. 「别人回我」要另外补：自己打开搜索，输入 `to:你的用户名`，选「最新」，再往下翻；或者点开自己的几条帖子。翻到哪，脚本记到哪。
+5. 「别人回我」要另外补：自己打开搜索，输入 `to:你的用户名`，选「最新」，再往下翻；或者点开自己的几条帖子。通知页的「全部」和「提及」里，别人回复你的帖子也会记下，和搜索按帖子编号去重。翻到哪，脚本记到哪。
 
-面板顶部有「一键打码」，账号名会换成「账号#01」，主页链接也会去掉，这个开关会记住。也可以全部删除本机数据，或导出、导入一份 JSON 备份。时区默认跟浏览器，可以改。
+面板顶部有「一键打码」，账号名会换成「账号#01」，主页链接也会去掉，这个开关会记住。也可以全部删除本机数据，或导出、导入一份 JSON 备份。时区默认跟浏览器，可以改。点「全屏」会把面板铺满窗口，再点「退出全屏」或按 Esc 收回。右下角按钮只显示当前页相关的数量（粉丝、关注、主页回复、别人回我、通知），这一轮新记下的会多一个 +N；别的页面只写「粉丝体检」。
 
-面板上方有一行诊断：钩子有没有装进页面自己的环境、这一轮看到多少 GraphQL 响应、每种接口各匹配了几次、最近没认出来的接口名、跳过的原因按接口分开计数、用户名有没有识别到、从页面上已经画出来的格子新记了多少人。「复制诊断」只复制接口名和次数，不带账号名。x.com 的内容安全策略会拦住普通内联脚本；脚本会尽量把钩子放进页面环境。若诊断里 GraphQL 一直是 0，多半是钩子没进页面环境。这时你自己的关注页、粉丝页上已经显示出来的账号仍会记下，帖子和回复还是要等钩子接住响应。脚本仍然不自己发请求，也不自动滚动。
+诊断收在「诊断信息」里，默认折起来。「复制诊断」在里面，只复制接口名和次数，不带账号名。展开后能看到钩子有没有装进页面自己的环境、这一轮匹配了哪些接口；装饰性的、没认出来的接口名不铺在面板上，完整名单仍在复制文本里。通知相关的接口名（包括还没接上的）会留在展开后的摘要里，方便下一次对照。x.com 的内容安全策略会拦住普通内联脚本；脚本会尽量把钩子放进页面环境。若复制出来的诊断里 GraphQL 一直是 0，多半是钩子没进页面环境。这时你自己的关注页、粉丝页上已经显示出来的账号仍会记下，帖子和回复还是要等钩子接住响应。脚本仍然不自己发请求，也不自动滚动。
 
-面板里有一组只负责打开页面的按钮（普通链接，当前页跳转，脚本不发请求）：别人回我（搜索 `to:你的用户名`，最新）、关注列表、粉丝列表、认证粉丝、主页回复。每一项标 ✓ 或「未采集」，并带上条数或天数。别人回我是搜索页，别一次翻太久；X 会限流，被限了就停下来等一等。
+面板里有一组只负责打开页面的按钮（普通链接，当前页跳转，脚本不发请求）：别人回我（搜索 `to:你的用户名`，最新）、关注列表、粉丝列表、认证粉丝、主页回复、通知（打开 `x.com/notifications/mentions`）。每一项标 ✓ 或「未采集」，并带上条数或天数。通知页打开过但没有回复你的帖子时，会写成「已打开，回复 0 条」。别人回我是搜索页，别一次翻太久；X 会限流，被限了就停下来等一等。
+
+通知只收别人回复你的帖子，算进「别人回我」。赞、关注、转发那些汇总不记。公开资料里，网页现在拉的是 GraphQL `NotificationsTimeline`（全部 / 提及 / 认证用同一个名字，靠请求参数区分）；较旧的 `all.json`、`mentions.json` 也会解析。0.1.2 写过会读通知，但真实诊断里没出现过这个接口名。请再打开通知的全部和提及，往下翻几屏，展开「诊断信息」点「复制诊断」。匹配里应出现 `NotificationsTimeline`，或 `NotificationsAll` / `NotificationsMentions`。若是别的带 Notification 的名字、条数仍是 0，把诊断贴回来即可。
 
 只滑了关注和粉丝、还没采到回复时，互关不会被记成沉睡互关、零互动或单向。互动天数只从回复来，名单快照不算。分层要等两边都有数据：至少 1 天你发出的回复，并且至少 1 天别人回复你，两边合计不少于 2 个不同日期。没到这个门槛时，面板只保留互关和没回关这些名单统计。网页拖拽版只放下名单、没有回复文件时，用的是同一条规则。
 
@@ -102,7 +104,7 @@ X 的服务条款禁止未经授权的自动化抓取。所以这里没有自动
 
 ## English (brief)
 
-**fan-audit** scores two-way public conversations on X (Twitter). Open the [web version](https://ratt1e.github.io/Xfan-audit/) (or `web/index.html` offline) and drop in a twitter-web-exporter JSON export (your tweets, following, followers) or `interactions.csv`. A 「用户推文」 export is only the posts you sent; gold, silver, and round-trip scores stay low until you also export a `to:username` search for replies to you. Scrolling and rate limits can still leave gaps. The page calculates stars and tiers in your browser timezone, shows that timezone, and does not upload anything. A mask button replaces account names before you take a screenshot. The generated private dashboard has the same display-only switch; that file still contains real names, so share `dashboard_public.html`. Nightly runs can pass `--auto-prev` to compare the previous follow export. A Tampermonkey script at `userscript/fan-audit.user.js` can show the same board on x.com. It only reads GraphQL responses the page already loaded while you browse, stores short fields in the userscript manager, and does not send its own requests or scroll the page. X's terms prohibit unauthorized automated scraping, so none is included. Chrome 138+ also needs the extension's "Allow User Scripts" switch. The Python command line remains for daily collection: a read-only collector such as Grok Bot can write `interactions.csv`, and `python3 audit.py --data sample_data --tz America/Los_Angeles` runs the same scoring offline. `--tz` overrides `config.json`, which overrides the computer's local timezone. Standard library only, Python 3.9+. Weights are initial values, not yet validated. No automatic likes, follows, or posts. The named dashboard stays on your machine. MIT License.
+**fan-audit** scores two-way public conversations on X (Twitter). Open the [web version](https://ratt1e.github.io/Xfan-audit/) (or `web/index.html` offline) and drop in a twitter-web-exporter JSON export (your tweets, following, followers) or `interactions.csv`. A 「用户推文」 export is only the posts you sent; gold, silver, and round-trip scores stay low until you also export a `to:username` search for replies to you. Scrolling and rate limits can still leave gaps. The page calculates stars and tiers in your browser timezone, shows that timezone, and does not upload anything. A mask button replaces account names before you take a screenshot. The generated private dashboard has the same display-only switch; that file still contains real names, so share `dashboard_public.html`. Nightly runs can pass `--auto-prev` to compare the previous follow export. A Tampermonkey script at `userscript/fan-audit.user.js` can show the same board on x.com. It only reads responses the page already loaded while you browse (including notification timelines, keeping replies to you and skipping like, follow, and repost bundles), stores short fields in the userscript manager, and does not send its own requests or scroll the page. X's terms prohibit unauthorized automated scraping, so none is included. Chrome 138+ also needs the extension's "Allow User Scripts" switch. The Python command line remains for daily collection: a read-only collector such as Grok Bot can write `interactions.csv`, and `python3 audit.py --data sample_data --tz America/Los_Angeles` runs the same scoring offline. `--tz` overrides `config.json`, which overrides the computer's local timezone. Standard library only, Python 3.9+. Weights are initial values, not yet validated. No automatic likes, follows, or posts. The named dashboard stays on your machine. MIT License.
 
 ---
 
