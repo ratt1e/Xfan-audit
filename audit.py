@@ -254,15 +254,13 @@ def coverage_note(meta):
 
 
 def dashboard_css():
-    """和网页同一份样式。生成的看板把这段嵌进去，不额外请求文件。"""
-    page = os.path.join(HERE, "web", "index.html")
+    """和打分脚本放在一起的样式。生成的看板把这段嵌进去，不额外请求文件。"""
+    page = os.path.join(HERE, "engine", "dashboard.css")
     with open(page, encoding="utf-8") as f:
-        text = f.read()
-    start = text.find("<style>")
-    end = text.find("</style>", start)
-    if start < 0 or end < 0:
-        raise ValueError("网页样式读不了")
-    return text[start + len("<style>"):end].strip()
+        text = f.read().strip()
+    if not text or ".card" not in text:
+        raise ValueError("看板样式读不了")
+    return text
 
 
 _PROFILE_ANCHOR = """  function profileAnchor(handle, text) {
@@ -429,15 +427,12 @@ _BOOT_JS = """
 
 
 def dashboard_engine(public=False):
-    """和网页同一段打分脚本。打码版拿掉主页链接，生成的文件不额外请求。"""
-    page = os.path.join(HERE, "web", "index.html")
+    """和油猴版同一段打分脚本。打码版拿掉主页链接，生成的文件不额外请求。"""
+    page = os.path.join(HERE, "engine", "fan_audit_engine.js")
     with open(page, encoding="utf-8") as f:
-        text = f.read()
-    start = text.find('<script id="fan-audit-engine">')
-    end = text.find("</script>", start)
-    if start < 0 or end < 0 or _PROFILE_ANCHOR not in text:
-        raise ValueError("网页打分脚本读不了")
-    script = text[start + len('<script id="fan-audit-engine">'):end].strip()
+        script = f.read().strip()
+    if _PROFILE_ANCHOR not in script:
+        raise ValueError("打分脚本读不了")
     if public:
         script = script.replace(_PROFILE_ANCHOR, _PROFILE_ANCHOR_MASKED, 1)
         for banned in ("https", "x.com", 'target="_blank"', "user_"):

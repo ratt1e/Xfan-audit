@@ -75,7 +75,7 @@ class TestDashboardRange(unittest.TestCase):
         self.assertIn('value="%s"' % meta["end"], page)
         self.assertIn("最近 7 天", page)
         self.assertIn("全部", page)
-        self.assertNotIn("https://", Path(ROOT, "web/index.html").read_text(encoding="utf-8"))
+        self.assertNotIn("https://", Path(ROOT, "engine/fan_audit_engine.js").read_text(encoding="utf-8"))
         for banned in ("user_", "https", "x.com", 'target="_blank"'):
             self.assertNotIn(banned, masked)
         view = run_view(private)

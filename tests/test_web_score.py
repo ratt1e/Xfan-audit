@@ -131,28 +131,28 @@ class TestWebScore(unittest.TestCase):
         self.assertNotIn("tier-cards", html)
 
     def test_pages_workflow_is_manual_only(self):
-        text = (ROOT / ".github/workflows/pages.yml").read_text(encoding="utf-8")
-        self.assertIn("workflow_dispatch", text)
-        self.assertNotIn("push:", text)
-        self.assertIn("path: web", text)
+        self.assertFalse((ROOT / ".github/workflows/pages.yml").exists())
 
     def test_page_stays_on_this_computer(self):
-        html = (ROOT / "web/index.html").read_text(encoding="utf-8")
-        self.assertIn("数据只在你的浏览器里处理，不会上传", html)
-        self.assertIn("打码模式", html)
-        self.assertIn('id="tz"', html)
-        self.assertIn("当前时区：", html)
-        self.assertIn("defaultTimeZone", html)
-        self.assertIn('type="file" multiple', html)
-        self.assertIn("<select data-idx=", html)
-        self.assertIn("请选择", html)
-        self.assertIn('id="top"', html)
-        self.assertIn("scrollIntoView", html)
-        self.assertIn("smooth", html)
-        self.assertIn("flash", html)
-        self.assertNotIn("https://", html)
-        self.assertNotIn("fetch(", html)
-        self.assertNotIn("script src", html.lower())
+        ui = (ROOT / "userscript/src/ui.mjs").read_text(encoding="utf-8")
+        self.assertIn("数据只在你的浏览器里处理，不会上传", ui)
+        self.assertIn("打码模式", ui)
+        self.assertIn('tz.id = "tz"', ui)
+        self.assertIn("当前时区：", ui)
+        self.assertIn("defaultTimeZone", ui)
+        self.assertIn("multiple = true", ui)
+        self.assertIn('setAttribute("data-idx"', ui)
+        self.assertIn("请选择", ui)
+        self.assertIn('title.id = "top"', ui)
+        self.assertIn("scrollTo", ui)
+        self.assertIn("smooth", ui)
+        self.assertIn("flash", ui)
+        self.assertNotIn("fetch(", ui)
+        self.assertNotIn("script src", ui.lower())
+        notice = (ROOT / "web/index.html").read_text(encoding="utf-8")
+        self.assertNotIn('type="file"', notice)
+        self.assertNotIn("function analyze", notice)
+        self.assertNotIn("github.io", notice)
 
     def test_tweet_json_matches_adapter(self):
         node = find_node()
@@ -293,10 +293,10 @@ class TestWebScore(unittest.TestCase):
             [node, str(ROOT / "tests/web_score_runner.mjs"), "diff", str(plan)], cwd=str(ROOT)))
 
     def test_follow_diff_matches_python_and_masks(self):
-        page = (ROOT / "web/index.html").read_text(encoding="utf-8")
+        page = (ROOT / "userscript/src/ui.mjs").read_text(encoding="utf-8")
         self.assertIn('["prev-followers", "旧·关注者"]', page)
         self.assertIn('["prev-following", "旧·正在关注"]', page)
-        self.assertIn("followDiffHtml(diff, {masked: state.masked", page)
+        self.assertIn("followDiffHtml(diff, {masked: !!store.prefs.masked", page)
         sample = self.web_diff([
             {"name": "followers.csv", "file": "sample_data/followers.csv", "kind": "followers"},
             {"name": "following.csv", "file": "sample_data/following.csv", "kind": "following"},

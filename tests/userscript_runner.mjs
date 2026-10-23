@@ -6,7 +6,8 @@ import {
   EMPTY_GUIDE, RETENTION_DAYS, classifyUrl, textForStore, snippet, parseCapture, applyCapture,
   emptyStore, coverageReport, toEngineData, prune, exportBackup, importBackup, contextProblems,
   installHooks, pageHookProgram, norm, operationName, listKindFromPath, timelineKindFromPath, userFromVisible, diagnosticsCopy,
-  pageContext, badgeText
+  pageContext, badgeText, listIsComplete, exportTimeFromName, recordSnapshot, snapshotDiffInput,
+  addKeep, removeKeep, applyImported, headerListCount, SNAPSHOT_WAITING, looksLikeBackup
 } from "../userscript/src/logic.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -25,16 +26,15 @@ function engineFrom(code, filename) {
   return sandbox.FanAudit || sandbox.root.FanAudit;
 }
 
-const html = fs.readFileSync(path.join(root, "web/index.html"), "utf8");
-const pageEngine = html.match(/<script id="fan-audit-engine">([\s\S]*?)<\/script>/)[1];
-const fan = engineFrom(pageEngine, "web/index.html");
+const pageEngine = fs.readFileSync(path.join(root, "engine/fan_audit_engine.js"), "utf8");
+const fan = engineFrom(pageEngine, "engine/fan_audit_engine.js");
 
 const builtPath = path.join(root, "userscript/fan-audit.user.js");
 const built = fs.readFileSync(builtPath, "utf8");
 const bundled = built.match(/\/\* FAN_ENGINE_START \*\/\n([\s\S]*?)\n\/\* FAN_ENGINE_END \*\//);
 check(!!bundled, "构建产物里有打分引擎");
 const bundledEngine = bundled[1].replace(/\}\)\(root\);$/, '})(typeof globalThis !== "undefined" ? globalThis : this);');
-check(bundledEngine.trim() === pageEngine.trim(), "打包进去的引擎和 web/index.html 是同一份");
+check(bundledEngine.trim() === pageEngine.trim(), "打包进去的引擎和 engine/fan_audit_engine.js 是同一份");
 const fanBuilt = engineFrom("var root = {};\n" + bundled[1], "userscript/fan-audit.user.js");
 check(typeof fanBuilt.analyze === "function", "打包引擎可以运行");
 
@@ -48,7 +48,7 @@ check(built.includes("document.cookie") === false, "不读 cookie");
 check(built.includes("scrollBy") === false, "不自动滚动");
 check(built.includes(EMPTY_GUIDE), "空状态文案在安装文件里");
 const meta = "// " + "@";
-check(built.includes(meta + "version      0.1.3"), "版本号");
+check(built.includes(meta + "version      0.2.0"), "版本号");
 check(built.includes(meta + "sandbox      raw"), "要求页面环境");
 check(built.includes(meta + "grant        GM_addElement"), "可以用元素注入把钩子送进页面");
 check(built.includes(meta + "run-at       document-start"), "document-start");
@@ -220,6 +220,13 @@ notesXhr.send(null);
 check(notesXhr.listeners && notesXhr.listeners.load && notesXhr.listeners.load.length === 1, "通知 REST 会挂上 load 监听");
 notesXhr.listeners.load.forEach(function (fn) { fn(); });
 check(seen.length === 4 && seen[3].indexOf("/notifications/all.json") >= 0 && !seen[3].endsWith(" 0"), "通知 REST 会读响应正文");
+const profileXhr = new page.XMLHttpRequest();
+profileXhr.open("GET", "https://x.com/i/api/graphql/hash/UserByScreenName");
+profileXhr.responseText = "{\"data\":{\"user\":{}}}";
+profileXhr.send(null);
+profileXhr.listeners.load.forEach(function (fn) { fn(); });
+check(seen.length === 5 && seen[4].indexOf("UserByScreenName") >= 0 && !seen[4].endsWith(" 0"), "资料接口会读人数");
+check(pageHookProgram().indexOf("UserByScreenName") >= 0 && pageHookProgram().indexOf("UserByRestId") >= 0, "钩子名单里有资料接口");
 
 function ThrowingXHR() { this.listeners = {}; this.status = 200; this.response = {data: {ok: 1}}; }
 ThrowingXHR.prototype.open = function () {};
@@ -513,6 +520,108 @@ const enough = absenceOpts([
 ]);
 const quietMutual = enough.rows.filter(function (row) { return row.account === "user_01"; })[0];
 check(enough.meta.interactionReady === true && quietMutual && quietMutual.tier === "沉睡互关", "两边跨了两天才把没说话的互关标成沉睡");
+
+check(listIsComplete(0, 0) === false && listIsComplete(2, 0) === false, "不知道资料人数时不算完整");
+check(listIsComplete(2, 3) === false && listIsComplete(3, 3) === true && listIsComplete(20, 20) === true, "20 人及以下必须正好采齐");
+check(listIsComplete(19, 21) === false && listIsComplete(20, 21) === true, "超过 20 人至少要到 95%");
+check(exportTimeFromName("twitter-正在关注-1792582202463.json", 5) === 1792582202463, "文件名里的 13 位毫秒是导出时间");
+check(exportTimeFromName("twitter-关注者-1792582202.json", 5) === 1792582202000, "文件名里的 10 位秒会换成毫秒");
+check(exportTimeFromName("notes.json", 5) === 5 && exportTimeFromName("x-123.json", 5) === 5, "对不上的数字不用");
+check(headerListCount("/demo_owner/verified_followers", "12", "demo_owner") == null, "认证粉丝页头不算全部粉丝");
+check(headerListCount("/demo_owner/followers", "1.2K Followers", "demo_owner") == null, "缩写人数不用来判断采全没有");
+check(headerListCount("/user_02/followers", "10", "demo_owner") == null, "别人主页上的人数不采用");
+const headerCount = headerListCount("/demo_owner/following", "1,234 Following", "demo_owner");
+check(headerCount && headerCount.kind === "following" && headerCount.count === 1234, "页头上的精确人数能用");
+
+const countBody = JSON.stringify({data: {user: {result: {legacy: {screen_name: "demo_owner", followers_count: 3, friends_count: 2}}}}});
+const countCap = parseCapture("https://x.com/i/api/graphql/hash/UserByScreenName", countBody, {owner: "demo_owner"});
+check(classifyUrl("https://x.com/i/api/graphql/hash/UserByRestId") === "counts", "UserByRestId 是人数");
+check(countCap.kind === "counts" && countCap.counts.followers === 3 && countCap.counts.following === 2, "资料响应里有粉丝数和关注数");
+const countStore = emptyStore();
+countStore.prefs.owner = "demo_owner";
+applyCapture(countStore, countCap, Date.parse("2026-10-22T00:00:00Z"));
+const otherCounts = parseCapture("https://x.com/i/api/graphql/hash/UserByScreenName", JSON.stringify({data: {user: {result: {legacy: {screen_name: "user_09", followers_count: 99, friends_count: 88}}}}}), {owner: "demo_owner"});
+applyCapture(countStore, otherCounts, Date.parse("2026-10-22T00:00:00Z"));
+check(countStore.totals.followers === 3 && countStore.totals.following === 2, "只有自己的资料会改人数");
+
+function snapPerson(id, handle) { return {id: id, handle: handle, name: handle}; }
+const snapStore = emptyStore();
+recordSnapshot(snapStore, "followers", [snapPerson("1000002", "user_02"), snapPerson("1000003", "user_03")], Date.parse("2026-09-01T00:00:00Z"), false, "page", "");
+check(snapshotDiffInput(snapStore) == null, "只有未完整快照时不出现关注变化");
+recordSnapshot(snapStore, "followers", [snapPerson("1000002", "user_02"), snapPerson("1000003", "user_03")], Date.parse("2026-10-01T00:00:00Z"), true, "export", "twitter-关注者-1790000000000.json");
+const waiting = snapshotDiffInput(snapStore);
+const waitingDiff = fan.followDiff(waiting);
+check(waiting && waiting.followAuto.waiting === true && waiting.followAuto.note === SNAPSHOT_WAITING, "只有一份完整快照时等待下一次");
+check(waitingDiff && waitingDiff.ready === false && waitingDiff.notes.indexOf(SNAPSHOT_WAITING) >= 0, "关注变化写下次完整采集后自动对比");
+const waitingHtml = fan.followDiffHtml(waitingDiff, {masked: true, rows: []});
+check(waitingHtml.indexOf("取关我的") >= 0 && waitingHtml.indexOf("user_") < 0, "打码后的关注变化没有用户名");
+recordSnapshot(snapStore, "followers", [snapPerson("1000003", "user_03"), snapPerson("1000004", "user_04")], 1792627200000, true, "page", "");
+recordSnapshot(snapStore, "following", [snapPerson("1000002", "user_02")], 1792582202463, true, "export", "twitter-正在关注-1792582202463.json");
+recordSnapshot(snapStore, "following", [snapPerson("1000002", "user_02"), snapPerson("1000005", "user_05")], 1792627200000, true, "page", "");
+const diff = fan.followDiff(snapshotDiffInput(snapStore));
+check(diff.unfollowed_me.map(function (item) { return item.handle; }).join(",") === "user_02", "谁取关了我");
+check(diff.new_followers.map(function (item) { return item.handle; }).join(",") === "user_04", "谁新关注我");
+check(diff.i_unfollowed.length === 0, "我取关了谁是空的");
+check(diff.i_followed.map(function (item) { return item.handle; }).join(",") === "user_05", "我新关注了谁");
+check(recordSnapshot(snapStore, "followers", [snapPerson("1000003", "user_03"), snapPerson("1000004", "user_04")], 1792700000000, true, "page", "") === false, "名单没变就不再存一份完整快照");
+
+const dayStore = emptyStore();
+const morning = Date.parse("2026-10-22T01:00:00Z");
+recordSnapshot(dayStore, "followers", [snapPerson("1000001", "user_01")], morning, false, "page", "");
+recordSnapshot(dayStore, "followers", [snapPerson("1000001", "user_01"), snapPerson("1000002", "user_02")], morning + 3600000, true, "page", "");
+check(dayStore.snapshots.length === 1 && dayStore.snapshots[0].people.length === 2 && dayStore.snapshots[0].complete === true, "同一天页面快照用更全的那次替换");
+check(recordSnapshot(dayStore, "followers", [snapPerson("1000001", "user_01")], morning + 7200000, false, "page", "") === false, "同一天人数变少不往回盖");
+
+const aged = emptyStore();
+recordSnapshot(aged, "followers", [snapPerson("1000001", "user_01")], Date.parse("2020-01-01T00:00:00Z"), true, "page", "");
+recordSnapshot(aged, "followers", [snapPerson("1000002", "user_02")], Date.parse("2020-02-01T00:00:00Z"), true, "page", "");
+recordSnapshot(aged, "followers", [snapPerson("1000003", "user_03")], Date.parse("2020-03-01T00:00:00Z"), true, "page", "");
+recordSnapshot(aged, "followers", [snapPerson("1000004", "user_04")], Date.parse("2026-10-01T00:00:00Z"), false, "page", "");
+prune(aged, Date.parse("2026-10-22T00:00:00Z"));
+const agedComplete = aged.snapshots.filter(function (snap) { return snap.complete; }).map(function (snap) { return snap.people[0].handle; }).sort();
+check(agedComplete.join(",") === "user_02,user_03", "过期后仍留下最近两份完整快照");
+check(aged.snapshots.some(function (snap) { return !snap.complete && snap.people[0].handle === "user_04"; }), "保留期内的未完整快照还在");
+
+const keepStore = emptyStore();
+keepStore.prefs.owner = "demo_owner";
+keepStore.meta.sawFollowing = true;
+keepStore.meta.sawFollowers = true;
+keepStore.following["id:1000002"] = {id: "1000002", handle: "user_02", name: "", verified: false, followers: 0, seen: 1};
+keepStore.followers["id:1000001"] = {id: "1000001", handle: "user_01", name: "", verified: false, followers: 0, seen: 1};
+addKeep(keepStore, {id: "1000002", handle: "user_02"});
+const keptBack = fan.notFollowedBack(toEngineData(keepStore, "demo_owner", fan.repliesFromTweets), []);
+check(keptBack.ready && keptBack.items.length === 0, "保留名单里的人不进没回关");
+const keptRound = importBackup(exportBackup(keepStore, Date.parse("2026-10-22T00:00:00Z")));
+check(keptRound.keepHandles.user_02 === 1 && keptRound.keepEntries.length === 1, "备份带着保留名单");
+removeKeep(keepStore, "user_02");
+const returned = fan.notFollowedBack(toEngineData(keepStore, "demo_owner", fan.repliesFromTweets), []);
+check(returned.items.length === 1 && returned.items[0].handle === "user_02", "移出保留名单后又出现在没回关");
+addKeep(keepStore, "user_08");
+applyImported(keepStore, fan.loadTexts([{name: "保留名单.txt", text: "user_09\n", kind: "keep"}]), "demo_owner", Date.parse("2026-10-22T00:00:00Z"));
+check(keepStore.keepHandles.user_08 === 1 && keepStore.keepHandles.user_09 === 1, "导入保留名单只追加，不擦掉面板里的");
+
+const mergeStore = emptyStore();
+mergeStore.prefs.owner = "demo_owner";
+mergeStore.posts["555"] = {id: "555", uid: "1000004", handle: "user_04", name: "", verified: false, replyTo: "1", replyToHandle: "demo_owner", conv: "1", ts: "2026-10-19T00:00:00.000Z", text: "已有", src: "search", seen: 1};
+const tweetFile = JSON.stringify([{id: "555", screen_name: "user_04", full_text: "导出里的另一段", created_at: "2026-10-19T00:00:00.000Z", in_reply_to: "1", in_reply_to_screen_name: "demo_owner"}]);
+const likeFile = JSON.stringify([{account: "user_06", post_id: "9", direction: "in", post_created_at: "2026-10-01", first_observed_at: "2026-10-02"}]);
+applyImported(mergeStore, fan.loadTexts([
+  {name: "用户推文.json", text: tweetFile, kind: "tweets", owner: "demo_owner"},
+  {name: "likes.json", text: likeFile, kind: "likes"}
+]), "demo_owner", Date.parse("2026-10-22T00:00:00Z"));
+check(Object.keys(mergeStore.posts).length === 1 && mergeStore.posts["555"].src === "search", "导入的帖子和已记下的按编号合成一条");
+const mergedRows = toEngineData(mergeStore, "demo_owner", fan.repliesFromTweets).rows;
+check(mergedRows.some(function (row) { return row.type === "like" && row.account === "user_06"; }), "点赞留在打分用的行里");
+check(looksLikeBackup(exportBackup(mergeStore, Date.parse("2026-10-22T00:00:00Z"))) === true, "备份文件能被认出来");
+recordSnapshot(mergeStore, "followers", [snapPerson("1000002", "user_02")], 1792582202463, true, "export", "twitter-关注者-1792582202463.json");
+recordSnapshot(mergeStore, "followers", [snapPerson("1000004", "user_04")], 1792627200000, true, "page", "");
+const dated = fan.followDiff(snapshotDiffInput(mergeStore));
+check(dated.unfollowed_me[0].handle === "user_02" && dated.new_followers[0].handle === "user_04", "旧导出和今天的采集按文件时间对比");
+const datedRound = importBackup(exportBackup(mergeStore, Date.parse("2026-10-22T00:00:00Z")));
+check(datedRound.snapshots.filter(function (snap) { return snap.complete; }).length === 2, "快照能随备份导回");
+check(built.indexOf("导入导出文件") >= 0 && built.indexOf("☆ 保留") >= 0 && built.indexOf(SNAPSHOT_WAITING) >= 0, "安装文件里有导入、保留和对比提示");
+check(built.indexOf("批量取关") < 0 && built.indexOf("取关选中") < 0, "安装文件里没有取关按钮");
+check(built.indexOf('["keep", "保留名单"]') >= 0, "导入可以把文件认成保留名单");
 
 if (failed) {
   console.error(failed + " checks failed");
