@@ -9,6 +9,8 @@ daily/
 *.zip
 *.js
 !docs/**/*.js
+!userscript/*.js
+!userscript/**/*.js
 # 常见导出文件名（twitter-web-exporter、X 归档等）
 *export*.json
 *export*.csv

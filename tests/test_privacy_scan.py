@@ -33,6 +33,24 @@ class TestPrivacyScan(unittest.TestCase):
         self.assertEqual(ps.scan(self.make({"README.md": line}), set(), set()), [])
         self.assertTrue(ps.scan(self.make({"other.md": line}), set(), set()))
 
+    def test_userscript_header_is_not_a_mention(self):
+        at = "@"
+        text = "\n".join([
+            "// ==UserScript==",
+            "// " + at + "name fan-audit",
+            "// " + at + "author " + ps.AUTHOR,
+            "// " + at + "match *://x.com/*",
+            "// " + at + "grant unsafeWindow",
+            "// " + at + "run-at document-start",
+            "// " + at + "updateURL https://raw.githubusercontent.com/ratt1e/Xfan-audit/main/userscript/fan-audit.user.js",
+            "// ==/UserScript==",
+            "var kept = 1;",
+        ])
+        self.assertEqual(ps.scan(self.make({"fan-audit.user.js": text}), set(), set()), [])
+        leaked = text + "\n// " + at + "author " + ps.AUTHOR + "\nconst x = " + at + "not_allowed;\n"
+        labels = {item[2] for item in ps.scan(self.make({"fan-audit.user.js": leaked}), set(), set())}
+        self.assertIn("@账号不在白名单（虚构示例请用 user_01 这种）", labels)
+
     def test_github_url_of_author_ok(self):
         line = "git clone https://github.com/%s/fan-audit.git\n" % ps.AUTHOR
         self.assertEqual(ps.scan(self.make({"README.md": line, "post.md": line}), set(), set()), [])
