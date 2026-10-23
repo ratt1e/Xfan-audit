@@ -15,6 +15,7 @@ export var RETENTION_DAYS = 90;
 export var RETENTION_MS = RETENTION_DAYS * 24 * 60 * 60 * 1000;
 export var EMPTY_GUIDE = "刚安装还没有数据？依次打开你的关注列表、粉丝列表和主页回复页，手动往下滑几屏，脚本会自动记录。";
 export var TEXT_LIMIT = 30;
+export var SNAPSHOT_WAITING = "下次完整采集后自动对比";
 
 var OPS = {
   UserRepliesTimeline: "replies",
@@ -27,7 +28,9 @@ var OPS = {
   Following: "following",
   TweetDetail: "detail",
   ModeratedTimeline: "detail",
-  NotificationsTimeline: "notifications"
+  NotificationsTimeline: "notifications",
+  UserByScreenName: "counts",
+  UserByRestId: "counts"
 };
 
 var POST_FIELDS = ["id", "uid", "handle", "name", "verified", "replyTo", "replyToHandle", "conv", "ts", "text", "src", "seen"];
@@ -39,7 +42,13 @@ export function emptyStore() {
     posts: {},
     following: {},
     followers: {},
-    meta: {sawFollowing: false, sawFollowers: false, sawBlueFollowers: false, sawNotifications: false}
+    totals: {followers: 0, following: 0},
+    snapshots: [],
+    keepEntries: [],
+    keepIds: {},
+    keepHandles: {},
+    extraRows: [],
+    meta: {sawFollowing: false, sawFollowers: false, sawBlueFollowers: false, sawNotifications: false, sawExport: false}
   };
 }
 
@@ -645,6 +654,7 @@ export function parseCapture(url, text, options) {
     return finish({kind: kind, skip: "响应不是 JSON", posts: [], users: []});
   }
   if (!json || typeof json !== "object") return finish({kind: kind, skip: "响应不是 JSON", posts: [], users: []});
+  if (kind === "counts") return finish({kind: kind, skip: "", posts: [], users: [], counts: readOwnerCounts(json)});
   var owner = norm(options.owner);
   var profile = readProfile(json);
   var instructions = readInstructions(json, kind);
@@ -710,6 +720,7 @@ function samePost(prev, next) {
 }
 
 export function prune(store, now) {
+  ensureStore(store);
   var cutoff = (now || Date.now()) - RETENTION_MS;
   Object.keys(store.posts || {}).forEach(function (id) {
     var post = store.posts[id];
@@ -722,12 +733,33 @@ export function prune(store, now) {
       if ((store[bucket][key].seen || 0) < cutoff) delete store[bucket][key];
     });
   });
+  pruneSnapshots(store, now || Date.now());
   return store;
 }
 
 export function applyCapture(store, captured, now) {
   if (!store || !captured || captured.skip || !captured.kind) return false;
+  ensureStore(store);
   now = now || Date.now();
+  if (captured.kind === "counts") {
+    var counts = captured.counts;
+    var me = norm(store.prefs && store.prefs.owner);
+    var counted = false;
+    if (counts && me && counts.handle === me) {
+      if (counts.followers > 0 && store.totals.followers !== counts.followers) {
+        store.totals.followers = counts.followers;
+        counted = true;
+      }
+      if (counts.following > 0 && store.totals.following !== counts.following) {
+        store.totals.following = counts.following;
+        counted = true;
+      }
+      if (maybeSnapshot(store, "followers", now)) counted = true;
+      if (maybeSnapshot(store, "following", now)) counted = true;
+    }
+    prune(store, now);
+    return counted;
+  }
   var changed = false;
   (captured.posts || []).forEach(function (post) {
     if (!post.id) return;
@@ -790,6 +822,7 @@ export function applyCapture(store, captured, now) {
         followers: user.followers || (prev && prev.followers) || 0,
         seen: now
       };
+      if (prev && prev.src === "export") next.src = "export";
       if (!prev || prev.handle !== next.handle || prev.name !== next.name || prev.verified !== next.verified || prev.followers !== next.followers || prev.id !== next.id) {
         store[bucket][key] = next;
         changed = true;
@@ -823,10 +856,10 @@ export function coverageReport(store, owner, tz) {
   var me = norm(owner);
   var daysIn = {};
   var daysOut = {};
-  var daysBySrc = {replies: {}, originals: {}, search: {}, detail: {}, notifications: {}};
+  var daysBySrc = {replies: {}, originals: {}, search: {}, detail: {}, notifications: {}, export: {}};
   var countIn = 0;
   var countOut = 0;
-  var srcCount = {replies: 0, originals: 0, search: 0, detail: 0, notifications: 0};
+  var srcCount = {replies: 0, originals: 0, search: 0, detail: 0, notifications: 0, export: 0};
   Object.keys(store.posts || {}).forEach(function (id) {
     var post = store.posts[id];
     var day = localDay(post.ts, tz);
@@ -856,15 +889,399 @@ export function coverageReport(store, owner, tz) {
       originals: Object.keys(daysBySrc.originals).length,
       search: Object.keys(daysBySrc.search).length,
       detail: Object.keys(daysBySrc.detail).length,
-      notifications: Object.keys(daysBySrc.notifications).length
+      notifications: Object.keys(daysBySrc.notifications).length,
+      export: Object.keys(daysBySrc.export).length
     },
     following: Object.keys(store.following || {}).length,
     followers: Object.keys(store.followers || {}).length,
     sawFollowing: !!meta.sawFollowing,
     sawFollowers: !!meta.sawFollowers,
     sawBlueFollowers: !!meta.sawBlueFollowers,
-    sawNotifications: !!meta.sawNotifications
+    sawNotifications: !!meta.sawNotifications,
+    sawExport: !!meta.sawExport
   };
+}
+
+function countNum(value) {
+  if (typeof value === "number" && isFinite(value)) return value > 0 ? Math.floor(value) : 0;
+  var text = String(value == null ? "" : value).replace(/,/g, "").trim();
+  if (!/^\d+$/.test(text)) return 0;
+  var n = parseInt(text, 10);
+  return n > 0 ? n : 0;
+}
+
+function readOwnerCounts(json) {
+  var user = json && json.data && json.data.user && json.data.user.result;
+  if (!user || typeof user !== "object") return null;
+  var profile = readUser(user);
+  if (!profile || !profile.handle) return null;
+  var node = user;
+  if (node.result && typeof node.result === "object" && !node.rest_id && !node.restId && !node.core && !node.legacy) node = node.result;
+  var legacy = (node && node.legacy) || {};
+  var rel = (node && (node.relationship_counts || node.relationshipCounts)) || {};
+  var followers = countNum(legacy.followers_count);
+  if (!followers) followers = countNum(rel.followers != null ? rel.followers : rel.followers_count);
+  if (!followers) followers = profile.followers || 0;
+  var following = countNum(legacy.friends_count);
+  if (!following) following = countNum(rel.following != null ? rel.following : (rel.friends != null ? rel.friends : rel.following_count));
+  return {handle: profile.handle, followers: followers, following: following};
+}
+
+function ensureStore(store) {
+  if (!store.totals) store.totals = {followers: 0, following: 0};
+  if (!store.snapshots) store.snapshots = [];
+  if (!store.keepEntries) store.keepEntries = [];
+  if (!store.keepIds) store.keepIds = {};
+  if (!store.keepHandles) store.keepHandles = {};
+  if (!store.extraRows) store.extraRows = [];
+  if (!store.meta) store.meta = {};
+  return store;
+}
+
+export function listIsComplete(captured, expected) {
+  captured = captured | 0;
+  expected = expected | 0;
+  if (expected <= 0) return false;
+  if (expected <= 20) return captured === expected;
+  return captured >= Math.ceil(expected * 0.95);
+}
+
+export function exportTimeFromName(name, fallback) {
+  var base = String(name || "").replace(/^.*[/\\]/, "").replace(/\.[^.]+$/, "");
+  var match = base.match(/(?:^|[^0-9])(\d{13}|\d{10})$/);
+  var fb = fallback || 0;
+  if (!match) return fb;
+  var n = Number(match[1]);
+  if (!isFinite(n)) return fb;
+  if (match[1].length === 10) n *= 1000;
+  var year = new Date(n).getUTCFullYear();
+  if (!year || year < 2010 || year > 2040) return fb;
+  return n;
+}
+
+export function headerListCount(href, text, owner) {
+  var match = String(href || "").match(/^\/([A-Za-z0-9_]{1,15})\/(followers|following|verified_followers)\/?$/);
+  if (!match || norm(match[1]) !== norm(owner)) return null;
+  if (match[2] === "verified_followers") return null;
+  var raw = String(text || "");
+  if (/[kKmM万亿]/.test(raw)) return null;
+  var digits = raw.replace(/,/g, "").match(/\d+/);
+  if (!digits) return null;
+  var count = parseInt(digits[0], 10);
+  if (!count) return null;
+  return {kind: match[2] === "following" ? "following" : "followers", count: count};
+}
+
+function compactPeople(list) {
+  var out = [];
+  var seenId = {};
+  var seenHandle = {};
+  (list || []).forEach(function (user) {
+    if (!user) return;
+    var id = String(user.id || "");
+    if (id && !/^\d+$/.test(id)) id = "";
+    var handle = norm(user.handle);
+    if (!id && !handle) return;
+    if (id && seenId[id]) return;
+    if (!id && seenHandle[handle]) return;
+    if (id) seenId[id] = 1;
+    if (handle) seenHandle[handle] = 1;
+    out.push({id: id, handle: handle, name: String(user.name || "").replace(/\s+/g, " ").trim().slice(0, 40)});
+  });
+  return out;
+}
+
+function peopleFromBucket(bucket) {
+  return compactPeople(Object.keys(bucket || {}).map(function (key) { return bucket[key]; }));
+}
+
+function snapshotSignature(people) {
+  return (people || []).map(function (person) { return person.id ? "id:" + person.id : "h:" + person.handle; }).sort().join("\n");
+}
+
+function latestComplete(store, kind) {
+  var best = null;
+  (store.snapshots || []).forEach(function (snap) {
+    if (!snap || snap.kind !== kind || !snap.complete) return;
+    if (!best || snap.at >= best.at) best = snap;
+  });
+  return best;
+}
+
+export function recordSnapshot(store, kind, people, at, complete, source, name) {
+  ensureStore(store);
+  if (kind !== "followers" && kind !== "following") return false;
+  people = compactPeople(people);
+  if (!people.length) return false;
+  at = at || Date.now();
+  complete = !!complete;
+  source = source === "export" ? "export" : "page";
+  name = String(name || "").slice(0, 180);
+  var signature = snapshotSignature(people);
+  if (source === "export" && name) {
+    for (var i = 0; i < store.snapshots.length; i++) {
+      var named = store.snapshots[i];
+      if (named.source !== "export" || named.kind !== kind || named.name !== name) continue;
+      if (snapshotSignature(named.people) === signature && named.at === at && !!named.complete === complete) return false;
+      store.snapshots[i] = {kind: kind, at: at, complete: complete, source: source, name: name, people: people};
+      return true;
+    }
+  }
+  if (complete) {
+    var latest = latestComplete(store, kind);
+    if (latest && snapshotSignature(latest.people) === signature) return false;
+  }
+  if (source === "page") {
+    var day = new Date(at).toISOString().slice(0, 10);
+    for (var j = 0; j < store.snapshots.length; j++) {
+      var snap = store.snapshots[j];
+      if (snap.kind !== kind || snap.source !== "page") continue;
+      if (new Date(snap.at).toISOString().slice(0, 10) !== day) continue;
+      if (people.length < (snap.people || []).length) return false;
+      if (snapshotSignature(snap.people) === signature && !!snap.complete === complete) return false;
+      store.snapshots[j] = {kind: kind, at: at, complete: complete, source: source, name: "", people: people};
+      return true;
+    }
+  }
+  store.snapshots.push({kind: kind, at: at, complete: complete, source: source, name: name, people: people});
+  return true;
+}
+
+export function maybeSnapshot(store, kind, at) {
+  ensureStore(store);
+  if (kind !== "followers" && kind !== "following") return false;
+  var people = peopleFromBucket(store[kind]);
+  var expected = kind === "followers" ? (store.totals.followers || 0) : (store.totals.following || 0);
+  return recordSnapshot(store, kind, people, at || Date.now(), listIsComplete(people.length, expected), "page", "");
+}
+
+function pruneSnapshots(store, now) {
+  ensureStore(store);
+  var cutoff = (now || Date.now()) - RETENTION_MS;
+  var snaps = store.snapshots;
+  var force = [];
+  var newestPartial = {};
+  ["followers", "following"].forEach(function (kind) {
+    var complete = [];
+    var partial = [];
+    snaps.forEach(function (snap) {
+      if (!snap || snap.kind !== kind) return;
+      if (snap.complete) complete.push(snap);
+      else partial.push(snap);
+    });
+    complete.sort(function (a, b) { return a.at - b.at; });
+    partial.sort(function (a, b) { return a.at - b.at; });
+    complete.slice(-2).forEach(function (snap) { force.push(snap); });
+    if (partial.length) newestPartial[kind] = partial[partial.length - 1];
+  });
+  store.snapshots = snaps.filter(function (snap) {
+    if (force.indexOf(snap) >= 0) return true;
+    if ((snap.at || 0) < cutoff) return false;
+    if (!snap.complete) return newestPartial[snap.kind] === snap;
+    return true;
+  });
+}
+
+function completeSeries(store, kind) {
+  return (store.snapshots || []).filter(function (snap) {
+    return snap && snap.kind === kind && snap.complete && snap.people && snap.people.length;
+  }).sort(function (a, b) { return a.at - b.at; });
+}
+
+export function snapshotDiffInput(store) {
+  ensureStore(store);
+  var followers = completeSeries(store, "followers");
+  var following = completeSeries(store, "following");
+  if (!followers.length && !following.length) return null;
+  if (followers.length < 2 && following.length < 2) {
+    return {
+      sawFollowers: false, sawFollowing: false, sawPrevFollowers: false, sawPrevFollowing: false,
+      followerAccounts: [], followingAccounts: [], prevFollowerAccounts: [], prevFollowingAccounts: [],
+      followAuto: {waiting: true, note: SNAPSHOT_WAITING}
+    };
+  }
+  function pair(list) {
+    if (list.length < 2) return {prev: [], cur: [], ready: false};
+    return {prev: list[list.length - 2].people, cur: list[list.length - 1].people, ready: true};
+  }
+  var fer = pair(followers);
+  var fol = pair(following);
+  return {
+    sawFollowers: fer.ready,
+    sawPrevFollowers: fer.ready,
+    sawFollowing: fol.ready,
+    sawPrevFollowing: fol.ready,
+    followerAccounts: fer.cur,
+    prevFollowerAccounts: fer.prev,
+    followingAccounts: fol.cur,
+    prevFollowingAccounts: fol.prev,
+    followAuto: (fer.ready && fol.ready) ? null : {note: SNAPSHOT_WAITING}
+  };
+}
+
+function rebuildKeepMaps(store) {
+  store.keepIds = {};
+  store.keepHandles = {};
+  (store.keepEntries || []).forEach(function (entry) {
+    if (entry.id && /^\d+$/.test(entry.id)) store.keepIds[entry.id] = 1;
+    var handle = norm(entry.handle);
+    if (handle) store.keepHandles[handle] = 1;
+  });
+}
+
+export function addKeep(store, person) {
+  ensureStore(store);
+  var id = "";
+  var handle = "";
+  if (typeof person === "string" || typeof person === "number") {
+    var text = String(person || "").trim().replace(/^@/, "");
+    if (/^\d+$/.test(text)) id = text;
+    else handle = norm(text);
+  } else if (person && typeof person === "object") {
+    id = String(person.id || "");
+    if (!/^\d+$/.test(id)) id = "";
+    handle = norm(person.handle || person.account);
+  }
+  if (!id && !handle) return false;
+  var entries = store.keepEntries;
+  for (var i = 0; i < entries.length; i++) {
+    var entry = entries[i];
+    if (!((id && entry.id === id) || (handle && entry.handle === handle))) continue;
+    if (id) entry.id = id;
+    if (handle) entry.handle = handle;
+    rebuildKeepMaps(store);
+    return true;
+  }
+  entries.push({id: id, handle: handle});
+  rebuildKeepMaps(store);
+  return true;
+}
+
+export function removeKeep(store, person) {
+  ensureStore(store);
+  var id = "";
+  var handle = "";
+  if (typeof person === "string" || typeof person === "number") {
+    var text = String(person || "").trim().replace(/^@/, "");
+    if (/^\d+$/.test(text)) id = text;
+    else handle = norm(text);
+  } else if (person && typeof person === "object") {
+    id = String(person.id || "");
+    if (!/^\d+$/.test(id)) id = "";
+    handle = norm(person.handle || person.account);
+  }
+  var before = store.keepEntries.length;
+  store.keepEntries = store.keepEntries.filter(function (entry) {
+    if (id && entry.id === id) return false;
+    if (handle && entry.handle === handle) return false;
+    return true;
+  });
+  rebuildKeepMaps(store);
+  return store.keepEntries.length !== before;
+}
+
+export function looksLikeBackup(text) {
+  try {
+    var obj = JSON.parse(text);
+    return !!(obj && obj.v === 1 && obj.posts && obj.prefs);
+  } catch (err) {
+    return false;
+  }
+}
+
+function rowToExportPost(row, owner) {
+  var tid = String(row.tweet_id || "").trim();
+  var dir = String(row.direction || "");
+  var account = norm(row.account);
+  if (!tid || (dir !== "in" && dir !== "out")) return null;
+  var handle = dir === "out" ? owner : account;
+  var replyToHandle = dir === "out" ? account : owner;
+  if (!handle || !replyToHandle || handle === replyToHandle) return null;
+  return {
+    id: tid,
+    uid: "",
+    handle: handle,
+    name: "",
+    verified: false,
+    replyTo: String(row.in_reply_to_status_id || ""),
+    replyToHandle: replyToHandle,
+    conv: String(row.conversation_id || ""),
+    ts: String(row.ts || row.created_at || ""),
+    text: String(row.text || ""),
+    src: "export"
+  };
+}
+
+function compactExtra(row) {
+  var next = {
+    id: String(row.id || ""),
+    tweet_id: String(row.tweet_id || ""),
+    ts: String(row.ts || row.created_at || ""),
+    account: norm(row.account),
+    direction: String(row.direction || ""),
+    type: String(row.type || ""),
+    text: String(row.text || "").slice(0, TEXT_LIMIT + 16),
+    in_reply_to_status_id: String(row.in_reply_to_status_id || ""),
+    conversation_id: String(row.conversation_id || ""),
+    parent_kind: String(row.parent_kind || ""),
+    post_id: String(row.post_id || ""),
+    post_created_at: String(row.post_created_at || ""),
+    first_observed_at: String(row.first_observed_at || ""),
+    observed_baseline: String(row.observed_baseline || "")
+  };
+  if (!next.id && next.tweet_id) next.id = "tw:" + next.tweet_id;
+  return next;
+}
+
+function markNewExportUsers(bucket, before) {
+  Object.keys(bucket).forEach(function (key) {
+    if (!before[key]) bucket[key].src = "export";
+  });
+}
+
+export function applyImported(store, data, owner, now) {
+  if (!store || !data) return false;
+  now = now || Date.now();
+  var me = norm(owner || data.owner || (store.prefs && store.prefs.owner));
+  Object.keys(store.posts || {}).forEach(function (id) {
+    if (store.posts[id].src === "export") delete store.posts[id];
+  });
+  ["following", "followers"].forEach(function (bucket) {
+    Object.keys(store[bucket] || {}).forEach(function (key) {
+      if (store[bucket][key].src === "export") delete store[bucket][key];
+    });
+  });
+  ensureStore(store);
+  store.extraRows = [];
+  var posts = [];
+  var seenExtra = {};
+  (data.rows || []).forEach(function (row) {
+    if (!row) return;
+    if (row.type === "like" || !row.tweet_id || (row.direction !== "in" && row.direction !== "out")) {
+      var extra = compactExtra(row);
+      if (extra.id && seenExtra[extra.id]) return;
+      if (extra.id) seenExtra[extra.id] = 1;
+      store.extraRows.push(extra);
+      return;
+    }
+    var post = rowToExportPost(row, me);
+    if (post) posts.push(post);
+  });
+  applyCapture(store, {kind: "export", skip: "", posts: posts, users: []}, now);
+  function takeUsers(bucket, accounts, flag) {
+    var before = {};
+    Object.keys(store[bucket]).forEach(function (key) { before[key] = 1; });
+    applyCapture(store, {kind: flag === "sawFollowing" ? "following" : "followers", skip: "", posts: [], users: accounts || []}, now);
+    markNewExportUsers(store[bucket], before);
+  }
+  if (data.sawFollowing) takeUsers("following", data.followingAccounts, "sawFollowing");
+  if (data.sawFollowers) takeUsers("followers", data.followerAccounts, "sawFollowers");
+  Object.keys(data.keepIds || {}).forEach(function (id) { addKeep(store, {id: id, handle: ""}); });
+  Object.keys(data.keepHandles || {}).forEach(function (handle) { addKeep(store, {id: "", handle: handle}); });
+  store.meta.sawExport = true;
+  if (!store.prefs.owner && data.owner) store.prefs.owner = norm(data.owner);
+  prune(store, now);
+  return true;
 }
 
 export function toEngineData(store, owner, repliesFromTweets) {
@@ -918,9 +1335,24 @@ export function toEngineData(store, owner, repliesFromTweets) {
     sawFollowers: !!(meta.sawFollowers || meta.sawBlueFollowers),
     sawPrevFollowers: false,
     sawPrevFollowing: false,
+    keepIds: store.keepIds || {},
+    keepHandles: store.keepHandles || {},
     warnings: []
   };
-  if (typeof repliesFromTweets === "function") data.rows = repliesFromTweets(records, owner || "");
+  var rows = typeof repliesFromTweets === "function" ? repliesFromTweets(records, owner || "") : [];
+  var seenRow = {};
+  rows.forEach(function (row) { if (row && row.id) seenRow[row.id] = 1; });
+  (store.extraRows || []).forEach(function (row) {
+    if (!row || !norm(row.account)) return;
+    var id = row.id || (row.tweet_id ? "tw:" + row.tweet_id : "");
+    if (id && seenRow[id]) return;
+    if (id) seenRow[id] = 1;
+    var copy = {};
+    Object.keys(row).forEach(function (key) { copy[key] = row[key]; });
+    if (id) copy.id = id;
+    rows.push(copy);
+  });
+  data.rows = rows;
   return data;
 }
 
@@ -950,6 +1382,9 @@ export function normalizeStore(input) {
   store.meta.sawFollowers = !!meta.sawFollowers;
   store.meta.sawBlueFollowers = !!meta.sawBlueFollowers;
   store.meta.sawNotifications = !!meta.sawNotifications;
+  store.meta.sawExport = !!meta.sawExport;
+  store.totals.followers = countNum(input.totals && input.totals.followers);
+  store.totals.following = countNum(input.totals && input.totals.following);
   Object.keys(input.posts || {}).forEach(function (id) {
     var post = input.posts[id];
     if (!post || typeof post !== "object") return;
@@ -974,6 +1409,51 @@ export function normalizeStore(input) {
         followers: isNaN(followers) ? 0 : followers,
         seen: user.seen || 0
       };
+      if (user.src === "export") store[bucket][storedKey].src = "export";
+    });
+  });
+  var kept = [];
+  function rememberKeep(entry) {
+    var id = String(entry.id || "");
+    if (id && !/^\d+$/.test(id)) id = "";
+    var handle = norm(entry.handle);
+    if (!id && !handle) return;
+    for (var i = 0; i < kept.length; i++) {
+      if ((id && kept[i].id === id) || (handle && kept[i].handle === handle)) {
+        if (id) kept[i].id = id;
+        if (handle) kept[i].handle = handle;
+        return;
+      }
+    }
+    kept.push({id: id, handle: handle});
+  }
+  (input.keepEntries || []).forEach(function (entry) { if (entry) rememberKeep(entry); });
+  Object.keys(input.keepIds || {}).forEach(function (id) { rememberKeep({id: id, handle: ""}); });
+  Object.keys(input.keepHandles || {}).forEach(function (handle) { rememberKeep({id: "", handle: handle}); });
+  store.keepEntries = kept;
+  rebuildKeepMaps(store);
+  var seenExtra = {};
+  (input.extraRows || []).forEach(function (row) {
+    if (!row || typeof row !== "object") return;
+    var extra = compactExtra(row);
+    if (!extra.account && !extra.tweet_id && !extra.id) return;
+    if (extra.id && seenExtra[extra.id]) return;
+    if (extra.id) seenExtra[extra.id] = 1;
+    store.extraRows.push(extra);
+  });
+  (input.snapshots || []).forEach(function (snap) {
+    if (!snap || (snap.kind !== "followers" && snap.kind !== "following")) return;
+    var people = compactPeople(snap.people);
+    if (!people.length) return;
+    var at = Number(snap.at);
+    if (!isFinite(at) || at < 0) at = 0;
+    store.snapshots.push({
+      kind: snap.kind,
+      at: at,
+      complete: !!snap.complete,
+      source: snap.source === "export" ? "export" : "page",
+      name: String(snap.name || "").slice(0, 180),
+      people: people
     });
   });
   return store;
@@ -1029,7 +1509,7 @@ function attachHooks(page, emit) {
   var origOpen = page.XMLHttpRequest.prototype.open;
   var origSend = page.XMLHttpRequest.prototype.send;
   var origFetch = page.fetch;
-  var interesting = /\/(UserRepliesTimeline|UserTweetsAndReplies|UserOriginalsTimeline|UserTweets|SearchTimeline|BlueVerifiedFollowers|Followers|Following|TweetDetail|ModeratedTimeline|NotificationsTimeline|NotificationsMentionsTimeline)(?:\?|#|$)/;
+  var interesting = /\/(UserRepliesTimeline|UserTweetsAndReplies|UserOriginalsTimeline|UserTweets|SearchTimeline|BlueVerifiedFollowers|Followers|Following|TweetDetail|ModeratedTimeline|NotificationsTimeline|NotificationsMentionsTimeline|UserByScreenName|UserByRestId)(?:\?|#|$)/;
   function isNotificationsRest(url) {
     return /\/i\/api\/2\/notifications\/(?:all|mentions|verified)\.json(?:\?|#|$)/.test(String(url || ""));
   }

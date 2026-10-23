@@ -4,11 +4,8 @@ import {fileURLToPath} from "url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
-const html = fs.readFileSync(path.join(root, "web/index.html"), "utf8").replace(/\r\n/g, "\n");
-const found = html.match(/<script id="fan-audit-engine">([\s\S]*?)<\/script>/);
-if (!found) throw new Error("找不到打分脚本");
 const invoke = '})(typeof globalThis !== "undefined" ? globalThis : this);';
-let engine = found[1].trim();
+let engine = fs.readFileSync(path.join(root, "engine/fan_audit_engine.js"), "utf8").replace(/\r\n/g, "\n").trim();
 if (!engine.endsWith(invoke)) throw new Error("打分脚本结尾变了，构建脚本需要一起改");
 engine = engine.slice(0, -invoke.length) + "})(root);";
 
@@ -33,8 +30,8 @@ const header = [
   "// ==UserScript==",
   at("name") + "         fan-audit 粉丝体检",
   at("namespace") + "    https://github.com/ratt1e/Xfan-audit",
-  at("version") + "      0.1.3",
-  at("description") + "  在 X 上边逛边记下公开回复和关注名单，在页面里出粉丝体检。只读，不自己发请求，不自动翻页。",
+  at("version") + "      0.2.0",
+  at("description") + "  在 X 上边逛边记下公开回复和关注名单，也能导入导出的 JSON。只读，不自己发请求，不自动翻页。",
   at("author") + "       " + author,
   at("match") + "        *://x.com/*",
   at("match") + "        *://twitter.com/*",
@@ -80,8 +77,8 @@ const notice = `/*
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  *
- * Scoring is copied at build time from web/index.html (the fan-audit-engine
- * block). That file remains the only source of the formula.
+ * Scoring is copied at build time from engine/fan_audit_engine.js.
+ * That file is the only source of the formula.
  */`;
 
 const bundled = `${header}\n${notice}\n(function () {\n"use strict";\nvar root = {};\n/* FAN_ENGINE_START */\n${engine}\n/* FAN_ENGINE_END */\nvar FanAudit = root.FanAudit;\n${logic}\n${ui}\n})();\n`;

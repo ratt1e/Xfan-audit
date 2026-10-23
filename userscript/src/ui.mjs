@@ -1,4 +1,4 @@
-import { EMPTY_GUIDE, RETENTION_DAYS, BOARD_CSS, emptyStore, normalizeStore, prune, parseCapture, applyCapture, coverageReport, toEngineData, contextProblems, installHooks, pageHookProgram, exportBackup, importBackup, standaloneHtml, norm, operationName, classifyUrl, listKindFromPath, userFromVisible, diagnosticsCopy, sameRealm, pageContext, badgeText } from "./logic.mjs";
+import { EMPTY_GUIDE, RETENTION_DAYS, SNAPSHOT_WAITING, BOARD_CSS, emptyStore, normalizeStore, prune, parseCapture, applyCapture, coverageReport, toEngineData, snapshotDiffInput, recordSnapshot, exportTimeFromName, maybeSnapshot, addKeep, removeKeep, looksLikeBackup, headerListCount, applyImported, contextProblems, installHooks, pageHookProgram, exportBackup, importBackup, standaloneHtml, norm, operationName, classifyUrl, listKindFromPath, userFromVisible, diagnosticsCopy, sameRealm, pageContext, badgeText } from "./logic.mjs";
 
 var STORE_KEY = "fan-audit-v1";
 
@@ -60,6 +60,7 @@ function boot() {
   var flushing = false;
   var diag = {hook: "no", world: "unknown", sameRealm: false, pageApp: false, graphqlSeen: 0, matched: {}, unmatched: [], domAccepted: 0, skips: {}, skipsByOp: {}};
   var visit = {key: "", base: 0};
+  var importParts = [];
 
   function persist() {
     try {
@@ -121,13 +122,37 @@ function boot() {
     if (!users.length) return;
     var bucket = kind === "following" ? store.following : store.followers;
     var before = Object.keys(bucket).length;
-    if (applyCapture(store, {kind: kind, skip: "", posts: [], users: users}, Date.now())) {
+    var capturedCells = applyCapture(store, {kind: kind, skip: "", posts: [], users: users}, Date.now());
+    var snapped = maybeSnapshot(store, kind === "following" ? "following" : "followers", Date.now());
+    if (capturedCells || snapped) {
       var after = Object.keys(bucket).length;
       if (after > before) diag.domAccepted += after - before;
       scheduleSave();
       updateBadge();
       if (panelOpen) render();
     }
+  }
+  function scanTotals() {
+    var owner = currentOwner();
+    if (!owner) return;
+    var root = document.querySelector('[data-testid="primaryColumn"]') || document.querySelector('main[role="main"]');
+    if (!root) return;
+    var changed = false;
+    var links = root.querySelectorAll("a[href]");
+    for (var i = 0; i < links.length; i++) {
+      var found = headerListCount(links[i].getAttribute("href") || "", links[i].textContent || "", owner);
+      if (!found) continue;
+      if ((store.totals[found.kind] || 0) !== found.count) {
+        store.totals[found.kind] = found.count;
+        changed = true;
+      }
+    }
+    if (!changed) return;
+    maybeSnapshot(store, "followers", Date.now());
+    maybeSnapshot(store, "following", Date.now());
+    scheduleSave();
+    updateBadge();
+    if (panelOpen) render();
   }
   function noteTraffic(url) {
     var op = operationName(url);
@@ -155,7 +180,11 @@ function boot() {
     if (captured.skip === "还不知道你的用户名" && text && pending.length < 20 && String(text).length < 1500000) {
       pending.push({url: url, text: text, body: body || ""});
     }
-    if (applyCapture(store, captured, Date.now())) scheduleSave();
+    var capturedNow = Date.now();
+    var stored = applyCapture(store, captured, capturedNow);
+    var snapKind = captured.kind === "following" ? "following" : (captured.kind === "followers" || captured.kind === "blue-followers" ? "followers" : "");
+    var snapped = snapKind ? maybeSnapshot(store, snapKind, capturedNow) : false;
+    if (stored || snapped) scheduleSave();
     updateBadge();
     if (panelOpen) render();
     if (!flushing && currentOwner()) flushPending();
@@ -270,7 +299,10 @@ function boot() {
       "#status{min-height:1.2em}",
       ".check{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:6px 0}",
       ".got{color:#047857;font-weight:700}",
-      ".miss{color:#9CA3AF}"
+      ".miss{color:#9CA3AF}",
+      "#import-drop{border:1px dashed #D1D5DB;border-radius:12px;padding:10px 12px;margin:8px 0;background:#fff;color:#4B5563;font-size:13px}",
+      "#import-drop.over{border-color:#1D4ED8;background:#EFF6FF}",
+      "#keep-box{margin:8px 0 12px}"
     ].join("\n");
     shadow.appendChild(style);
 
@@ -368,10 +400,50 @@ function boot() {
     row3.appendChild(exportBtn);
     row3.appendChild(importBtn);
     row3.appendChild(downloadBtn);
+    var importBtnFiles = el("button", "ctrl", "导入导出文件");
+    importBtnFiles.type = "button";
+    importBtnFiles.id = "import-export";
+    row3.appendChild(importBtnFiles);
     var file = el("input");
     file.type = "file";
     file.accept = "application/json,.json";
     file.hidden = true;
+    var importFile = el("input");
+    importFile.type = "file";
+    importFile.multiple = true;
+    importFile.accept = "application/json,.json,.csv,text/csv";
+    importFile.hidden = true;
+    importFile.id = "import-files";
+    var drop = el("div", "");
+    drop.id = "import-drop";
+    drop.textContent = "把 twitter-web-exporter 的 JSON 拖到这里，或点「导入导出文件」。能认用户推文 / UserTweets、正在关注 / Following、关注者 / Followers。数据只在你的浏览器里处理，不会上传。";
+    var importTable = el("div");
+    importTable.id = "import-table";
+    var keepBox = el("section", "card");
+    keepBox.id = "keep-box";
+    keepBox.appendChild(el("h2", "", "保留名单"));
+    keepBox.appendChild(el("p", "muted", "这些账号是你打算继续关注的，会从「没回关」里拿掉。只记在本机。没有关注或取关按钮。"));
+    keepBox.appendChild(el("p", "muted", "打码模式打开后，保留名单和关注变化也只显示编号。"));
+    var keepRow = el("div", "row");
+    var keepInput = el("input");
+    keepInput.type = "text";
+    keepInput.id = "keep-input";
+    keepInput.autocomplete = "off";
+    keepInput.spellcheck = false;
+    keepInput.placeholder = "用户名，不带 @";
+    var keepAdd = el("button", "ctrl", "添加");
+    keepAdd.type = "button";
+    keepAdd.id = "keep-add";
+    var keepRemove = el("button", "ctrl", "移除");
+    keepRemove.type = "button";
+    keepRemove.id = "keep-remove";
+    keepRow.appendChild(keepInput);
+    keepRow.appendChild(keepAdd);
+    keepRow.appendChild(keepRemove);
+    var keepList = el("div");
+    keepList.id = "keep-list";
+    keepBox.appendChild(keepRow);
+    keepBox.appendChild(keepList);
 
     var tzLine = el("p", "sub");
     tzLine.id = "tz-label";
@@ -396,14 +468,18 @@ function boot() {
     scroller.appendChild(row1);
     scroller.appendChild(row2);
     scroller.appendChild(row3);
+    scroller.appendChild(drop);
+    scroller.appendChild(importTable);
+    scroller.appendChild(keepBox);
     scroller.appendChild(file);
+    scroller.appendChild(importFile);
     scroller.appendChild(tzLine);
     scroller.appendChild(warnings);
     scroller.appendChild(coverage);
     scroller.appendChild(status);
     scroller.appendChild(results);
     scroller.appendChild(footer);
-    ui = {owner: owner, tz: tz, maskBtn: maskBtn, shadow: shadow, scroller: scroller, results: results, warnings: warnings, coverage: coverage, status: status, tzLine: tzLine, launcher: launcher, badge: badge, panel: panel, diagLine: diagLine, widenBtn: widenBtn};
+    ui = {owner: owner, tz: tz, maskBtn: maskBtn, shadow: shadow, scroller: scroller, results: results, warnings: warnings, coverage: coverage, status: status, tzLine: tzLine, launcher: launcher, badge: badge, panel: panel, diagLine: diagLine, widenBtn: widenBtn, importTable: importTable, keepList: keepList, keepInput: keepInput, _backItems: [], _keepItems: []};
     var wide = false;
     function setWide(next) {
       wide = !!next;
@@ -456,7 +532,12 @@ function boot() {
       render();
     });
     owner.addEventListener("change", function () {
-      store.prefs.owner = norm(owner.value);
+      var next = norm(owner.value);
+      if (next !== norm(store.prefs.owner)) {
+        store.totals = {followers: 0, following: 0};
+        store.snapshots = [];
+      }
+      store.prefs.owner = next;
       owner.value = store.prefs.owner;
       scheduleSave();
       render();
@@ -469,10 +550,14 @@ function boot() {
     });
     delBtn.addEventListener("click", function () {
       var total = Object.keys(store.posts).length + Object.keys(store.following).length + Object.keys(store.followers).length;
-      if (!confirm("删除本机保存的全部采集数据（" + total + " 条）？删掉之后不能恢复。打码和时区会保留。")) return;
+      if (!confirm("删除本机保存的全部采集数据（" + total + " 条）和关注快照？删掉之后不能恢复。打码、时区和保留名单会留下。")) return;
       var prefs = store.prefs;
+      var kept = {entries: store.keepEntries, ids: store.keepIds, handles: store.keepHandles};
       store = emptyStore();
       store.prefs = prefs;
+      store.keepEntries = kept.entries || [];
+      store.keepIds = kept.ids || {};
+      store.keepHandles = kept.handles || {};
       openTiers = {};
       persist();
       status.textContent = "采集数据已删除。";
@@ -487,6 +572,146 @@ function boot() {
       }
     });
     importBtn.addEventListener("click", function () { file.click(); });
+    importBtnFiles.addEventListener("click", function () { importFile.click(); });
+    function peopleOf(data, kind) {
+      if (kind === "followers") return data.followerAccounts || [];
+      if (kind === "prev-followers") return data.prevFollowerAccounts || [];
+      if (kind === "following") return data.followingAccounts || [];
+      if (kind === "prev-following") return data.prevFollowingAccounts || [];
+      return [];
+    }
+    function commitImports() {
+      if (typeof FanAudit === "undefined" || !FanAudit.loadTexts) {
+        status.textContent = "打分引擎没有装进脚本。";
+        return;
+      }
+      var ownerName = currentOwner() || norm(store.prefs.owner);
+      var ready = importParts.filter(function (part) {
+        return part.kind && part.kind !== "ask-users" && part.kind !== "unknown" && part.kind !== "bad";
+      });
+      if (!ready.length) return;
+      var data;
+      try {
+        data = FanAudit.loadTexts(ready.map(function (part) {
+          return {name: part.name, text: part.text, owner: ownerName, kind: part.kind};
+        }));
+      } catch (err) {
+        status.textContent = "有一份文件读不了，已跳过";
+        return;
+      }
+      var now = Date.now();
+      applyImported(store, data, ownerName || data.owner, now);
+      ready.forEach(function (part) {
+        var snapKind = "";
+        if (part.kind === "followers" || part.kind === "prev-followers") snapKind = "followers";
+        if (part.kind === "following" || part.kind === "prev-following") snapKind = "following";
+        if (!snapKind) return;
+        var one;
+        try {
+          one = FanAudit.loadTexts([{name: part.name, text: part.text, owner: ownerName, kind: part.kind}]);
+        } catch (err) { return; }
+        recordSnapshot(store, snapKind, peopleOf(one, part.kind), exportTimeFromName(part.name, now), true, "export", part.name);
+      });
+      if (!norm(store.prefs.owner) && data.owner) {
+        store.prefs.owner = norm(data.owner);
+        owner.value = store.prefs.owner;
+      }
+      prune(store, now);
+      persist();
+      var note = data.warnings && data.warnings.length ? data.warnings.join("；") : "已导入导出文件。只写进本机，没有上传。";
+      status.textContent = note;
+    }
+    function readImportFiles(fileList) {
+      var files = [].slice.call(fileList || []);
+      if (!files.length) return;
+      var left = files.length;
+      var slots = new Array(files.length);
+      var refused = 0;
+      files.forEach(function (picked, index) {
+        var reader = new FileReader();
+        reader.onload = function () {
+          var text = String(reader.result || "");
+          if (looksLikeBackup(text)) refused += 1;
+          else {
+            var kind = "bad";
+            try { kind = FanAudit.fileKind(picked.name, text); } catch (err) { kind = "bad"; }
+            slots[index] = {name: picked.name, text: text, kind: kind};
+          }
+          if (--left !== 0) return;
+          slots.forEach(function (part) {
+            if (!part) return;
+            var replaced = false;
+            for (var i = 0; i < importParts.length; i++) {
+              if (importParts[i].name === part.name) { importParts[i] = part; replaced = true; break; }
+            }
+            if (!replaced) importParts.push(part);
+          });
+          commitImports();
+          if (refused) status.textContent = "这是粉丝体检备份，请用「导入 JSON 备份」";
+          render();
+        };
+        reader.onerror = function () {
+          if (--left === 0) render();
+        };
+        reader.readAsText(picked);
+      });
+    }
+    importFile.addEventListener("change", function () {
+      var picked = importFile.files;
+      importFile.value = "";
+      readImportFiles(picked);
+    });
+    drop.addEventListener("dragover", function (event) { event.preventDefault(); drop.classList.add("over"); });
+    drop.addEventListener("dragleave", function () { drop.classList.remove("over"); });
+    drop.addEventListener("drop", function (event) {
+      event.preventDefault();
+      drop.classList.remove("over");
+      readImportFiles(event.dataTransfer && event.dataTransfer.files);
+    });
+    importTable.addEventListener("change", function (event) {
+      var sel = event.target;
+      if (!sel || sel.tagName !== "SELECT" || sel.getAttribute("data-idx") == null) return;
+      var idx = +sel.getAttribute("data-idx");
+      if (!importParts[idx]) return;
+      importParts[idx].kind = sel.value;
+      commitImports();
+      render();
+    });
+    function keepFromInput(raw) {
+      return String(raw || "").trim();
+    }
+    keepAdd.addEventListener("click", function () {
+      if (!addKeep(store, keepFromInput(keepInput.value))) {
+        status.textContent = "先写用户名。";
+        return;
+      }
+      keepInput.value = "";
+      scheduleSave();
+      status.textContent = "已放进保留名单。不会去关注。";
+      render();
+    });
+    keepRemove.addEventListener("click", function () {
+      if (!removeKeep(store, keepFromInput(keepInput.value))) {
+        status.textContent = "保留名单里没有这个用户名。";
+        return;
+      }
+      keepInput.value = "";
+      scheduleSave();
+      status.textContent = "已从保留名单拿掉。不会去取关。";
+      render();
+    });
+    keepBox.addEventListener("click", function (event) {
+      var node = event.target;
+      if (!node || !node.closest) return;
+      var edit = node.closest("[data-keep-edit]");
+      if (!edit) return;
+      var item = (ui._keepItems || [])[+edit.getAttribute("data-keep-edit")];
+      if (!item) return;
+      removeKeep(store, item);
+      scheduleSave();
+      status.textContent = "已从保留名单拿掉。不会去取关。";
+      render();
+    });
     file.addEventListener("change", function () {
       var picked = file.files && file.files[0];
       file.value = "";
@@ -542,6 +767,17 @@ function boot() {
     results.addEventListener("click", function (event) {
       var node = event.target;
       if (!node || !node.closest) return;
+      var keepBtn = node.closest("[data-keep-index]");
+      if (keepBtn) {
+        var item = (ui._backItems || [])[+keepBtn.getAttribute("data-keep-index")];
+        if (item) {
+          addKeep(store, item);
+          scheduleSave();
+          status.textContent = "已放进保留名单。不会去关注。";
+          render();
+        }
+        return;
+      }
       var back = node.closest("a.back-top");
       if (back) {
         event.preventDefault();
@@ -569,8 +805,8 @@ function boot() {
 
     (document.body || document.documentElement).appendChild(host);
     updateBadge();
-    setTimeout(function () { currentOwner(); flushPending(); scanCells(); updateBadge(); if (panelOpen) render(); }, 1000);
-    setTimeout(function () { currentOwner(); flushPending(); scanCells(); updateBadge(); if (panelOpen) render(); }, 5000);
+    setTimeout(function () { currentOwner(); flushPending(); scanCells(); scanTotals(); updateBadge(); if (panelOpen) render(); }, 1000);
+    setTimeout(function () { currentOwner(); flushPending(); scanCells(); scanTotals(); updateBadge(); if (panelOpen) render(); }, 5000);
     try {
       page && page.addEventListener("pagehide", persist);
     } catch (err) {}
@@ -688,18 +924,155 @@ function boot() {
     try {
       var result = FanAudit.analyze(data, opt);
       var back = FanAudit.notFollowedBack(data, result.rows);
+      var diffInput = snapshotDiffInput(store);
+      var diff = diffInput ? FanAudit.followDiff(diffInput) : null;
       var extras = [];
       if (back) extras.push({id: "not-followed-back", count: back.ready ? String(back.items.length) : "—", label: "没回关"});
+      if (diff) {
+        var changeKeys = ["unfollowed_me", "new_followers", "i_unfollowed", "i_followed"];
+        var changeSeen = false;
+        var changeTotal = 0;
+        changeKeys.forEach(function (key) {
+          if (diff[key] != null) { changeSeen = true; changeTotal += diff[key].length; }
+        });
+        extras.push({id: "follow-diff", count: changeSeen ? String(changeTotal) : "—", label: "关注变化"});
+      }
       var fragment = FanAudit.boardHtml(result.rows, {masked: !!store.prefs.masked, open: openTiers, extras: extras, interactionReady: result.meta.interactionReady !== false, interactionNote: result.meta.interactionNote || ""});
       if (back) fragment += FanAudit.notFollowedBackHtml(back, {masked: !!store.prefs.masked, rows: result.rows});
-      return {result: result, fragment: fragment, owner: owner};
+      var diffHtml = diff ? FanAudit.followDiffHtml(diff, {masked: !!store.prefs.masked, rows: result.rows}) : "";
+      fragment += diffHtml;
+      return {result: result, fragment: fragment, owner: owner, back: back};
     } catch (err) {
       return {error: err && err.message ? err.message : "时区无效，请填 IANA 名称，例如 Asia/Shanghai"};
     }
   }
 
+  function renderImportTable() {
+    if (!ui.importTable) return;
+    ui.importTable.textContent = "";
+    if (!importParts.length) return;
+    var choices = [["tweets", "用户推文"], ["following", "正在关注"], ["followers", "关注者"], ["prev-following", "旧·正在关注"], ["prev-followers", "旧·关注者"], ["keep", "保留名单"], ["interactions", "互动"], ["replies", "回复"], ["likes", "点赞"], ["profiles", "资料"]];
+    var card = el("div", "card");
+    card.appendChild(el("h2", "", "读入的文件"));
+    var table = document.createElement("table");
+    var head = document.createElement("tr");
+    head.appendChild(el("th", "", "文件"));
+    head.appendChild(el("th", "", "识别为"));
+    table.appendChild(head);
+    importParts.forEach(function (part, i) {
+      var tr = document.createElement("tr");
+      tr.appendChild(el("td", "", part.name));
+      var td = document.createElement("td");
+      var sel = document.createElement("select");
+      sel.setAttribute("data-idx", String(i));
+      var opts = choices.slice();
+      if (part.kind === "ask-users") opts.unshift(["ask-users", "请选择"]);
+      else if (part.kind === "unknown") opts.unshift(["unknown", "未识别"]);
+      else if (part.kind === "bad") opts.unshift(["bad", "读不了"]);
+      opts.forEach(function (pair) {
+        var opt = document.createElement("option");
+        opt.value = pair[0];
+        opt.textContent = pair[1];
+        if (pair[0] === part.kind) opt.selected = true;
+        sel.appendChild(opt);
+      });
+      td.appendChild(sel);
+      tr.appendChild(td);
+      table.appendChild(tr);
+    });
+    card.appendChild(table);
+    if (importParts.some(function (part) { return part.kind === "ask-users"; })) {
+      card.appendChild(el("div", "warn", "部分文件无法确认是「正在关注」还是「关注者」，请在下拉框中选择。旧名单请选「旧·关注者」或「旧·正在关注」，需持续关注的账号请选「保留名单」。未选择的文件暂不计入。"));
+    }
+    ui.importTable.appendChild(card);
+  }
+
+  function renderKeep(rows) {
+    if (!ui.keepList) return;
+    var masked = !!store.prefs.masked;
+    var ordered = [];
+    var seen = {};
+    function push(entry) {
+      var key = (entry.handle || "") + "#" + (entry.id || "");
+      if (seen[key]) return;
+      seen[key] = 1;
+      ordered.push({id: entry.id || "", handle: entry.handle || ""});
+    }
+    var used = {};
+    (rows || []).forEach(function (row) {
+      (store.keepEntries || []).forEach(function (entry) {
+        if (entry.handle && entry.handle === row.account) {
+          used[entry.handle] = 1;
+          push(entry);
+        }
+      });
+    });
+    (store.keepEntries || []).slice().sort(function (a, b) {
+      var left = a.handle || a.id || "";
+      var right = b.handle || b.id || "";
+      return left < right ? -1 : left > right ? 1 : 0;
+    }).forEach(function (entry) {
+      if (entry.handle && used[entry.handle]) return;
+      push(entry);
+    });
+    var known = {};
+    (rows || []).forEach(function (row, i) {
+      var s = String(i + 1);
+      known[row.account] = "账号#" + (s.length < 2 ? "0" + s : s);
+    });
+    var next = (rows || []).length + 1;
+    ui._keepItems = ordered;
+    ui.keepList.textContent = "";
+    if (!ordered.length) {
+      ui.keepList.appendChild(el("p", "muted", "还没有保留的人。没回关里可以点「☆ 保留」。"));
+      return;
+    }
+    ordered.forEach(function (entry, i) {
+      var line = el("p", "check");
+      var label = "";
+      if (masked) {
+        label = entry.handle && known[entry.handle];
+        if (!label) {
+          var s = String(next);
+          label = "账号#" + (s.length < 2 ? "0" + s : s);
+          next += 1;
+        }
+      } else label = entry.handle ? "@" + entry.handle : entry.id;
+      line.appendChild(el("span", "", label));
+      var btn = el("button", "ctrl", "移除");
+      btn.type = "button";
+      btn.setAttribute("data-keep-edit", String(i));
+      line.appendChild(btn);
+      ui.keepList.appendChild(line);
+    });
+  }
+
+  function attachKeepButtons(items) {
+    ui._backItems = items || [];
+    var section = ui.shadow.getElementById("not-followed-back");
+    if (!section) return;
+    var rows = section.querySelectorAll("table tr");
+    if (!rows.length) return;
+    var head = document.createElement("th");
+    head.textContent = "";
+    rows[0].appendChild(head);
+    for (var i = 1; i < rows.length; i++) {
+      if (!ui._backItems[i - 1]) continue;
+      var cell = document.createElement("td");
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "ctrl";
+      btn.textContent = "☆ 保留";
+      btn.setAttribute("data-keep-index", String(i - 1));
+      cell.appendChild(btn);
+      rows[i].appendChild(cell);
+    }
+  }
+
   function render() {
     if (!ui.results) return;
+    renderImportTable();
+    renderKeep([]);
     if (ui.diagLine) {
       var matched = Object.keys(diag.matched).sort().map(function (key) { return key + " " + diag.matched[key]; }).join("、") || "无";
       var notable = [];
@@ -757,9 +1130,17 @@ function boot() {
         ui.coverage.appendChild(el("p", "warn", "还没记到「别人回我」。金银牌会偏少。可以自己打开搜索 to:你的用户名（选最新）往下翻，或点开自己的帖子。"));
       }
       ui.coverage.appendChild(el("p", "muted", "名单是这段时间翻到的页面累加的，默认保留 " + RETENTION_DAYS + " 天。要重计请先全部删除，再重新往下翻。脚本不会自动滚动。"));
+      var completeFollowers = (store.snapshots || []).filter(function (snap) { return snap.kind === "followers" && snap.complete; }).length;
+      var completeFollowing = (store.snapshots || []).filter(function (snap) { return snap.kind === "following" && snap.complete; }).length;
+      var partial = (store.snapshots || []).some(function (snap) { return !snap.complete; });
+      var snapText = "关注变化要有两份完整快照才对比。完整是指：资料或页头给出了人数，20 人及以下必须正好采齐，再多至少要到 95%（向上取整）。人数未知，或只翻了认证粉丝，都先标成未完整，不拿来对比，避免把没翻到的人算成取关。导入的关注者、正在关注按整份名单记，日期用文件名末尾的导出时间。目前完整快照：关注 " + completeFollowing + " 份，粉丝 " + completeFollowers + " 份。";
+      if (completeFollowers < 2 && completeFollowing < 2) snapText += SNAPSHOT_WAITING + "。";
+      if (partial) snapText += " 未完整的那次只留着，不参与对比。";
+      ui.coverage.appendChild(el("p", "muted", snapText));
     }
     if (!norm(ui.owner.value)) {
       ui.results.innerHTML = "";
+      renderKeep([]);
       ui.tzLine.textContent = "先填写你的用户名，或打开自己的主页让脚本从左侧个人主页按钮识别。";
       updateBadge();
       return;
@@ -776,19 +1157,21 @@ function boot() {
     cover += meta.uncovered ? "，" + meta.uncovered + " 天无数据（不算零互动，不进持续性分母）" : "，无数据 0 天";
     ui.tzLine.textContent = cover + " · " + view.result.rows.length + " 个账号";
     ui.results.innerHTML = view.fragment;
+    renderKeep(view.result.rows);
+    attachKeepButtons(view.back && view.back.items);
     updateBadge();
   }
 
   var scanTimer = 0;
   function scheduleScan() {
     if (scanTimer) return;
-    scanTimer = setTimeout(function () { scanTimer = 0; scanCells(); updateBadge(); }, 400);
+    scanTimer = setTimeout(function () { scanTimer = 0; scanCells(); scanTotals(); updateBadge(); }, 400);
   }
   try {
     var observer = new MutationObserver(scheduleScan);
     observer.observe(document.documentElement, {childList: true, subtree: true});
   } catch (err) {}
-  setInterval(function () { scanCells(); updateBadge(); }, 2000);
+  setInterval(function () { scanCells(); scanTotals(); updateBadge(); }, 2000);
 
   if (document.body) mount();
   else document.addEventListener("DOMContentLoaded", mount);

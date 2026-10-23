@@ -4,14 +4,12 @@ import vm from "vm";
 import {fileURLToPath} from "url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const html = fs.readFileSync(path.join(root, "web/index.html"), "utf8");
-const match = html.match(/<script id="fan-audit-engine">([\s\S]*?)<\/script>/);
-if (!match) throw new Error("找不到打分脚本");
+const engineSrc = fs.readFileSync(path.join(root, "engine/fan_audit_engine.js"), "utf8");
 const sandbox = {
   console, Intl, Date, Math, Object, Array, String, Number, RegExp, JSON, isNaN, parseInt
 };
 sandbox.globalThis = sandbox;
-vm.runInNewContext(match[1], sandbox, {filename: "web/index.html"});
+vm.runInNewContext(engineSrc, sandbox, {filename: "engine/fan_audit_engine.js"});
 const fan = sandbox.FanAudit;
 const dir = path.join(root, "sample_data");
 function text(name) {

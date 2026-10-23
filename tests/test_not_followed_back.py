@@ -189,14 +189,17 @@ class TestNotFollowedBack(unittest.TestCase):
         links = re.findall(r'href="([^"]+)"', opened)
         self.assertEqual(links, ["https://x.com/" + item["handle"] for item in web["info"]["items"]])
         self.assertNotIn("<button", opened)
-        page = (ROOT / "web/index.html").read_text(encoding="utf-8")
+        page = (ROOT / "engine/fan_audit_engine.js").read_text(encoding="utf-8")
         self.assertNotIn("https://", page)
         self.assertIn('"https:" + "//x.com/"', page)
-        self.assertIn('["keep", "保留名单"]', page)
+        ui = (ROOT / "userscript/src/ui.mjs").read_text(encoding="utf-8")
+        self.assertIn('["keep", "保留名单"]', ui)
         chunk = page.split("function notFollowedBackHtml", 1)[1].split("root.FanAudit", 1)[0]
         self.assertNotIn("<button", chunk)
         self.assertNotIn("取关选中", page)
         self.assertNotIn("批量取关", page)
+        self.assertNotIn("取关选中", ui)
+        self.assertNotIn("批量取关", ui)
 
     def test_alias_continues_and_public_has_no_link(self):
         info = {"ready": True, "items": [{

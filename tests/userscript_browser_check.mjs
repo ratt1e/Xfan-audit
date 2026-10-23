@@ -59,6 +59,12 @@ if (!host || !host.shadowRoot) {
   rootEl.setAttribute("data-diagsum", diagBox && diagBox.querySelector("summary") ? diagBox.querySelector("summary").textContent : "");
   rootEl.setAttribute("data-copyin", copy && diagBox && copy.parentNode === diagBox ? "yes" : "no");
   rootEl.setAttribute("data-badge", badge ? badge.textContent : "missing");
+  var importer = shadow.getElementById("import-export");
+  var keepBox = shadow.getElementById("keep-box");
+  rootEl.setAttribute("data-import", importer ? importer.textContent : "");
+  rootEl.setAttribute("data-keep", keepBox ? "yes" : "no");
+  rootEl.setAttribute("data-backup", shadow.textContent.indexOf("导入 JSON 备份") >= 0 ? "yes" : "no");
+  rootEl.setAttribute("data-unfollow", (shadow.textContent.indexOf("批量取关") >= 0 || shadow.textContent.indexOf("取关选中") >= 0) ? "yes" : "no");
   if (widen) widen.click();
   rootEl.setAttribute("data-wide", panel && panel.classList.contains("wide") ? "yes" : "no");
   rootEl.setAttribute("data-widentext", widen ? widen.textContent : "");
@@ -134,6 +140,10 @@ if (badge !== "" || wide !== "yes" || widenText !== "退出全屏") {
 }
 if (mask !== "true" || maskText.indexOf("已开") < 0) {
   console.error("mask", mask, maskText);
+  process.exit(1);
+}
+if (attr("import") !== "导入导出文件" || attr("keep") !== "yes" || attr("backup") !== "yes" || attr("unfollow") !== "no") {
+  console.error("import", attr("import"), attr("keep"), attr("backup"), attr("unfollow"));
   process.exit(1);
 }
 console.log("browser panel ok");
