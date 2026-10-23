@@ -18,6 +18,14 @@ import daily_collect  # noqa: E402
 import relationship_stars as rs  # noqa: E402
 
 SAMPLE = ROOT / "sample_data"
+ABSENCE = {"沉睡互关", "零互动", "单向·他常来我少回", "单向·我常去他没回"}
+
+
+def expected_tier(tier, meta):
+    # 这份夹具只有「我发出的回复」。网页在缺一边时不把没采到的日子标成零互动或单向。
+    if meta.get("interactionReady") is False and tier in ABSENCE:
+        return ""
+    return tier
 TZ_ERROR = "时区无效，请用 IANA 名称，例如 Asia/Shanghai"
 
 
@@ -145,14 +153,14 @@ class TestTimezone(unittest.TestCase):
                 self.assertEqual(py_rows[account]["raw"], raw, tz_name)
                 self.assertEqual(web_rows[account]["raw"], py_rows[account]["raw"])
                 self.assertEqual(web_rows[account]["status"], py_rows[account]["status"])
-                self.assertEqual(web_rows[account]["tier"], py_rows[account]["tier"])
+                self.assertEqual(web_rows[account]["tier"], expected_tier(py_rows[account]["tier"], web_meta))
             span_rows, span_meta = python_view(tz_name, "2026-10-18", 2)
             span_web, span_web_meta = web_view(tz_name, "2026-10-18", 2)
             self.assertEqual(span_rows["span_acct"]["raw"], want["span"]["raw"], tz_name)
             self.assertEqual(span_rows["span_acct"]["status"], want["span"]["status"], tz_name)
             self.assertEqual(span_web["span_acct"]["raw"], span_rows["span_acct"]["raw"])
             self.assertEqual(span_web["span_acct"]["status"], span_rows["span_acct"]["status"])
-            self.assertEqual(span_web["span_acct"]["tier"], span_rows["span_acct"]["tier"])
+            self.assertEqual(span_web["span_acct"]["tier"], expected_tier(span_rows["span_acct"]["tier"], span_web_meta))
             self.assertEqual(span_web["span_acct"]["score"], span_rows["span_acct"].get("score"))
             self.assertEqual(span_web_meta["tz"], span_meta["tz"])
         self.assertNotEqual(

@@ -78,6 +78,10 @@ class TestWebScore(unittest.TestCase):
         self.assertEqual(web["meta"]["end"], meta["end"])
         self.assertEqual(web["meta"]["covered"], len(meta["covered_days"]))
         self.assertEqual(web["meta"]["uncovered"], len(meta.get("uncovered_days") or []))
+        self.assertTrue(web["meta"]["interactionReady"])
+        self.assertGreaterEqual(web["meta"]["inboundDays"], 1)
+        self.assertGreaterEqual(web["meta"]["outboundDays"], 1)
+        self.assertGreaterEqual(web["meta"]["talkDays"], 2)
         self.assertEqual(len(web["rows"]), len(expected))
         for got, exp in zip(web["rows"], expected):
             for key in KEYS:
@@ -88,6 +92,43 @@ class TestWebScore(unittest.TestCase):
 
     def test_sample_all_days_matches_python(self):
         self.match("2026-10-19", 30, True)
+
+    def test_lists_only_does_not_invent_absence_tiers(self):
+        node = find_node()
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        spec = Path(folder.name) / "lists.json"
+        spec.write_text(json.dumps({
+            "data": {
+                "rows": [],
+                "following": {"user_01": {"handle": "user_01"}, "user_02": {"handle": "user_02"}},
+                "followers": {"user_01": {"handle": "user_01"}},
+                "profiles": {}
+            },
+            "options": {"me": "demo_owner", "end": "2026-10-19", "days": 30, "gapsAreEmpty": True, "tz": "America/Los_Angeles"}
+        }), encoding="utf-8")
+        web = json.loads(subprocess.check_output(
+            [node, str(ROOT / "tests/web_score_runner.mjs"), "score", str(spec)], cwd=str(ROOT)))
+        self.assertTrue(web["ok"])
+        self.assertFalse(web["meta"]["interactionReady"])
+        self.assertEqual(web["meta"]["inboundDays"], 0)
+        self.assertEqual(web["meta"]["outboundDays"], 0)
+        self.assertEqual(web["meta"]["talkDays"], 0)
+        self.assertIn("互动数据还不够", web["meta"]["interactionNote"])
+        tiers = {row["account"]: row["tier"] for row in web["rows"]}
+        self.assertEqual(tiers["user_01"], "")
+        self.assertTrue(web["rows"][0]["mutual"] or any(row["account"] == "user_01" and row["mutual"] for row in web["rows"]))
+        for row in web["rows"]:
+            self.assertNotIn(row["tier"], ("沉睡互关", "零互动", "单向·他常来我少回", "单向·我常去他没回"))
+        board = self.board(web["rows"], {"interactionReady": False, "interactionNote": web["meta"]["interactionNote"], "extras": [{"id": "not-followed-back", "count": "1", "label": "没回关"}]})
+        html = board["html"]
+        self.assertIn("互动数据还不够", html)
+        self.assertIn(">互关<", html)
+        self.assertIn("没回关", html)
+        self.assertNotIn('data-jump="沉睡互关"', html)
+        self.assertNotIn("不急着取关", html)
+        self.assertNotIn("tier-零互动", html)
+        self.assertNotIn("tier-cards", html)
 
     def test_pages_workflow_is_manual_only(self):
         text = (ROOT / ".github/workflows/pages.yml").read_text(encoding="utf-8")

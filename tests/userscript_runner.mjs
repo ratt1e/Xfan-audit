@@ -5,7 +5,7 @@ import {fileURLToPath} from "url";
 import {
   EMPTY_GUIDE, RETENTION_DAYS, classifyUrl, textForStore, snippet, parseCapture, applyCapture,
   emptyStore, coverageReport, toEngineData, prune, exportBackup, importBackup, contextProblems,
-  installHooks, norm
+  installHooks, pageHookProgram, norm, operationName, listKindFromPath, timelineKindFromPath, userFromVisible, diagnosticsCopy
 } from "../userscript/src/logic.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -47,6 +47,9 @@ check(built.includes("document.cookie") === false, "不读 cookie");
 check(built.includes("scrollBy") === false, "不自动滚动");
 check(built.includes(EMPTY_GUIDE), "空状态文案在安装文件里");
 const meta = "// " + "@";
+check(built.includes(meta + "version      0.1.2"), "版本号");
+check(built.includes(meta + "sandbox      raw"), "要求页面环境");
+check(built.includes(meta + "grant        GM_addElement"), "可以用元素注入把钩子送进页面");
 check(built.includes(meta + "run-at       document-start"), "document-start");
 check(built.includes(meta + "match        *://x.com/*"), "匹配 x.com");
 check(built.includes(meta + "author       " + ("ranger" + "_escape")), "作者署名");
@@ -115,6 +118,8 @@ const user01 = result.rows.filter(function (row) { return row.account === "user_
 check(user01 && user01.verified === true, "认证标记进了打分");
 const user05 = result.rows.filter(function (row) { return row.account === "user_05"; })[0];
 check(user05 && user05.greet_share === 0, "截短后的长文不算问候");
+check(result.meta.interactionReady === true, "两边都有、并且跨了至少两天，才做互动分层");
+check(result.meta.inboundDays >= 1 && result.meta.outboundDays >= 1 && result.meta.talkDays >= 2, "互动天数来自回复，不来自名单");
 check(result.meta.covered === 3, "有数据的天数是 3");
 check(result.meta.uncovered === 27, "没数据的天数不进覆盖");
 check(result.meta.tz === "America/Los_Angeles", "时区按传入的算");
@@ -188,8 +193,8 @@ const quiet = new page.XMLHttpRequest();
 quiet.open("GET", "https://x.com/i/api/1.1/jot/client_event");
 quiet.responseText = "{}";
 quiet.send(null);
-quiet.listeners.load.forEach(function (fn) { fn(); });
-check(seen.length === 1, "非白名单地址不读");
+if (quiet.listeners.load) quiet.listeners.load.forEach(function (fn) { fn(); });
+check(seen.length === 1 && !quiet.listeners.load, "非 GraphQL 地址不读、也不挂监听");
 const fetchUrl = "https://x.com/i/api/graphql/hash/Followers";
 page.bodies[fetchUrl] = JSON.stringify(sample.events[1].body);
 await page.fetch(fetchUrl);
@@ -200,8 +205,224 @@ check(page.XMLHttpRequest.prototype.open === hooks.hookedOpen, "钩子挂在页�
 const fine = contextProblems({page: page, hookedOpen: hooks.hookedOpen, sawPageApp: true});
 check(fine.length === 0, "页面环境和钩子都在时自检通过");
 
+const home = new page.XMLHttpRequest();
+home.open("GET", "https://x.com/i/api/graphql/hash/HomeTimeline");
+home.responseText = "{\"data\":{\"user_01\":true}}";
+home.send(null);
+home.listeners.load.forEach(function (fn) { fn(); });
+check(seen.length === 3 && seen[2].indexOf("HomeTimeline") >= 0 && seen[2].endsWith(" 0"), "未识别的 GraphQL 只记操作名，不读正文");
+check(seen[2].indexOf("user_01") < 0, "未识别响应的正文不会交给上层");
+
+function ThrowingXHR() { this.listeners = {}; this.status = 200; this.response = {data: {ok: 1}}; }
+ThrowingXHR.prototype.open = function () {};
+ThrowingXHR.prototype.send = function () {};
+ThrowingXHR.prototype.addEventListener = function (type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); };
+Object.defineProperty(ThrowingXHR.prototype, "responseText", {get: function () { throw new Error("json"); }});
+const jsonPage = {XMLHttpRequest: ThrowingXHR, fetch: function () { return Promise.resolve({ok: true, clone: function () { return {text: function () { return Promise.resolve(""); }}; }}); }};
+const jsonSeen = [];
+installHooks(jsonPage, function (url, text) { jsonSeen.push(text); });
+const jsonXhr = new jsonPage.XMLHttpRequest();
+jsonXhr.open("GET", "https://x.com/i/api/graphql/hash/Followers");
+jsonXhr.send(null);
+jsonXhr.listeners.load.forEach(function (fn) { fn(); });
+check(jsonSeen.length === 1 && jsonSeen[0].indexOf("\"ok\":1") >= 0, "responseText 读不到时改读 JSON 响应");
+
+const urlPage = makePage();
+const urlSeen = [];
+installHooks(urlPage, function (url, text) { urlSeen.push(url + " " + text.length); });
+const followersUrl = "https://x.com/i/api/graphql/hash/Followers";
+urlPage.bodies[followersUrl] = "{\"ok\":true}";
+await urlPage.fetch({href: followersUrl});
+await new Promise(function (resolve) { setTimeout(resolve, 0); });
+check(urlSeen.length === 1 && urlSeen[0].indexOf(followersUrl) === 0, "fetch 的 URL 对象也能读到地址");
+
+const early = parseCapture("https://x.com/i/api/graphql/hash/Followers", JSON.stringify(sample.events[1].body), {owner: ""});
+check(early.skip === "还不知道你的用户名" && early.users.length === 0, "还不知道用户名时先不要收下粉丝");
+const later = parseCapture("https://x.com/i/api/graphql/hash/Followers", JSON.stringify(sample.events[1].body), {owner: sample.owner});
+check(later.skip === "" && later.users.length > 0, "知道用户名之后同一份响应能收下");
+
+const moved = JSON.parse(JSON.stringify(sample.events[1].body));
+moved.data.user.result.timeline_v2 = moved.data.user.result.timeline;
+delete moved.data.user.result.timeline;
+const movedCap = parseCapture("https://x.com/i/api/graphql/hash/Followers", JSON.stringify(moved), {owner: sample.owner});
+check(movedCap.skip === "" && movedCap.users.length > 0, "时间线改到 timeline_v2 仍能收下");
+
+check(listKindFromPath("/demo_owner/verified_followers", "demo_owner") === "blue-followers", "认证粉丝页路径");
+check(listKindFromPath("/user_02/followers", "demo_owner") === "", "别人的粉丝页不算自己的名单");
+check(listKindFromPath("/demo_owner/followers", "") === "", "没有用户名时不从路径猜");
+const visible = userFromVisible(["/user_12"], "演示甲\n@user_12", true);
+check(visible && visible.handle === "user_12" && visible.verified === true && visible.id === "", "页面格子只留下短字段");
+const domStore = emptyStore();
+domStore.prefs.owner = "demo_owner";
+applyCapture(domStore, {kind: "followers", skip: "", posts: [], users: [visible]}, Date.parse("2026-10-22T00:00:00Z"));
+applyCapture(domStore, {kind: "followers", skip: "", posts: [], users: [{id: "1000012", handle: "user_12", name: "演示甲", verified: true, followers: 3}]}, Date.parse("2026-10-22T00:00:00Z"));
+check(Object.keys(domStore.followers).length === 1 && domStore.followers["id:1000012"].followers === 3, "格子和接口里的同一个人合成一条");
+
+const copied = diagnosticsCopy({
+  hook: "page-script",
+  world: "raw",
+  sameRealm: false,
+  pageApp: true,
+  graphqlSeen: 3,
+  matched: {Followers: 2, BlueVerifiedFollowers: 1},
+  unmatched: ["HomeTimeline", "user_01"],
+  domAccepted: 4,
+  ownerDetected: true,
+  storedPosts: 0,
+  storedFollowing: 1,
+  storedFollowers: 4,
+  skips: {"还不知道你的用户名": 1, "demo_owner": 2}
+});
+check(copied.indexOf("Followers=2") >= 0 && copied.indexOf("BlueVerifiedFollowers=1") >= 0, "诊断复制件有接口次数");
+check(copied.indexOf("HomeTimeline") >= 0 && copied.indexOf("user_01") < 0 && copied.indexOf("demo_owner") < 0 && copied.indexOf("@") < 0, "诊断复制件丢掉账号名");
+check(copied.indexOf("ownerDetected=yes") >= 0, "诊断只报告有没有认出用户名");
+const byOp = diagnosticsCopy({
+  hook: "page",
+  world: "raw",
+  sameRealm: true,
+  pageApp: true,
+  graphqlSeen: 9,
+  matched: {UserRepliesTimeline: 7},
+  unmatched: [],
+  skipsByOp: {
+    UserRepliesTimeline: {"不是你的主页时间线": 7},
+    ProfileSpotlightsQuery: {"不在采集名单": 12},
+    user_01: {"demo_owner": 2}
+  }
+});
+check(byOp.indexOf("UserRepliesTimeline:不是你的主页时间线=7") >= 0, "跳过按接口拆开");
+check(byOp.indexOf("ProfileSpotlightsQuery:不在采集名单=12") >= 0, "不在名单的接口单独计数");
+check(byOp.indexOf("user_01") < 0 && byOp.indexOf("demo_owner") < 0, "按接口拆开的诊断也不带账号名");
+
+const events = [];
+const hookPage = makePage();
+const sandbox = {
+  URL: URL,
+  JSON: JSON,
+  Promise: Promise,
+  CustomEvent: function CustomEvent(type, init) { this.type = type; this.detail = init && init.detail; },
+  document: {
+    documentElement: {setAttribute: function () {}, getAttribute: function () { return "page"; }},
+    dispatchEvent: function (event) { events.push(event); }
+  }
+};
+sandbox.window = sandbox;
+sandbox.XMLHttpRequest = hookPage.XMLHttpRequest;
+sandbox.fetch = hookPage.fetch;
+vm.runInContext(pageHookProgram(), vm.createContext(sandbox), {filename: "page-hook.js"});
+check(sandbox.__fanAuditPageHook === 1, "页面钩子脚本能执行");
+check(pageHookProgram().indexOf("document.cookie") < 0 && pageHookProgram().indexOf("GM_") < 0, "注进页面的钩子不读 cookie、不用 GM");
+const hookedXhr = new sandbox.XMLHttpRequest();
+hookedXhr.open("GET", "https://x.com/i/api/graphql/hash/Following");
+hookedXhr.responseText = "{\"data\":{}}";
+hookedXhr.send(null);
+hookedXhr.listeners.load.forEach(function (fn) { fn(); });
+check(events.length === 1 && events[0].detail.url.indexOf("Following") >= 0 && events[0].detail.text.indexOf("data") >= 0, "页面里的钩子用事件把响应交回来");
+check(operationName(events[0].detail.url) === "Following", "事件里能取出操作名");
+
 const maskedNames = fan.boardHtml(result.rows, {masked: true});
 check(maskedNames.split("tier-").length > 2, "分层卡片还在");
+check(maskedNames.indexOf("color:#1F2937") < 0, "看板片段本身不写死颜色，颜色在样式里");
+check(built.indexOf(".num{font-size:32px;font-weight:700;color:#1F2937}") >= 0, "分层数字用深色，不靠按钮默认字色");
+check(built.indexOf("别人回我") >= 0 && built.indexOf("f=live") >= 0 && built.indexOf("别一次翻太久") >= 0, "采集清单和限流说明在安装文件里");
+check(built.indexOf("GM_openInTab") < 0 && built.indexOf("GM_xmlhttpRequest") < 0, "清单只是普通链接，脚本不自己打开也不自己请求");
+
+check(timelineKindFromPath("/demo_owner/with_replies", "demo_owner") === "replies", "主页回复页路径");
+check(timelineKindFromPath("/demo_owner", "demo_owner") === "originals", "自己的主页路径");
+check(timelineKindFromPath("/demo_owner/followers", "demo_owner") === "", "粉丝页不是主页时间线");
+check(classifyUrl("https://x.com/i/api/graphql/hash/NotificationsTimeline") === "notifications", "通知时间线在采集名单里");
+
+function bareTweet(id, handle, uid, text, replyTo, replyToHandle, created) {
+  return {
+    __typename: "Tweet",
+    rest_id: id,
+    core: {user_results: {result: {__typename: "User", rest_id: uid, core: {name: handle, screen_name: handle}}}},
+    legacy: {
+      id_str: id,
+      full_text: text,
+      created_at: created,
+      in_reply_to_status_id_str: replyTo || null,
+      in_reply_to_screen_name: replyToHandle || null,
+      conversation_id_str: replyTo || id
+    }
+  };
+}
+function repliesPayload(screenName) {
+  const person = {__typename: "User", rest_id: "1000001", core: {name: "演示主人"}};
+  if (screenName) person.core.screen_name = screenName;
+  person.timeline = {timeline: {instructions: [{type: "TimelineAddEntries", entries: [{
+    entryId: "profile-conversation-1008001",
+    content: {
+      entryType: "TimelineTimelineModule",
+      items: [
+        {entryId: "profile-conversation-1008001-tweet-1008001", item: {itemContent: {tweet_results: {result: bareTweet("1008001", "user_09", "1000009", "父帖正文不是回复", "", "", "Sun Oct 18 16:00:00 +0000 2026")}}}},
+        {entryId: "profile-conversation-1008001-tweet-1008002", item: {itemContent: {tweet_results: {result: bareTweet("1008002", "demo_owner", "1000001", "这是认真回复父帖的一句", "1008001", "user_09", "Mon Oct 19 16:00:00 +0000 2026")}}}}
+      ]
+    }
+  }]}]}};
+  return {data: {user: {result: person}}};
+}
+const nameless = parseCapture("https://x.com/i/api/graphql/hash/UserRepliesTimeline", JSON.stringify(repliesPayload("")), {owner: "demo_owner", pagePath: "/demo_owner/with_replies"});
+check(nameless.skip === "" && nameless.posts.length === 2, "主页用户对象没有用户名时，用当前回复页路径收下");
+const parent = nameless.posts.filter(function (post) { return post.id === "1008001"; })[0];
+const mine = nameless.posts.filter(function (post) { return post.id === "1008002"; })[0];
+check(parent && !parent.replyTo && mine && mine.replyTo === "1008001" && mine.replyToHandle === "user_09", "对话模块留下父帖和自己的回复目标");
+const moduleRows = fan.repliesFromTweets(nameless.posts.map(function (post) {
+  return {id: post.id, screen_name: post.handle, in_reply_to: post.replyTo, in_reply_to_screen_name: post.replyToHandle, created_at: post.ts, full_text: post.text, conversation_id: post.conv};
+}), "demo_owner");
+check(moduleRows.length === 1 && moduleRows[0].direction === "out" && moduleRows[0].account === "user_09", "父帖不算别人回我，只记自己发出的回复");
+const namedOther = parseCapture("https://x.com/i/api/graphql/hash/UserRepliesTimeline", JSON.stringify(repliesPayload("user_09")), {owner: "demo_owner", pagePath: "/demo_owner/with_replies"});
+check(namedOther.skip === "不是你的主页时间线" && namedOther.posts.length === 0, "响应里写明是别人的主页时仍然跳过");
+const wrongPath = parseCapture("https://x.com/i/api/graphql/hash/UserRepliesTimeline", JSON.stringify(repliesPayload("")), {owner: "demo_owner", pagePath: "/user_09/with_replies"});
+check(wrongPath.skip === "不是你的主页时间线", "没有用户名、路径也不是自己的回复页时跳过");
+const fromVars = "https://x.com/i/api/graphql/hash/UserRepliesTimeline?variables=" + encodeURIComponent(JSON.stringify({screen_name: "demo_owner"}));
+const namedByRequest = parseCapture(fromVars, JSON.stringify(repliesPayload("")), {owner: "demo_owner", pagePath: ""});
+check(namedByRequest.skip === "" && namedByRequest.posts.length === 2, "请求参数里的用户名可以补上主页时间线");
+
+const notice = {data: {viewer_v2: {user_results: {result: {notification_timeline: {timeline: {instructions: [{type: "TimelineAddEntries", entries: [
+  {entryId: "notification-1", content: {itemContent: {tweet_results: {result: bareTweet("1008101", "user_04", "1000005", "回复了你的帖", "1003001", "demo_owner", "Tue Oct 20 16:00:00 +0000 2026")}}}},
+  {entryId: "notification-2", content: {itemContent: {tweet_results: {result: bareTweet("1008102", "user_03", "1000004", "这是别人之间的回复", "1008109", "user_05", "Tue Oct 20 16:00:00 +0000 2026")}}}}
+]}]}}}}}}};
+const noted = parseCapture("https://x.com/i/api/graphql/hash/NotificationsTimeline", JSON.stringify(notice), {owner: "demo_owner"});
+check(noted.skip === "" && noted.posts.length === 1 && noted.posts[0].id === "1008101" && noted.posts[0].src === "notifications", "通知里只留下回复你的那条");
+
+function absenceOpts(rows) {
+  return fan.analyze({
+    rows: rows,
+    following: {user_01: {handle: "user_01"}, user_02: {handle: "user_02"}},
+    followers: {user_01: {handle: "user_01"}},
+    profiles: {}
+  }, {me: "demo_owner", end: "2026-10-19", days: 30, gapsAreEmpty: true, tz: "America/Los_Angeles"});
+}
+const listsOnly = absenceOpts([]);
+check(listsOnly.meta.interactionReady === false && listsOnly.meta.talkDays === 0, "只有名单时互动分层不启用");
+check(listsOnly.meta.inboundDays === 0 && listsOnly.meta.outboundDays === 0, "名单不算互动天数");
+check(listsOnly.rows.every(function (row) {
+  return row.tier !== "沉睡互关" && row.tier !== "零互动" && row.tier.indexOf("单向") !== 0;
+}), "只有名单时不标沉睡、零互动或单向");
+const mutualOnly = listsOnly.rows.filter(function (row) { return row.account === "user_01"; })[0];
+check(mutualOnly && mutualOnly.mutual === true, "互关仍然算得出来");
+const thinHtml = fan.boardHtml(listsOnly.rows, {interactionReady: false, interactionNote: listsOnly.meta.interactionNote, extras: [{id: "not-followed-back", count: "1", label: "没回关"}]});
+check(thinHtml.indexOf('data-jump="沉睡互关"') < 0 && thinHtml.indexOf("不急着取关") < 0 && thinHtml.indexOf('id="tier-') < 0, "名单不足时看板不写沉睡互关");
+check(thinHtml.indexOf("互动数据还不够") >= 0 && thinHtml.indexOf("互关") >= 0 && thinHtml.indexOf("没回关") >= 0, "看板留下互关和没回关，并说明互动不够");
+const outboundOnly = absenceOpts([
+  {id: "a", tweet_id: "1", ts: "2026-10-17T16:00:00Z", account: "user_01", direction: "out", type: "reply", text: "第一句认真回复"},
+  {id: "b", tweet_id: "2", ts: "2026-10-18T16:00:00Z", account: "user_01", direction: "out", type: "reply", text: "第二句认真回复"},
+  {id: "c", tweet_id: "3", ts: "2026-10-19T16:00:00Z", account: "user_01", direction: "out", type: "reply", text: "第三句认真回复"}
+]);
+check(outboundOnly.meta.interactionReady === false && outboundOnly.meta.outboundDays === 3 && outboundOnly.meta.inboundDays === 0, "只有我发出的回复时还不够");
+check(outboundOnly.rows.every(function (row) { return row.tier.indexOf("单向") !== 0 && row.tier !== "沉睡互关"; }), "缺了别人回我就不标单向或沉睡");
+const sameDay = absenceOpts([
+  {id: "d", tweet_id: "4", ts: "2026-10-19T16:00:00Z", account: "user_01", direction: "out", type: "reply", text: "同一天发出的回复"},
+  {id: "e", tweet_id: "5", ts: "2026-10-19T18:00:00Z", account: "user_01", direction: "in", type: "reply", text: "同一天别人的回复"}
+]);
+check(sameDay.meta.interactionReady === false && sameDay.meta.talkDays === 1 && sameDay.meta.inboundDays === 1 && sameDay.meta.outboundDays === 1, "两边挤在同一天仍然太薄");
+const enough = absenceOpts([
+  {id: "f", tweet_id: "6", ts: "2026-10-18T16:00:00Z", account: "user_02", direction: "out", type: "reply", text: "前一天发出的回复"},
+  {id: "g", tweet_id: "7", ts: "2026-10-19T16:00:00Z", account: "user_02", direction: "in", type: "reply", text: "后一天别人的回复"}
+]);
+const quietMutual = enough.rows.filter(function (row) { return row.account === "user_01"; })[0];
+check(enough.meta.interactionReady === true && quietMutual && quietMutual.tier === "沉睡互关", "两边跨了两天才把没说话的互关标成沉睡");
 
 if (failed) {
   console.error(failed + " checks failed");

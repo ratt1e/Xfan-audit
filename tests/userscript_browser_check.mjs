@@ -32,8 +32,20 @@ if (!host || !host.shadowRoot) {
   var empty = shadow.getElementById("empty-guide");
   var footer = shadow.querySelector("footer");
   var mask = shadow.getElementById("mask");
+  var list = shadow.getElementById("checklist");
+  var leaked = "";
+  if (list) {
+    var anchors = list.querySelectorAll("a");
+    for (var n = 0; n < anchors.length; n++) {
+      if (anchors[n].getAttribute("target")) leaked = anchors[n].getAttribute("target");
+    }
+  }
   rootEl.setAttribute("data-guide", empty ? empty.textContent : "");
   rootEl.setAttribute("data-footer", footer ? footer.textContent : "");
+  rootEl.setAttribute("data-checklist", list ? "yes" : "no");
+  rootEl.setAttribute("data-limit", list && list.textContent.indexOf("别一次翻太久") >= 0 ? "yes" : "no");
+  rootEl.setAttribute("data-miss", list && list.textContent.indexOf("未采集") >= 0 ? "yes" : "no");
+  rootEl.setAttribute("data-target", leaked);
   mask.click();
   rootEl.setAttribute("data-mask", mask.getAttribute("aria-pressed") || "");
   rootEl.setAttribute("data-masktext", mask.textContent || "");
@@ -67,6 +79,10 @@ const gotGuide = attr("guide");
 const footer = attr("footer");
 const mask = attr("mask");
 const maskText = attr("masktext");
+const checklist = attr("checklist");
+const limit = attr("limit");
+const miss = attr("miss");
+const target = attr("target");
 if (probe !== "ok") {
   console.error(dom.slice(0, 1500));
   console.error("panel probe", probe || "missing");
@@ -78,6 +94,10 @@ if (gotGuide !== guide) {
 }
 if (footer !== "fan-audit（油猴版）· GitHub 开源") {
   console.error("footer", footer);
+  process.exit(1);
+}
+if (checklist !== "yes" || limit !== "yes" || miss !== "yes" || target) {
+  console.error("checklist", checklist, limit, miss, target);
   process.exit(1);
 }
 if (mask !== "true" || maskText.indexOf("已开") < 0) {

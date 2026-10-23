@@ -194,7 +194,20 @@ class TestDashboardRange(unittest.TestCase):
         viewed = run_view(target / "dashboard.html")
         self.assertEqual(viewed["meta"]["covered"], 2)
         self.assertEqual(viewed["meta"]["uncovered"], 1)
-        self.assert_rows(viewed["rows"], expected)
+        self.assertFalse(viewed["meta"]["interactionReady"])
+        absence = {"沉睡互关", "零互动", "单向·他常来我少回", "单向·我常去他没回"}
+        for row in expected:
+            if row.get("tier") in absence:
+                row["tier"] = ""
+                row["action"] = ""
+        order = ["金牌", "银牌", "单向·他常来我少回", "单向·我常去他没回", "沉睡互关", "样本不足", "其他有分", "零互动"]
+
+        def sort_key(row):
+            tier = row.get("tier") or ""
+            idx = order.index(tier) if tier in order else -1
+            return (idx, -(row.get("priority") or 0), row.get("account") or "")
+
+        self.assert_rows(viewed["rows"], sorted(expected, key=sort_key))
         public = (target / "dashboard_public.html").read_text(encoding="utf-8")
         self.assertNotIn("user_", public)
         self.assertNotIn("9100001", public)

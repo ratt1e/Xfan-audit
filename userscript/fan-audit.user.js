@@ -1,15 +1,17 @@
 // ==UserScript==
 // @name         fan-audit 粉丝体检
 // @namespace    https://github.com/ratt1e/Xfan-audit
-// @version      0.1.0
+// @version      0.1.2
 // @description  在 X 上边逛边记下公开回复和关注名单，在页面里出粉丝体检。只读，不自己发请求，不自动翻页。
 // @author       ranger_escape
 // @match        *://x.com/*
 // @match        *://twitter.com/*
 // @run-at       document-start
+// @sandbox      raw
 // @grant        unsafeWindow
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_addElement
 // @updateURL    https://raw.githubusercontent.com/ratt1e/Xfan-audit/main/userscript/fan-audit.user.js
 // @downloadURL  https://raw.githubusercontent.com/ratt1e/Xfan-audit/main/userscript/fan-audit.user.js
 // @license      MIT
@@ -297,6 +299,32 @@ var root = {};
     res.stars = stars; res.greet_cap = capped;
     return res;
   }
+  var ABSENCE_TIERS = {"沉睡互关": 1, "零互动": 1, "单向·他常来我少回": 1, "单向·我常去他没回": 1};
+  var INTERACTION_THIN = "互动数据还不够，先去主页回复页和「别人回我」搜索页滑几屏";
+  // 互动天数只数回复（出=我发出的，入=别人回我）。关注/粉丝名单不产生这些行，所以不算覆盖。
+  // 门槛：两边都至少 1 天，并且合计至少 2 个不同日期（与样本不足的最少天数同一量级）。
+  // 只有一边，或两边挤在同一天，都不能把没采到的日子当成零互动。
+  function interactionCoverage(rows, start, end) {
+    var daysIn = {}, daysOut = {}, talkDays = {};
+    rows.forEach(function (r) {
+      if (!TALK[r.type]) return;
+      var day = r.day;
+      if (!day || day < start || day > end) return;
+      if (r.direction === "in") daysIn[day] = 1;
+      else if (r.direction === "out") daysOut[day] = 1;
+      else return;
+      talkDays[day] = 1;
+    });
+    var inboundDays = Object.keys(daysIn).length;
+    var outboundDays = Object.keys(daysOut).length;
+    var days = Object.keys(talkDays).length;
+    return {
+      inboundDays: inboundDays,
+      outboundDays: outboundDays,
+      talkDays: days,
+      interactionReady: inboundDays >= 1 && outboundDays >= 1 && days >= 2
+    };
+  }
   function classify(x) {
     var g = CONFIG.tiers.gold, s = CONFIG.tiers.silver, o = CONFIG.tiers.one_way;
     var their = x.I_raw || 0, rounds = x.rounds || 0;
@@ -367,6 +395,7 @@ var root = {};
     Object.keys(data.following || {}).forEach(function (a) { if (!excl[a]) accounts[a] = 1; });
     Object.keys(data.followers || {}).forEach(function (a) { if (!excl[a]) accounts[a] = 1; });
     var pb = CONFIG.tiers.priority_bonus;
+    var talk = interactionCoverage(prep, start, end);
     var res = Object.keys(accounts).sort().map(function (a) {
       var x = score(by[a] || [], start, end, CONFIG.likes.time_mode, observed);
       x.account = a;
@@ -379,9 +408,12 @@ var root = {};
       var count = parseInt(p.followers_count || f.followers_count || 0, 10);
       x.followers_count = isNaN(count) || !count ? null : count;
       x.tier = classify(x);
+      if (!talk.interactionReady && ABSENCE_TIERS[x.tier]) {
+        x.tier = "";
+        x.action = "";
+      } else x.action = action(x);
       var bonus = pb.mutual * (x.mutual ? 1 : 0) + pb.verified * (x.verified ? 1 : 0) + pb.followers_log10_max * Math.min(1, Math.log10((x.followers_count || 0) + 1) / 4);
       x.priority = pyRound((x.score || 0) + bonus, 1);
-      x.action = action(x);
       return x;
     });
     res.sort(function (a, b) {
@@ -393,7 +425,7 @@ var root = {};
     var span = [];
     for (var i = 0; i <= dayNum(end) - dayNum(start); i++) span.push(addDays(start, i));
     var covered = observed ? span.filter(function (d) { return observed[d]; }) : span.slice();
-    return {rows: res, meta: {start: start, end: end, days: days, tz: tz, covered: covered.length, uncovered: span.length - covered.length, gapsAreEmpty: !!options.gapsAreEmpty}};
+    return {rows: res, meta: {start: start, end: end, days: days, tz: tz, covered: covered.length, uncovered: span.length - covered.length, gapsAreEmpty: !!options.gapsAreEmpty, inboundDays: talk.inboundDays, outboundDays: talk.outboundDays, talkDays: talk.talkDays, interactionReady: talk.interactionReady, interactionNote: talk.interactionReady ? "" : INTERACTION_THIN}};
   }
   function usersFrom(records) {
     var map = {};
@@ -660,16 +692,24 @@ var root = {};
     TIERS.forEach(function (t) { count[t] = 0; });
     rows.forEach(function (x) { count[x.tier] = (count[x.tier] || 0) + 1; });
     var mutual = rows.filter(function (x) { return x.mutual; }).length;
+    function statCards() {
+      var html = '<div class="grid stat-cards"><div class="card stat-card"><div class="num">' + mutual + '</div><div class="lab">互关</div><div class="tag">统计</div></div>';
+      (options.extras || []).forEach(function (item) {
+        html += '<button type="button" class="card tier-card" data-jump-id="' + escHtml(item.id) + '" data-count="' + escHtml(item.count) + '"><div class="num">' + escHtml(item.count) + '</div><div class="lab">' + escHtml(item.label) + "</div></button>";
+      });
+      return html + "</div>";
+    }
+    if (options.interactionReady === false) {
+      var note = options.interactionNote || INTERACTION_THIN;
+      var why = "分层门槛：至少 1 天有你发出的回复，并且至少 1 天有别人回复你，两边合计不少于 2 个不同日期。只采到关注或粉丝名单时，这些天是无数据，不会把互关记成沉睡互关、零互动或单向。";
+      return '<div class="warn" id="interaction-thin">' + escHtml(note) + '</div><p class="muted">' + escHtml(why) + "</p>" + statCards();
+    }
     var cards = '<div class="grid tier-cards">';
     TIERS.forEach(function (t) {
       var n = count[t] || 0;
       cards += '<button type="button" class="card tier-card' + (n ? "" : " empty") + '" data-jump="' + escHtml(t) + '" data-count="' + n + '"><div class="num">' + n + "</div><div class=\"lab\">" + escHtml(t) + "</div></button>";
     });
-    cards += '</div><div class="grid stat-cards"><div class="card stat-card"><div class="num">' + mutual + '</div><div class="lab">互关</div><div class="tag">统计</div></div>';
-    (options.extras || []).forEach(function (item) {
-      cards += '<button type="button" class="card tier-card" data-jump-id="' + escHtml(item.id) + '" data-count="' + escHtml(item.count) + '"><div class="num">' + escHtml(item.count) + '</div><div class="lab">' + escHtml(item.label) + "</div></button>";
-    });
-    cards += "</div>";
+    cards += "</div>" + statCards();
     cards += '<p id="jump-note" class="muted"></p>';
     function bars(items, jump) {
       var max = 0;
@@ -956,7 +996,7 @@ var root = {};
       });
       extras.push({id: "follow-diff", count: changeSeen ? String(changeTotal) : "—", label: "关注变化"});
     }
-    var html = boardHtml(rows, {masked: !!options.masked, open: options.open || {}, extras: extras, showAll: !!options.showAll});
+    var html = boardHtml(rows, {masked: !!options.masked, open: options.open || {}, extras: extras, showAll: !!options.showAll, interactionReady: result.meta.interactionReady !== false, interactionNote: result.meta.interactionNote || ""});
     if (back) html += notFollowedBackHtml(back, {masked: !!options.masked, rows: rows});
     if (diff) html += followDiffHtml(diff, {masked: !!options.masked, rows: rows});
     return {html: html, rows: rows, meta: result.meta, back: back, diff: diff};
@@ -993,7 +1033,8 @@ var OPS = {
   BlueVerifiedFollowers: "blue-followers",
   Following: "following",
   TweetDetail: "detail",
-  ModeratedTimeline: "detail"
+  ModeratedTimeline: "detail",
+  NotificationsTimeline: "notifications"
 };
 
 var POST_FIELDS = ["id", "uid", "handle", "name", "verified", "replyTo", "replyToHandle", "conv", "ts", "text", "src", "seen"];
@@ -1013,10 +1054,132 @@ function norm(value) {
   return String(value || "").trim().replace(/^@/, "").trim().toLowerCase();
 }
 
-function classifyUrl(url) {
+function operationName(url) {
   var match = String(url || "").match(/\/graphql\/[^/?#]+\/([A-Za-z0-9_]+)/);
-  if (!match) return "";
-  return OPS[match[1]] || "";
+  return match ? match[1] : "";
+}
+
+function classifyUrl(url) {
+  return OPS[operationName(url)] || "";
+}
+
+function listKindFromPath(pathname, owner) {
+  var me = norm(owner);
+  if (!me) return "";
+  var match = String(pathname || "").match(/^\/([A-Za-z0-9_]{1,15})\/(followers|verified_followers|following)\/?$/);
+  if (!match || norm(match[1]) !== me) return "";
+  if (match[2] === "following") return "following";
+  if (match[2] === "verified_followers") return "blue-followers";
+  return "followers";
+}
+
+function timelineKindFromPath(pathname, owner) {
+  var me = norm(owner);
+  if (!me) return "";
+  var match = String(pathname || "").match(/^\/([A-Za-z0-9_]{1,15})(\/with_replies)?\/?$/);
+  if (!match || norm(match[1]) !== me) return "";
+  return match[2] ? "replies" : "originals";
+}
+
+function userFromVisible(hrefs, nameText, verified) {
+  var handle = "";
+  var text = String(nameText || "");
+  var at = text.match(/@([A-Za-z0-9_]{1,15})/);
+  if (at) handle = at[1];
+  var list = hrefs || [];
+  for (var i = 0; i < list.length && !handle; i++) {
+    var match = String(list[i] || "").match(/^\/([A-Za-z0-9_]{1,15})\/?$/);
+    if (match) handle = match[1];
+  }
+  handle = norm(handle);
+  if (!handle) return null;
+  var name = "";
+  var parts = text.split(/@/);
+  if (parts.length) name = parts[0].replace(/\s+/g, " ").trim().slice(0, 40);
+  return {id: "", handle: handle, name: name, verified: !!verified, followers: 0};
+}
+
+var SKIP_OK = {
+  "不在采集名单": 1,
+  "响应不是 JSON": 1,
+  "不是你的关注或粉丝列表": 1,
+  "不是你的主页时间线": 1,
+  "还不知道你的用户名": 1,
+  "搜索不是 to:你的用户名": 1
+};
+
+function safeOp(value) {
+  var text = String(value || "");
+  return /^[A-Z][A-Za-z0-9]{1,60}$/.test(text) ? text : "";
+}
+
+function safeCode(value) {
+  var text = String(value || "").toLowerCase().replace(/_/g, "-");
+  return /^[a-z0-9-]{1,24}$/.test(text) ? text : "unknown";
+}
+
+function diagnosticsCopy(state) {
+  state = state || {};
+  var matched = [];
+  Object.keys(state.matched || {}).sort().forEach(function (key) {
+    var op = safeOp(key);
+    if (!op) return;
+    matched.push(op + "=" + (state.matched[key] | 0));
+  });
+  var unmatched = [];
+  (state.unmatched || []).forEach(function (key) {
+    var op = safeOp(key);
+    if (op && unmatched.indexOf(op) < 0) unmatched.push(op);
+  });
+  var skips = [];
+  var byOp = state.skipsByOp || {};
+  var opKeys = Object.keys(byOp);
+  if (opKeys.length) {
+    opKeys.sort().forEach(function (rawOp) {
+      var op = safeOp(rawOp) || "other";
+      var reasons = byOp[rawOp] || {};
+      Object.keys(reasons).sort().forEach(function (reason) {
+        var label = SKIP_OK[reason] ? reason : "other";
+        skips.push(op + ":" + label + "=" + (reasons[reason] | 0));
+      });
+    });
+  } else {
+    Object.keys(state.skips || {}).sort().forEach(function (key) {
+      var label = SKIP_OK[key] ? key : "other";
+      var count = state.skips[key] | 0;
+      var found = false;
+      for (var i = 0; i < skips.length; i++) {
+        if (skips[i].label === label) { skips[i].count += count; found = true; }
+      }
+      if (!found) skips.push({label: label, count: count});
+    });
+    skips = skips.map(function (item) { return item.label + "=" + item.count; });
+  }
+  return [
+    "fan-audit diagnostics",
+    "hook=" + safeCode(state.hook),
+    "world=" + safeCode(state.world),
+    "sameRealm=" + (state.sameRealm ? "yes" : "no"),
+    "pageApp=" + (state.pageApp ? "yes" : "no"),
+    "graphqlSeen=" + (state.graphqlSeen | 0),
+    "matched=" + (matched.join(",") || "none"),
+    "unmatched=" + (unmatched.join(",") || "none"),
+    "domAccepted=" + (state.domAccepted | 0),
+    "ownerDetected=" + (state.ownerDetected ? "yes" : "no"),
+    "storedPosts=" + (state.storedPosts | 0),
+    "storedFollowing=" + (state.storedFollowing | 0),
+    "storedFollowers=" + (state.storedFollowers | 0),
+    "skips=" + (skips.join(",") || "none")
+  ].join("\n");
+}
+
+function sameRealm(page) {
+  try {
+    if (!page) return false;
+    if (typeof window !== "undefined" && page === window) return true;
+    if (typeof XMLHttpRequest === "function" && page.XMLHttpRequest === XMLHttpRequest) return true;
+  } catch (err) {}
+  return false;
 }
 
 function coreLen(text) {
@@ -1057,11 +1220,14 @@ function toIso(raw) {
 
 function readUser(user) {
   if (!user || typeof user !== "object") return null;
+  if (user.result && typeof user.result === "object" && !user.rest_id && !user.restId && !user.core && !user.legacy) {
+    return readUser(user.result);
+  }
   if (user.__typename === "UserUnavailable") return null;
   var core = user.core || {};
   var legacy = user.legacy || {};
-  var handle = core.screen_name || legacy.screen_name || "";
-  var id = String(user.rest_id || legacy.id_str || "");
+  var handle = core.screen_name || core.screenName || legacy.screen_name || legacy.screenName || user.screen_name || "";
+  var id = String(user.rest_id || user.restId || legacy.id_str || "");
   if (!handle && !id) return null;
   var counts = user.relationship_counts || {};
   var followers = counts.followers;
@@ -1112,8 +1278,9 @@ function fromItemContent(content, tweets, users) {
     var tweet = readTweet(content.tweet_results.result);
     if (tweet) tweets.push(tweet);
   }
-  if (content.user_results) {
-    var user = readUser(content.user_results.result);
+  var userNode = content.user_results || content.userResults;
+  if (userNode) {
+    var user = readUser(userNode.result || userNode);
     if (user && (user.handle || user.id)) users.push(user);
   }
 }
@@ -1174,23 +1341,79 @@ function collect(instructions) {
 
 function readProfile(json) {
   var user = json && json.data && json.data.user && json.data.user.result;
+  if (user && user.result && !user.rest_id && !user.restId && !user.core && !user.legacy) user = user.result;
   return readUser(user);
+}
+
+function looksLikeInstructions(list) {
+  if (!Array.isArray(list) || !list.length) return false;
+  for (var i = 0; i < list.length; i++) {
+    var item = list[i];
+    if (item && (item.entries || item.entry || item.moduleItems || item.type)) return true;
+  }
+  return false;
+}
+
+function findInstructions(node, depth) {
+  if (!node || depth > 7 || typeof node !== "object") return null;
+  if (looksLikeInstructions(node.instructions)) return node.instructions;
+  var keys = ["user", "result", "timeline", "timeline_v2", "search_timeline", "search_by_raw_query", "tweet", "timeline_response"];
+  for (var i = 0; i < keys.length; i++) {
+    if (node[keys[i]] && typeof node[keys[i]] === "object") {
+      var found = findInstructions(node[keys[i]], depth + 1);
+      if (found) return found;
+    }
+  }
+  return null;
 }
 
 function readInstructions(json, kind) {
   var data = (json && json.data) || {};
+  var specific = [];
   if (kind === "search") {
     var search = data.search_by_raw_query && data.search_by_raw_query.search_timeline && data.search_by_raw_query.search_timeline.timeline;
-    return (search && search.instructions) || [];
-  }
-  if (kind === "detail") {
+    specific = (search && search.instructions) || [];
+  } else if (kind === "detail") {
     var thread = data.threaded_conversation_with_injections_v2;
-    if (thread && thread.instructions) return thread.instructions;
-    var moderated = data.tweet && data.tweet.result && data.tweet.result.timeline_response && data.tweet.result.timeline_response.timeline;
-    return (moderated && moderated.instructions) || [];
+    if (thread && thread.instructions) specific = thread.instructions;
+    else {
+      var moderated = data.tweet && data.tweet.result && data.tweet.result.timeline_response && data.tweet.result.timeline_response.timeline;
+      specific = (moderated && moderated.instructions) || [];
+    }
+  } else if (kind === "notifications") {
+    var viewer = (data.viewer_v2 && data.viewer_v2.user_results && data.viewer_v2.user_results.result)
+      || (data.viewer && data.viewer.user_results && data.viewer.user_results.result)
+      || null;
+    var noteTimeline = viewer && (viewer.notification_timeline || viewer.notifications_timeline);
+    specific = (noteTimeline && noteTimeline.timeline && noteTimeline.timeline.instructions) || [];
+  } else {
+    var direct = data.user && data.user.result && data.user.result.timeline && data.user.result.timeline.timeline;
+    specific = (direct && direct.instructions) || [];
   }
-  var timeline = data.user && data.user.result && data.user.result.timeline && data.user.result.timeline.timeline;
-  return (timeline && timeline.instructions) || [];
+  if (specific.length) return specific;
+  return findInstructions(data, 0) || [];
+}
+
+function screenNameFromRequest(url, body) {
+  function from(source) {
+    if (!source) return "";
+    var text = String(source);
+    var match = text.match(/(?:[?&])variables=([^&#]+)/);
+    var raw = "";
+    if (match) {
+      try { raw = decodeURIComponent(match[1]); } catch (err) { raw = match[1]; }
+    } else if (text.indexOf("screen_name") >= 0 || text.indexOf("screenName") >= 0) raw = text;
+    else return "";
+    try {
+      var obj = JSON.parse(raw);
+      if (obj && obj.variables) obj = obj.variables;
+      if (obj && (obj.screen_name || obj.screenName)) return norm(obj.screen_name || obj.screenName);
+    } catch (err) {}
+    var found = raw.match(/"screen_?[Nn]ame"\s*:\s*"((?:\\.|[^"\\])*)"/);
+    if (!found) return "";
+    try { return norm(JSON.parse('"' + found[1] + '"')); } catch (err2) { return norm(found[1]); }
+  }
+  return from(url) || from(body);
 }
 
 function queryFromText(text) {
@@ -1253,41 +1476,63 @@ function stamp(tweets, src) {
   });
 }
 
+function timelineOwned(profile, owner, pagePath, url, body) {
+  var handle = profile && norm(profile.handle);
+  if (handle) return handle === owner;
+  if (timelineKindFromPath(pagePath, owner)) return true;
+  var requested = screenNameFromRequest(url, body);
+  return !!requested && requested === owner;
+}
+
 function parseCapture(url, text, options) {
   options = options || {};
+  var op = operationName(url);
+  function finish(result) {
+    result.op = op;
+    return result;
+  }
   var kind = classifyUrl(url);
-  if (!kind) return {kind: "", skip: "不在采集名单", posts: [], users: []};
+  if (!kind) return finish({kind: "", skip: "不在采集名单", posts: [], users: []});
   var json;
   try { json = JSON.parse(text); } catch (err) {
-    return {kind: kind, skip: "响应不是 JSON", posts: [], users: []};
+    return finish({kind: kind, skip: "响应不是 JSON", posts: [], users: []});
   }
-  if (!json || typeof json !== "object") return {kind: kind, skip: "响应不是 JSON", posts: [], users: []};
+  if (!json || typeof json !== "object") return finish({kind: kind, skip: "响应不是 JSON", posts: [], users: []});
   var owner = norm(options.owner);
   var profile = readProfile(json);
   var instructions = readInstructions(json, kind);
   var collected = collect(instructions);
   if (kind === "following" || kind === "followers" || kind === "blue-followers") {
-    if (!owner || !profile || norm(profile.handle) !== owner) {
-      return {kind: kind, skip: "不是你的关注或粉丝列表", posts: [], users: [], profile: profile};
+    if (!owner) return finish({kind: kind, skip: "还不知道你的用户名", posts: [], users: [], profile: profile});
+    var profileHandle = profile && norm(profile.handle);
+    if (profileHandle && profileHandle !== owner) {
+      return finish({kind: kind, skip: "不是你的关注或粉丝列表", posts: [], users: [], profile: profile});
+    }
+    if (!profileHandle && options.pageKind !== kind) {
+      return finish({kind: kind, skip: "不是你的关注或粉丝列表", posts: [], users: [], profile: profile});
     }
     var users = collected.users.filter(function (user) { return norm(user.handle) !== owner; });
-    return {kind: kind, skip: "", posts: [], users: users, profile: profile};
+    return finish({kind: kind, skip: "", posts: [], users: users, profile: profile});
   }
   if (kind === "replies" || kind === "originals") {
-    if (!owner || !profile || norm(profile.handle) !== owner) {
-      return {kind: kind, skip: "不是你的主页时间线", posts: [], users: [], profile: profile};
+    if (!owner) return finish({kind: kind, skip: "还不知道你的用户名", posts: [], users: [], profile: profile});
+    if (!timelineOwned(profile, owner, options.pagePath, url, options.body)) {
+      return finish({kind: kind, skip: "不是你的主页时间线", posts: [], users: [], profile: profile});
     }
-    return {kind: kind, skip: "", posts: stamp(collected.tweets, kind), users: [], profile: profile};
+    return finish({kind: kind, skip: "", posts: stamp(collected.tweets, kind), users: [], profile: profile});
   }
-  if (!owner) return {kind: kind, skip: "还不知道你的用户名", posts: [], users: [], profile: profile};
+  if (!owner) return finish({kind: kind, skip: "还不知道你的用户名", posts: [], users: [], profile: profile});
   if (kind === "search") {
     var query = readRawQuery(url, options.body);
     if (query && !queryMentionsTo(query, owner)) {
-      return {kind: kind, skip: "搜索不是 to:你的用户名", posts: [], users: [], profile: profile, query: query};
+      return finish({kind: kind, skip: "搜索不是 to:你的用户名", posts: [], users: [], profile: profile, query: query});
     }
-    return {kind: kind, skip: "", posts: stamp(relatedTweets(collected.tweets, owner), "search"), users: [], profile: profile, query: query};
+    return finish({kind: kind, skip: "", posts: stamp(relatedTweets(collected.tweets, owner), "search"), users: [], profile: profile, query: query});
   }
-  return {kind: kind, skip: "", posts: stamp(relatedTweets(collected.tweets, owner), "detail"), users: [], profile: profile};
+  if (kind === "notifications") {
+    return finish({kind: kind, skip: "", posts: stamp(relatedTweets(collected.tweets, owner), "notifications"), users: [], profile: profile});
+  }
+  return finish({kind: kind, skip: "", posts: stamp(relatedTweets(collected.tweets, owner), "detail"), users: [], profile: profile});
 }
 
 function compactPost(post, now) {
@@ -1365,9 +1610,38 @@ function applyCapture(store, captured, now) {
       var handle = norm(user.handle);
       if (!id && !handle) return;
       var key = id ? "id:" + id : "h:" + handle;
-      var next = {id: id, handle: handle, name: String(user.name || "").slice(0, 40), verified: !!user.verified, followers: user.followers || 0, seen: now};
+      var existingKey = "";
+      if (handle) {
+        var keys = Object.keys(store[bucket]);
+        for (var i = 0; i < keys.length; i++) {
+          if (norm(store[bucket][keys[i]].handle) === handle) { existingKey = keys[i]; break; }
+        }
+      }
+      if (existingKey && existingKey !== key) {
+        var previous = store[bucket][existingKey];
+        if (id && existingKey.indexOf("id:") !== 0) {
+          delete store[bucket][existingKey];
+          if (!user.name) user.name = previous.name;
+          if (!user.verified) user.verified = previous.verified;
+          if (!user.followers) user.followers = previous.followers;
+        } else {
+          key = existingKey;
+          if (!id) id = previous.id || "";
+          if (!user.name) user.name = previous.name;
+          if (!user.verified) user.verified = previous.verified;
+          if (!user.followers) user.followers = previous.followers;
+        }
+      }
       var prev = store[bucket][key];
-      if (!prev || prev.handle !== next.handle || prev.name !== next.name || prev.verified !== next.verified || prev.followers !== next.followers) {
+      var next = {
+        id: id || (prev && prev.id) || "",
+        handle: handle || (prev && prev.handle) || "",
+        name: String((user.name || (prev && prev.name) || "")).slice(0, 40),
+        verified: !!(user.verified || (prev && prev.verified)),
+        followers: user.followers || (prev && prev.followers) || 0,
+        seen: now
+      };
+      if (!prev || prev.handle !== next.handle || prev.name !== next.name || prev.verified !== next.verified || prev.followers !== next.followers || prev.id !== next.id) {
         store[bucket][key] = next;
         changed = true;
       } else prev.seen = now;
@@ -1400,10 +1674,10 @@ function coverageReport(store, owner, tz) {
   var me = norm(owner);
   var daysIn = {};
   var daysOut = {};
-  var daysBySrc = {replies: {}, originals: {}, search: {}, detail: {}};
+  var daysBySrc = {replies: {}, originals: {}, search: {}, detail: {}, notifications: {}};
   var countIn = 0;
   var countOut = 0;
-  var srcCount = {replies: 0, originals: 0, search: 0, detail: 0};
+  var srcCount = {replies: 0, originals: 0, search: 0, detail: 0, notifications: 0};
   Object.keys(store.posts || {}).forEach(function (id) {
     var post = store.posts[id];
     var day = localDay(post.ts, tz);
@@ -1432,7 +1706,8 @@ function coverageReport(store, owner, tz) {
       replies: Object.keys(daysBySrc.replies).length,
       originals: Object.keys(daysBySrc.originals).length,
       search: Object.keys(daysBySrc.search).length,
-      detail: Object.keys(daysBySrc.detail).length
+      detail: Object.keys(daysBySrc.detail).length,
+      notifications: Object.keys(daysBySrc.notifications).length
     },
     following: Object.keys(store.following || {}).length,
     followers: Object.keys(store.followers || {}).length,
@@ -1579,8 +1854,12 @@ function contextProblems(info) {
   }
   if (typeof info.page.XMLHttpRequest !== "function") {
     out.push({level: "error", text: "页面上没有 XMLHttpRequest，钩子没法挂。内容安全策略（CSP）或沙箱可能把脚本和页面隔开了。"});
-  } else if (!info.hookedOpen || info.page.XMLHttpRequest.prototype.open !== info.hookedOpen) {
-    out.push({level: "error", text: "XHR 钩子没有留在页面自己的 XMLHttpRequest 上。CSP 或沙箱可能挡住了注入，这样什么都记不到。"});
+  } else {
+    var onPage = info.pageHookMarked || !!info.page.__fanAuditPageHook;
+    var openMatches = !!(info.hookedOpen && info.page.XMLHttpRequest.prototype.open === info.hookedOpen);
+    if (!onPage && !openMatches) {
+      out.push({level: "error", text: "XHR 钩子没有留在页面自己的 XMLHttpRequest 上。CSP 或沙箱可能挡住了注入，这样什么都记不到。"});
+    }
   }
   if (!info.sawPageApp) {
     out.push({level: "warn", text: "没有检测到 X 页面环境（window 上没有 webpackChunk_twitter_responsive_web）。这是从 twitter-web-exporter 借来的自检：脚本必须跑在页面环境里，而不是扩展沙箱里。若 CSP 拦住注入，这里会一直是空的。如果下面已经开始计数，说明请求还是接住了，这条可能是 X 改了内部变量名（待核实）。"});
@@ -1590,7 +1869,8 @@ function contextProblems(info) {
 
 // 只替换页面上的 open / send / fetch，好在 load 和响应体里读页面自己的结果。
 // 不调用 send，不新建请求，不读请求头和 cookie。
-function installHooks(page, onResponse) {
+// 这个函数不能引用外层变量：跨沙箱时会把它的源码注进页面再执行。
+function attachHooks(page, emit) {
   if (!page || typeof page.XMLHttpRequest !== "function") {
     throw new Error("页面上没有 XMLHttpRequest");
   }
@@ -1598,17 +1878,47 @@ function installHooks(page, onResponse) {
   var origOpen = page.XMLHttpRequest.prototype.open;
   var origSend = page.XMLHttpRequest.prototype.send;
   var origFetch = page.fetch;
+  var interesting = /\/(UserRepliesTimeline|UserTweetsAndReplies|UserOriginalsTimeline|UserTweets|SearchTimeline|BlueVerifiedFollowers|Followers|Following|TweetDetail|ModeratedTimeline|NotificationsTimeline)(?:\?|#|$)/;
+  function requestUrl(input) {
+    try {
+      if (typeof input === "string") return input;
+      if (input && typeof input.url === "string" && input.url) return input.url;
+      if (input && typeof input.href === "string") return input.href;
+    } catch (err) {}
+    return "";
+  }
+  function isGraphql(url) {
+    return String(url || "").indexOf("/graphql/") >= 0;
+  }
+  function readXhrBody(xhr) {
+    try {
+      if (typeof xhr.responseText === "string" && xhr.responseText) return xhr.responseText;
+    } catch (err) {}
+    try {
+      if (typeof xhr.response === "string" && xhr.response) return xhr.response;
+    } catch (err) {}
+    try {
+      var response = xhr.response;
+      if (response && typeof response === "object" && typeof response.byteLength !== "number") {
+        var text = JSON.stringify(response);
+        if (text && text.charAt(0) === "{") return text;
+      }
+    } catch (err) {}
+    return "";
+  }
   function hookedOpen(method, url) {
     var xhr = this;
-    xhr.__fanUrl = url;
-    xhr.addEventListener("load", function () {
-      try {
-        if (!classifyUrl(xhr.__fanUrl)) return;
-        if (xhr.status && xhr.status >= 400) return;
-        if (typeof xhr.responseText !== "string") return;
-        onResponse(String(xhr.__fanUrl || ""), xhr.responseText, xhr.__fanBody || "");
-      } catch (err) {}
-    });
+    try { xhr.__fanUrl = url; } catch (err) {}
+    if (isGraphql(url)) {
+      xhr.addEventListener("load", function () {
+        try {
+          if (xhr.status && xhr.status >= 400) return;
+          var current = String(xhr.__fanUrl || "");
+          var text = interesting.test(current) ? readXhrBody(xhr) : "";
+          emit(current, text, xhr.__fanBody || "");
+        } catch (err) {}
+      });
+    }
     return origOpen.apply(xhr, arguments);
   }
   function hookedSend(body) {
@@ -1616,19 +1926,23 @@ function installHooks(page, onResponse) {
     return origSend.apply(this, arguments);
   }
   function hookedFetch(input) {
-    var url = "";
-    try { url = typeof input === "string" ? input : (input && input.url) || ""; } catch (err) { url = ""; }
+    var url = requestUrl(input);
     var init = arguments[1];
-    var body = init && typeof init.body === "string" ? init.body : "";
+    var body = "";
+    try { if (init && typeof init.body === "string") body = init.body; } catch (err) {}
     var ret = origFetch.apply(this, arguments);
-    if (!ret || typeof ret.then !== "function" || !classifyUrl(url)) return ret;
+    if (!ret || typeof ret.then !== "function" || !isGraphql(url)) return ret;
     return ret.then(function (res) {
       try {
-        if (res && res.ok === false) return res;
+        if (!res || res.ok === false) return res;
+        if (!interesting.test(String(url))) {
+          emit(String(url), "", body);
+          return res;
+        }
         var clone = res && res.clone ? res.clone() : null;
         if (clone && clone.text) {
           clone.text().then(function (text) {
-            try { onResponse(String(url), text, body); } catch (err) {}
+            try { emit(String(url), text, body); } catch (err) {}
           }, function () {});
         }
       } catch (err) {}
@@ -1640,7 +1954,19 @@ function installHooks(page, onResponse) {
   if (typeof origFetch === "function") page.fetch = hookedFetch;
   var hooks = {hookedOpen: hookedOpen, origOpen: origOpen, origFetch: origFetch};
   try { page.__fanAuditHooks = hooks; } catch (err) {}
+  try { page.__fanAuditPageHook = 1; } catch (err) {}
+  try {
+    if (page.document && page.document.documentElement) page.document.documentElement.setAttribute("data-fan-audit-hook", "page");
+  } catch (err) {}
   return hooks;
+}
+
+function installHooks(page, onResponse) {
+  return attachHooks(page, onResponse);
+}
+
+function pageHookProgram() {
+  return "try{(" + attachHooks.toString() + ")(window,function(url,text,body){try{document.dispatchEvent(new CustomEvent(\"fan-audit-capture\",{detail:{url:String(url||\"\"),text:String(text||\"\"),body:typeof body===\"string\"?body:\"\"}}));}catch(err){}});}catch(err){}\n";
 }
 
 var BOARD_CSS = [
@@ -1650,7 +1976,7 @@ var BOARD_CSS = [
   ".sub{color:#6B7280;font-size:14px;margin:0 0 12px}",
   ".grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:14px;margin:14px 0}",
   ".card{background:#fff;border:1px solid #E5E7EB;border-radius:14px;padding:16px 18px}",
-  "button.card,a.card{padding:16px 18px;text-align:left;width:100%;cursor:pointer;box-sizing:border-box;font:inherit}",
+  "button.card,a.card{padding:16px 18px;text-align:left;width:100%;cursor:pointer;box-sizing:border-box;font:inherit;color:#1F2937}",
   "a.card{display:block;color:inherit;text-decoration:none}",
   "button.tier-card.empty,button.tier-card.empty .num,button.tier-card.empty .lab{background:#F3F4F6;color:#9CA3AF}",
   ".stat-cards{border-top:1px dashed #D1D5DB;padding-top:8px}",
@@ -1660,7 +1986,7 @@ var BOARD_CSS = [
   ".tier-block{margin-bottom:16px;scroll-margin-top:12px}",
   "h2.flash{background:#FDE68A;border-radius:6px}",
   "button.bar{width:100%;background:transparent;border:0;padding:0;cursor:pointer;text-align:left;font:inherit}",
-  ".num{font-size:32px;font-weight:700}.lab{color:#6B7280;font-size:13px;margin-top:4px}",
+  ".num{font-size:32px;font-weight:700;color:#1F2937}.lab{color:#6B7280;font-size:13px;margin-top:4px}",
   ".panels{display:grid;grid-template-columns:1fr;gap:16px;margin-bottom:16px}",
   ".bar{display:flex;align-items:center;margin:6px 0;font-size:14px}",
   ".bar .k{width:210px}.bar .b{height:14px;border-radius:4px;background:#3B82F6;margin-right:8px}",
@@ -1745,6 +2071,9 @@ function boot() {
   var openTiers = {};
   var saveTimer = 0;
   var ui = {};
+  var pending = [];
+  var flushing = false;
+  var diag = {hook: "no", world: "unknown", sameRealm: false, pageApp: false, graphqlSeen: 0, matched: {}, unmatched: [], domAccepted: 0, skips: {}, skipsByOp: {}};
 
   function persist() {
     try {
@@ -1768,22 +2097,147 @@ function boot() {
     scheduleSave();
     return detected;
   }
-  function onResponse(url, text, body) {
-    var captured = parseCapture(url, text, {owner: currentOwner(), body: body, now: Date.now()});
+  function fallbackCopy(text) {
+    try {
+      var area = document.createElement("textarea");
+      area.value = text;
+      area.setAttribute("readonly", "readonly");
+      area.style.position = "fixed";
+      area.style.left = "-9999px";
+      (document.body || document.documentElement).appendChild(area);
+      area.select();
+      var ok = document.execCommand("copy");
+      area.remove();
+      return !!ok;
+    } catch (err) {
+      return false;
+    }
+  }
+  function scanCells() {
+    var owner = currentOwner();
+    if (!flushing) flushPending();
+    var kind = listKindFromPath(location.pathname, owner);
+    if (!kind || !owner) return;
+    var root = document.querySelector('[data-testid="primaryColumn"]') || document.querySelector('main[role="main"]');
+    if (!root) return;
+    var cells = root.querySelectorAll('[data-testid="UserCell"]');
+    var users = [];
+    for (var i = 0; i < cells.length; i++) {
+      var cell = cells[i];
+      var nameBox = cell.querySelector('[data-testid="User-Name"]');
+      var hrefs = [];
+      var links = cell.querySelectorAll("a[href]");
+      for (var j = 0; j < links.length; j++) hrefs.push(links[j].getAttribute("href") || "");
+      var verified = !!cell.querySelector('[data-testid="icon-verified"], [data-testid="icon-verified-enterprise"], [data-testid="verificationBadge"]');
+      var user = userFromVisible(hrefs, nameBox ? nameBox.textContent : "", verified);
+      if (user && user.handle !== owner) users.push(user);
+    }
+    if (!users.length) return;
+    var bucket = kind === "following" ? store.following : store.followers;
+    var before = Object.keys(bucket).length;
+    if (applyCapture(store, {kind: kind, skip: "", posts: [], users: users}, Date.now())) {
+      var after = Object.keys(bucket).length;
+      if (after > before) diag.domAccepted += after - before;
+      scheduleSave();
+      updateBadge();
+      if (panelOpen) render();
+    }
+  }
+  function noteTraffic(url) {
+    var op = operationName(url);
+    if (!op) return;
+    diag.graphqlSeen += 1;
+    if (!classifyUrl(url)) {
+      if (diag.unmatched.indexOf(op) < 0) {
+        diag.unmatched.push(op);
+        if (diag.unmatched.length > 8) diag.unmatched.shift();
+      }
+      return;
+    }
+    diag.matched[op] = (diag.matched[op] || 0) + 1;
+  }
+  function ingest(url, text, body, countTraffic) {
+    if (countTraffic) noteTraffic(url);
+    var owner = currentOwner();
+    var captured = parseCapture(url, text, {owner: owner, body: body, pageKind: listKindFromPath(location.pathname, owner), pagePath: location.pathname});
+    if (captured.skip) {
+      diag.skips[captured.skip] = (diag.skips[captured.skip] || 0) + 1;
+      var skipOp = captured.op || operationName(url) || "unknown";
+      if (!diag.skipsByOp[skipOp]) diag.skipsByOp[skipOp] = {};
+      diag.skipsByOp[skipOp][captured.skip] = (diag.skipsByOp[skipOp][captured.skip] || 0) + 1;
+    }
+    if (captured.skip === "还不知道你的用户名" && text && pending.length < 20 && String(text).length < 1500000) {
+      pending.push({url: url, text: text, body: body || ""});
+    }
     if (applyCapture(store, captured, Date.now())) scheduleSave();
     updateBadge();
     if (panelOpen) render();
+    if (!flushing && currentOwner()) flushPending();
   }
-  if (page) {
-    try { hooks = installHooks(page, onResponse); }
-    catch (err) { hookError = "钩子没有装上。CSP 或沙箱可能挡住了页面环境。"; }
+  function flushPending() {
+    if (flushing || !currentOwner() || !pending.length) return;
+    flushing = true;
+    var batch = pending.splice(0, pending.length);
+    try {
+      batch.forEach(function (item) { ingest(item.url, item.text, item.body, false); });
+    } finally {
+      flushing = false;
+    }
   }
+  function onResponse(url, text, body) {
+    ingest(url, text, body, true);
+  }
+  function injectPageHook() {
+    var code = pageHookProgram();
+    function added() {
+      return document.documentElement && document.documentElement.getAttribute("data-fan-audit-hook") === "page";
+    }
+    try {
+      if (typeof GM_addElement === "function") {
+        try { GM_addElement(document.documentElement, "script", {textContent: code}); }
+        catch (err) { GM_addElement("script", {textContent: code}); }
+      }
+    } catch (err) {}
+    if (!added()) {
+      try {
+        var script = document.createElement("script");
+        script.textContent = code;
+        (document.documentElement || document.head || document).appendChild(script);
+        script.remove();
+      } catch (err) {}
+    }
+    return added();
+  }
+  diag.sameRealm = sameRealm(page);
+  try {
+    diag.world = (typeof GM_info !== "undefined" && GM_info && GM_info.sandboxMode) || (diag.sameRealm ? "page" : "isolated");
+  } catch (err) {
+    diag.world = diag.sameRealm ? "page" : "isolated";
+  }
+  if (page && diag.sameRealm) {
+    try { hooks = installHooks(page, onResponse); diag.hook = "page"; }
+    catch (err) { hookError = "钩子没有装上。CSP 或沙箱可能挡住了页面环境。"; diag.hook = "failed"; }
+  } else if (page) {
+    document.addEventListener("fan-audit-capture", function (event) {
+      var detail = (event && event.detail) || {};
+      onResponse(String(detail.url || ""), String(detail.text || ""), String(detail.body || ""));
+    });
+    if (injectPageHook()) diag.hook = "page-script";
+    else {
+      diag.hook = "blocked";
+      hookError = "钩子没有进到页面自己的环境。x.com 的内容安全策略会拦住内联脚本；油猴若跑在隔离世界里，就读不到页面自己的请求。自己的粉丝页、关注页上已经画出来的账号仍会记下。";
+    }
+  } else diag.hook = "no-window";
 
   function problems() {
+    var sawPageApp = false;
+    try { sawPageApp = !!(page && ("webpackChunk_twitter_responsive_web" in page)); } catch (err) { sawPageApp = false; }
+    diag.pageApp = sawPageApp;
     var list = contextProblems({
       page: page,
       hookedOpen: hooks && hooks.hookedOpen,
-      sawPageApp: !!(page && ("webpackChunk_twitter_responsive_web" in page))
+      pageHookMarked: diag.hook === "page" || diag.hook === "page-script",
+      sawPageApp: sawPageApp
     });
     if (hookError) list.unshift({level: "error", text: hookError});
     if (typeof GM_setValue !== "function") {
@@ -1815,11 +2269,14 @@ function boot() {
       ".row{display:flex;flex-wrap:wrap;gap:8px;align-items:end;margin:8px 0}",
       "label.field{font-size:12px;color:#374151;display:flex;flex-direction:column;gap:4px}",
       "input[type=text]{border:1px solid #D1D5DB;border-radius:8px;padding:6px 8px;background:#fff;color:#1F2937}",
-      "button.ctrl{border:1px solid #D1D5DB;background:#fff;border-radius:8px;padding:6px 10px;cursor:pointer;color:#1F2937}",
+      "button.ctrl,a.ctrl{border:1px solid #D1D5DB;background:#fff;border-radius:8px;padding:6px 10px;cursor:pointer;color:#1F2937;text-decoration:none;display:inline-block}",
       "button.ctrl.on{background:#1D4ED8;color:#fff;border-color:#1D4ED8}",
       "button.danger{border-color:#FECACA;color:#B91C1C}",
       ".bar .k{width:132px}",
-      "#status{min-height:1.2em}"
+      "#status{min-height:1.2em}",
+      ".check{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:6px 0}",
+      ".got{color:#047857;font-weight:700}",
+      ".miss{color:#9CA3AF}"
     ].join("\n");
     shadow.appendChild(style);
 
@@ -1842,6 +2299,11 @@ function boot() {
     var title = el("h1", "", "粉丝体检");
     title.id = "top";
     var lead = el("p", "privacy", "只被动记录你正在浏览时页面已经收到的内容。脚本自己不发请求，也不会点赞、关注、取关或发帖。");
+    var diagLine = el("p", "muted");
+    diagLine.id = "diag";
+    var copyDiag = el("button", "ctrl", "复制诊断");
+    copyDiag.type = "button";
+    copyDiag.id = "copy-diag";
     var maskBtn = el("button", "ctrl", "一键打码");
     maskBtn.type = "button";
     maskBtn.id = "mask";
@@ -1921,6 +2383,8 @@ function boot() {
 
     scroller.appendChild(title);
     scroller.appendChild(lead);
+    scroller.appendChild(diagLine);
+    scroller.appendChild(copyDiag);
     scroller.appendChild(row1);
     scroller.appendChild(row2);
     scroller.appendChild(row3);
@@ -1931,15 +2395,45 @@ function boot() {
     scroller.appendChild(status);
     scroller.appendChild(results);
     scroller.appendChild(footer);
-    ui = {owner: owner, tz: tz, maskBtn: maskBtn, shadow: shadow, scroller: scroller, results: results, warnings: warnings, coverage: coverage, status: status, tzLine: tzLine, launcher: launcher, badge: badge, panel: panel};
+    ui = {owner: owner, tz: tz, maskBtn: maskBtn, shadow: shadow, scroller: scroller, results: results, warnings: warnings, coverage: coverage, status: status, tzLine: tzLine, launcher: launcher, badge: badge, panel: panel, diagLine: diagLine};
 
     launcher.addEventListener("click", function () {
       panelOpen = !panelOpen;
       panel.hidden = !panelOpen;
       if (panelOpen) {
         if (!norm(store.prefs.owner)) currentOwner();
+        flushPending();
+        scanCells();
         render();
       }
+    });
+    copyDiag.addEventListener("click", function () {
+      var text = diagnosticsCopy({
+        hook: diag.hook,
+        world: diag.world,
+        sameRealm: diag.sameRealm,
+        pageApp: diag.pageApp,
+        graphqlSeen: diag.graphqlSeen,
+        matched: diag.matched,
+        unmatched: diag.unmatched,
+        domAccepted: diag.domAccepted,
+        ownerDetected: !!norm(store.prefs.owner),
+        storedPosts: Object.keys(store.posts).length,
+        storedFollowing: Object.keys(store.following).length,
+        storedFollowers: Object.keys(store.followers).length,
+        skips: diag.skips,
+        skipsByOp: diag.skipsByOp
+      });
+      function copied(ok) {
+        status.textContent = ok ? "已复制诊断。里面只有接口名和次数，没有账号名。" : "没能复制，请再点一次。";
+      }
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(function () { copied(true); }, function () { copied(fallbackCopy(text)); });
+          return;
+        }
+      } catch (err) {}
+      copied(fallbackCopy(text));
     });
     maskBtn.addEventListener("click", function () {
       store.prefs.masked = !store.prefs.masked;
@@ -2038,8 +2532,8 @@ function boot() {
 
     (document.body || document.documentElement).appendChild(host);
     updateBadge();
-    setTimeout(function () { if (!norm(store.prefs.owner)) currentOwner(); updateBadge(); if (panelOpen) render(); }, 1000);
-    setTimeout(function () { if (!norm(store.prefs.owner)) currentOwner(); updateBadge(); if (panelOpen) render(); }, 5000);
+    setTimeout(function () { currentOwner(); flushPending(); scanCells(); updateBadge(); if (panelOpen) render(); }, 1000);
+    setTimeout(function () { currentOwner(); flushPending(); scanCells(); updateBadge(); if (panelOpen) render(); }, 5000);
     try {
       page && page.addEventListener("pagehide", persist);
     } catch (err) {}
@@ -2083,6 +2577,38 @@ function boot() {
     heading.classList.add("flash");
   }
 
+  function captureChecklist(owner, report) {
+    var box = el("div");
+    box.id = "checklist";
+    box.appendChild(el("p", "sub", "采集清单（点按钮在当前页打开，再手动往下翻。脚本不自己发请求。）"));
+    function row(label, href, captured, detail) {
+      var line = el("p", "check");
+      line.appendChild(el("span", captured ? "got" : "miss", captured ? "✓" : "未采集"));
+      if (href) {
+        var link = el("a", "ctrl", label);
+        link.href = href;
+        line.appendChild(link);
+      } else {
+        var plain = el("span", "", label);
+        line.appendChild(plain);
+      }
+      if (detail) line.appendChild(el("span", "muted", " " + detail));
+      box.appendChild(line);
+      return line;
+    }
+    var handle = norm(owner);
+    var home = handle ? "https://x.com/" + encodeURIComponent(handle) : "";
+    var inbound = (report.inboundDays || 0) > 0;
+    var replies = ((report.srcCount && report.srcCount.replies) || 0) > 0;
+    row("别人回我", handle ? "https://x.com/search?q=" + encodeURIComponent("to:" + handle) + "&f=live" : "", inbound, inbound ? (report.inbound + " 条 / " + report.inboundDays + " 天") : "");
+    row("关注列表", home ? home + "/following" : "", !!report.sawFollowing, report.sawFollowing ? (report.following + " 人") : "");
+    row("粉丝列表", home ? home + "/followers" : "", !!report.sawFollowers, report.sawFollowers ? (report.followers + " 人") : "");
+    row("认证粉丝", home ? home + "/verified_followers" : "", !!report.sawBlueFollowers, report.sawBlueFollowers ? "已采集" : "");
+    row("主页回复", home ? home + "/with_replies" : "", replies, replies ? (report.srcCount.replies + " 条 / " + report.srcDays.replies + " 天") : "");
+    box.appendChild(el("p", "warn", "别人回我是搜索页，别一次翻太久。X 会限流，被限了就停下来等一等再翻。脚本不会替你滚动，也不会自己发请求。"));
+    return box;
+  }
+
   function updateBadge() {
     if (!ui.badge) return;
     var total = Object.keys(store.posts).length + Object.keys(store.following).length + Object.keys(store.followers).length;
@@ -2110,7 +2636,7 @@ function boot() {
       var back = FanAudit.notFollowedBack(data, result.rows);
       var extras = [];
       if (back) extras.push({id: "not-followed-back", count: back.ready ? String(back.items.length) : "—", label: "没回关"});
-      var fragment = FanAudit.boardHtml(result.rows, {masked: !!store.prefs.masked, open: openTiers, extras: extras});
+      var fragment = FanAudit.boardHtml(result.rows, {masked: !!store.prefs.masked, open: openTiers, extras: extras, interactionReady: result.meta.interactionReady !== false, interactionNote: result.meta.interactionNote || ""});
       if (back) fragment += FanAudit.notFollowedBackHtml(back, {masked: !!store.prefs.masked, rows: result.rows});
       return {result: result, fragment: fragment, owner: owner};
     } catch (err) {
@@ -2120,6 +2646,27 @@ function boot() {
 
   function render() {
     if (!ui.results) return;
+    if (ui.diagLine) {
+      var matched = Object.keys(diag.matched).map(function (key) { return key + " " + diag.matched[key]; }).join("、") || "无";
+      var unmatched = diag.unmatched.join("、") || "无";
+      var skipBits = [];
+      Object.keys(diag.skipsByOp).sort().forEach(function (op) {
+        var reasons = diag.skipsByOp[op] || {};
+        Object.keys(reasons).sort().forEach(function (reason) {
+          if (skipBits.length >= 6) return;
+          skipBits.push(op + " " + reason + " " + reasons[reason]);
+        });
+      });
+      var ownerNow = norm(store.prefs.owner);
+      var hookLabel = (diag.hook === "page" || diag.hook === "page-script") ? "已装" : "没装上";
+      ui.diagLine.textContent = "诊断：钩子" + hookLabel + "（" + diag.hook + "，世界 " + diag.world + (diag.sameRealm ? "，同一环境" : "，隔离环境") + "）"
+        + " · GraphQL " + diag.graphqlSeen
+        + " · 匹配 " + matched
+        + " · 未识别 " + unmatched
+        + " · 跳过 " + (skipBits.join("、") || "无")
+        + " · 用户名 " + (ownerNow || "未识别")
+        + " · 页面格子新记 " + diag.domAccepted;
+    }
     ui.maskBtn.classList.toggle("on", !!store.prefs.masked);
     ui.maskBtn.textContent = store.prefs.masked ? "一键打码（已开）" : "一键打码";
     ui.maskBtn.setAttribute("aria-pressed", store.prefs.masked ? "true" : "false");
@@ -2138,8 +2685,12 @@ function boot() {
       var guide = el("p", "warn", EMPTY_GUIDE);
       guide.id = "empty-guide";
       ui.coverage.appendChild(guide);
-      ui.coverage.appendChild(el("p", "muted", "如果用户名是空的，先打开自己的主页，或在上面填上，再手动往下翻。默认保留 " + RETENTION_DAYS + " 天。"));
-    } else {
+      ui.coverage.appendChild(el("p", "muted", norm(ui.owner.value)
+        ? "名单还是空的。请确认打开的是你自己的关注、粉丝或主页回复页，再手动往下翻。上面的诊断能看出钩子有没有接到请求。默认保留 " + RETENTION_DAYS + " 天。"
+        : "如果用户名是空的，先打开自己的主页，或在上面填上，再手动往下翻。默认保留 " + RETENTION_DAYS + " 天。"));
+    }
+    ui.coverage.appendChild(captureChecklist(norm(ui.owner.value), report));
+    if (!empty) {
       ui.coverage.appendChild(el("p", "sub", "数据完整度（按当前时区算天数）"));
       ui.coverage.appendChild(el("p", "muted", "别人回我：" + report.inbound + " 条，覆盖 " + report.inboundDays + " 天。搜索记下 " + report.srcCount.search + " 条（" + report.srcDays.search + " 天），帖子详情 " + report.srcCount.detail + " 条（" + report.srcDays.detail + " 天）。"));
       ui.coverage.appendChild(el("p", "muted", "我发出的回复：" + report.outbound + " 条，覆盖 " + report.outboundDays + " 天。主页回复页 " + report.srcCount.replies + " 条（" + report.srcDays.replies + " 天），主页帖子页 " + report.srcCount.originals + " 条（" + report.srcDays.originals + " 天）。"));
@@ -2172,6 +2723,17 @@ function boot() {
     ui.results.innerHTML = view.fragment;
     updateBadge();
   }
+
+  var scanTimer = 0;
+  function scheduleScan() {
+    if (scanTimer) return;
+    scanTimer = setTimeout(function () { scanTimer = 0; scanCells(); }, 400);
+  }
+  try {
+    var observer = new MutationObserver(scheduleScan);
+    observer.observe(document.documentElement, {childList: true, subtree: true});
+  } catch (err) {}
+  setInterval(scanCells, 2000);
 
   if (document.body) mount();
   else document.addEventListener("DOMContentLoaded", mount);

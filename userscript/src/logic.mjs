@@ -26,7 +26,8 @@ var OPS = {
   BlueVerifiedFollowers: "blue-followers",
   Following: "following",
   TweetDetail: "detail",
-  ModeratedTimeline: "detail"
+  ModeratedTimeline: "detail",
+  NotificationsTimeline: "notifications"
 };
 
 var POST_FIELDS = ["id", "uid", "handle", "name", "verified", "replyTo", "replyToHandle", "conv", "ts", "text", "src", "seen"];
@@ -46,10 +47,132 @@ export function norm(value) {
   return String(value || "").trim().replace(/^@/, "").trim().toLowerCase();
 }
 
-export function classifyUrl(url) {
+export function operationName(url) {
   var match = String(url || "").match(/\/graphql\/[^/?#]+\/([A-Za-z0-9_]+)/);
-  if (!match) return "";
-  return OPS[match[1]] || "";
+  return match ? match[1] : "";
+}
+
+export function classifyUrl(url) {
+  return OPS[operationName(url)] || "";
+}
+
+export function listKindFromPath(pathname, owner) {
+  var me = norm(owner);
+  if (!me) return "";
+  var match = String(pathname || "").match(/^\/([A-Za-z0-9_]{1,15})\/(followers|verified_followers|following)\/?$/);
+  if (!match || norm(match[1]) !== me) return "";
+  if (match[2] === "following") return "following";
+  if (match[2] === "verified_followers") return "blue-followers";
+  return "followers";
+}
+
+export function timelineKindFromPath(pathname, owner) {
+  var me = norm(owner);
+  if (!me) return "";
+  var match = String(pathname || "").match(/^\/([A-Za-z0-9_]{1,15})(\/with_replies)?\/?$/);
+  if (!match || norm(match[1]) !== me) return "";
+  return match[2] ? "replies" : "originals";
+}
+
+export function userFromVisible(hrefs, nameText, verified) {
+  var handle = "";
+  var text = String(nameText || "");
+  var at = text.match(/@([A-Za-z0-9_]{1,15})/);
+  if (at) handle = at[1];
+  var list = hrefs || [];
+  for (var i = 0; i < list.length && !handle; i++) {
+    var match = String(list[i] || "").match(/^\/([A-Za-z0-9_]{1,15})\/?$/);
+    if (match) handle = match[1];
+  }
+  handle = norm(handle);
+  if (!handle) return null;
+  var name = "";
+  var parts = text.split(/@/);
+  if (parts.length) name = parts[0].replace(/\s+/g, " ").trim().slice(0, 40);
+  return {id: "", handle: handle, name: name, verified: !!verified, followers: 0};
+}
+
+var SKIP_OK = {
+  "不在采集名单": 1,
+  "响应不是 JSON": 1,
+  "不是你的关注或粉丝列表": 1,
+  "不是你的主页时间线": 1,
+  "还不知道你的用户名": 1,
+  "搜索不是 to:你的用户名": 1
+};
+
+function safeOp(value) {
+  var text = String(value || "");
+  return /^[A-Z][A-Za-z0-9]{1,60}$/.test(text) ? text : "";
+}
+
+function safeCode(value) {
+  var text = String(value || "").toLowerCase().replace(/_/g, "-");
+  return /^[a-z0-9-]{1,24}$/.test(text) ? text : "unknown";
+}
+
+export function diagnosticsCopy(state) {
+  state = state || {};
+  var matched = [];
+  Object.keys(state.matched || {}).sort().forEach(function (key) {
+    var op = safeOp(key);
+    if (!op) return;
+    matched.push(op + "=" + (state.matched[key] | 0));
+  });
+  var unmatched = [];
+  (state.unmatched || []).forEach(function (key) {
+    var op = safeOp(key);
+    if (op && unmatched.indexOf(op) < 0) unmatched.push(op);
+  });
+  var skips = [];
+  var byOp = state.skipsByOp || {};
+  var opKeys = Object.keys(byOp);
+  if (opKeys.length) {
+    opKeys.sort().forEach(function (rawOp) {
+      var op = safeOp(rawOp) || "other";
+      var reasons = byOp[rawOp] || {};
+      Object.keys(reasons).sort().forEach(function (reason) {
+        var label = SKIP_OK[reason] ? reason : "other";
+        skips.push(op + ":" + label + "=" + (reasons[reason] | 0));
+      });
+    });
+  } else {
+    Object.keys(state.skips || {}).sort().forEach(function (key) {
+      var label = SKIP_OK[key] ? key : "other";
+      var count = state.skips[key] | 0;
+      var found = false;
+      for (var i = 0; i < skips.length; i++) {
+        if (skips[i].label === label) { skips[i].count += count; found = true; }
+      }
+      if (!found) skips.push({label: label, count: count});
+    });
+    skips = skips.map(function (item) { return item.label + "=" + item.count; });
+  }
+  return [
+    "fan-audit diagnostics",
+    "hook=" + safeCode(state.hook),
+    "world=" + safeCode(state.world),
+    "sameRealm=" + (state.sameRealm ? "yes" : "no"),
+    "pageApp=" + (state.pageApp ? "yes" : "no"),
+    "graphqlSeen=" + (state.graphqlSeen | 0),
+    "matched=" + (matched.join(",") || "none"),
+    "unmatched=" + (unmatched.join(",") || "none"),
+    "domAccepted=" + (state.domAccepted | 0),
+    "ownerDetected=" + (state.ownerDetected ? "yes" : "no"),
+    "storedPosts=" + (state.storedPosts | 0),
+    "storedFollowing=" + (state.storedFollowing | 0),
+    "storedFollowers=" + (state.storedFollowers | 0),
+    "skips=" + (skips.join(",") || "none")
+  ].join("\n");
+}
+
+export function sameRealm(page) {
+  try {
+    if (!page) return false;
+    if (typeof window !== "undefined" && page === window) return true;
+    if (typeof XMLHttpRequest === "function" && page.XMLHttpRequest === XMLHttpRequest) return true;
+  } catch (err) {}
+  return false;
 }
 
 function coreLen(text) {
@@ -90,11 +213,14 @@ function toIso(raw) {
 
 function readUser(user) {
   if (!user || typeof user !== "object") return null;
+  if (user.result && typeof user.result === "object" && !user.rest_id && !user.restId && !user.core && !user.legacy) {
+    return readUser(user.result);
+  }
   if (user.__typename === "UserUnavailable") return null;
   var core = user.core || {};
   var legacy = user.legacy || {};
-  var handle = core.screen_name || legacy.screen_name || "";
-  var id = String(user.rest_id || legacy.id_str || "");
+  var handle = core.screen_name || core.screenName || legacy.screen_name || legacy.screenName || user.screen_name || "";
+  var id = String(user.rest_id || user.restId || legacy.id_str || "");
   if (!handle && !id) return null;
   var counts = user.relationship_counts || {};
   var followers = counts.followers;
@@ -145,8 +271,9 @@ function fromItemContent(content, tweets, users) {
     var tweet = readTweet(content.tweet_results.result);
     if (tweet) tweets.push(tweet);
   }
-  if (content.user_results) {
-    var user = readUser(content.user_results.result);
+  var userNode = content.user_results || content.userResults;
+  if (userNode) {
+    var user = readUser(userNode.result || userNode);
     if (user && (user.handle || user.id)) users.push(user);
   }
 }
@@ -207,23 +334,79 @@ function collect(instructions) {
 
 function readProfile(json) {
   var user = json && json.data && json.data.user && json.data.user.result;
+  if (user && user.result && !user.rest_id && !user.restId && !user.core && !user.legacy) user = user.result;
   return readUser(user);
+}
+
+function looksLikeInstructions(list) {
+  if (!Array.isArray(list) || !list.length) return false;
+  for (var i = 0; i < list.length; i++) {
+    var item = list[i];
+    if (item && (item.entries || item.entry || item.moduleItems || item.type)) return true;
+  }
+  return false;
+}
+
+function findInstructions(node, depth) {
+  if (!node || depth > 7 || typeof node !== "object") return null;
+  if (looksLikeInstructions(node.instructions)) return node.instructions;
+  var keys = ["user", "result", "timeline", "timeline_v2", "search_timeline", "search_by_raw_query", "tweet", "timeline_response"];
+  for (var i = 0; i < keys.length; i++) {
+    if (node[keys[i]] && typeof node[keys[i]] === "object") {
+      var found = findInstructions(node[keys[i]], depth + 1);
+      if (found) return found;
+    }
+  }
+  return null;
 }
 
 function readInstructions(json, kind) {
   var data = (json && json.data) || {};
+  var specific = [];
   if (kind === "search") {
     var search = data.search_by_raw_query && data.search_by_raw_query.search_timeline && data.search_by_raw_query.search_timeline.timeline;
-    return (search && search.instructions) || [];
-  }
-  if (kind === "detail") {
+    specific = (search && search.instructions) || [];
+  } else if (kind === "detail") {
     var thread = data.threaded_conversation_with_injections_v2;
-    if (thread && thread.instructions) return thread.instructions;
-    var moderated = data.tweet && data.tweet.result && data.tweet.result.timeline_response && data.tweet.result.timeline_response.timeline;
-    return (moderated && moderated.instructions) || [];
+    if (thread && thread.instructions) specific = thread.instructions;
+    else {
+      var moderated = data.tweet && data.tweet.result && data.tweet.result.timeline_response && data.tweet.result.timeline_response.timeline;
+      specific = (moderated && moderated.instructions) || [];
+    }
+  } else if (kind === "notifications") {
+    var viewer = (data.viewer_v2 && data.viewer_v2.user_results && data.viewer_v2.user_results.result)
+      || (data.viewer && data.viewer.user_results && data.viewer.user_results.result)
+      || null;
+    var noteTimeline = viewer && (viewer.notification_timeline || viewer.notifications_timeline);
+    specific = (noteTimeline && noteTimeline.timeline && noteTimeline.timeline.instructions) || [];
+  } else {
+    var direct = data.user && data.user.result && data.user.result.timeline && data.user.result.timeline.timeline;
+    specific = (direct && direct.instructions) || [];
   }
-  var timeline = data.user && data.user.result && data.user.result.timeline && data.user.result.timeline.timeline;
-  return (timeline && timeline.instructions) || [];
+  if (specific.length) return specific;
+  return findInstructions(data, 0) || [];
+}
+
+function screenNameFromRequest(url, body) {
+  function from(source) {
+    if (!source) return "";
+    var text = String(source);
+    var match = text.match(/(?:[?&])variables=([^&#]+)/);
+    var raw = "";
+    if (match) {
+      try { raw = decodeURIComponent(match[1]); } catch (err) { raw = match[1]; }
+    } else if (text.indexOf("screen_name") >= 0 || text.indexOf("screenName") >= 0) raw = text;
+    else return "";
+    try {
+      var obj = JSON.parse(raw);
+      if (obj && obj.variables) obj = obj.variables;
+      if (obj && (obj.screen_name || obj.screenName)) return norm(obj.screen_name || obj.screenName);
+    } catch (err) {}
+    var found = raw.match(/"screen_?[Nn]ame"\s*:\s*"((?:\\.|[^"\\])*)"/);
+    if (!found) return "";
+    try { return norm(JSON.parse('"' + found[1] + '"')); } catch (err2) { return norm(found[1]); }
+  }
+  return from(url) || from(body);
 }
 
 function queryFromText(text) {
@@ -286,41 +469,63 @@ function stamp(tweets, src) {
   });
 }
 
+function timelineOwned(profile, owner, pagePath, url, body) {
+  var handle = profile && norm(profile.handle);
+  if (handle) return handle === owner;
+  if (timelineKindFromPath(pagePath, owner)) return true;
+  var requested = screenNameFromRequest(url, body);
+  return !!requested && requested === owner;
+}
+
 export function parseCapture(url, text, options) {
   options = options || {};
+  var op = operationName(url);
+  function finish(result) {
+    result.op = op;
+    return result;
+  }
   var kind = classifyUrl(url);
-  if (!kind) return {kind: "", skip: "不在采集名单", posts: [], users: []};
+  if (!kind) return finish({kind: "", skip: "不在采集名单", posts: [], users: []});
   var json;
   try { json = JSON.parse(text); } catch (err) {
-    return {kind: kind, skip: "响应不是 JSON", posts: [], users: []};
+    return finish({kind: kind, skip: "响应不是 JSON", posts: [], users: []});
   }
-  if (!json || typeof json !== "object") return {kind: kind, skip: "响应不是 JSON", posts: [], users: []};
+  if (!json || typeof json !== "object") return finish({kind: kind, skip: "响应不是 JSON", posts: [], users: []});
   var owner = norm(options.owner);
   var profile = readProfile(json);
   var instructions = readInstructions(json, kind);
   var collected = collect(instructions);
   if (kind === "following" || kind === "followers" || kind === "blue-followers") {
-    if (!owner || !profile || norm(profile.handle) !== owner) {
-      return {kind: kind, skip: "不是你的关注或粉丝列表", posts: [], users: [], profile: profile};
+    if (!owner) return finish({kind: kind, skip: "还不知道你的用户名", posts: [], users: [], profile: profile});
+    var profileHandle = profile && norm(profile.handle);
+    if (profileHandle && profileHandle !== owner) {
+      return finish({kind: kind, skip: "不是你的关注或粉丝列表", posts: [], users: [], profile: profile});
+    }
+    if (!profileHandle && options.pageKind !== kind) {
+      return finish({kind: kind, skip: "不是你的关注或粉丝列表", posts: [], users: [], profile: profile});
     }
     var users = collected.users.filter(function (user) { return norm(user.handle) !== owner; });
-    return {kind: kind, skip: "", posts: [], users: users, profile: profile};
+    return finish({kind: kind, skip: "", posts: [], users: users, profile: profile});
   }
   if (kind === "replies" || kind === "originals") {
-    if (!owner || !profile || norm(profile.handle) !== owner) {
-      return {kind: kind, skip: "不是你的主页时间线", posts: [], users: [], profile: profile};
+    if (!owner) return finish({kind: kind, skip: "还不知道你的用户名", posts: [], users: [], profile: profile});
+    if (!timelineOwned(profile, owner, options.pagePath, url, options.body)) {
+      return finish({kind: kind, skip: "不是你的主页时间线", posts: [], users: [], profile: profile});
     }
-    return {kind: kind, skip: "", posts: stamp(collected.tweets, kind), users: [], profile: profile};
+    return finish({kind: kind, skip: "", posts: stamp(collected.tweets, kind), users: [], profile: profile});
   }
-  if (!owner) return {kind: kind, skip: "还不知道你的用户名", posts: [], users: [], profile: profile};
+  if (!owner) return finish({kind: kind, skip: "还不知道你的用户名", posts: [], users: [], profile: profile});
   if (kind === "search") {
     var query = readRawQuery(url, options.body);
     if (query && !queryMentionsTo(query, owner)) {
-      return {kind: kind, skip: "搜索不是 to:你的用户名", posts: [], users: [], profile: profile, query: query};
+      return finish({kind: kind, skip: "搜索不是 to:你的用户名", posts: [], users: [], profile: profile, query: query});
     }
-    return {kind: kind, skip: "", posts: stamp(relatedTweets(collected.tweets, owner), "search"), users: [], profile: profile, query: query};
+    return finish({kind: kind, skip: "", posts: stamp(relatedTweets(collected.tweets, owner), "search"), users: [], profile: profile, query: query});
   }
-  return {kind: kind, skip: "", posts: stamp(relatedTweets(collected.tweets, owner), "detail"), users: [], profile: profile};
+  if (kind === "notifications") {
+    return finish({kind: kind, skip: "", posts: stamp(relatedTweets(collected.tweets, owner), "notifications"), users: [], profile: profile});
+  }
+  return finish({kind: kind, skip: "", posts: stamp(relatedTweets(collected.tweets, owner), "detail"), users: [], profile: profile});
 }
 
 function compactPost(post, now) {
@@ -398,9 +603,38 @@ export function applyCapture(store, captured, now) {
       var handle = norm(user.handle);
       if (!id && !handle) return;
       var key = id ? "id:" + id : "h:" + handle;
-      var next = {id: id, handle: handle, name: String(user.name || "").slice(0, 40), verified: !!user.verified, followers: user.followers || 0, seen: now};
+      var existingKey = "";
+      if (handle) {
+        var keys = Object.keys(store[bucket]);
+        for (var i = 0; i < keys.length; i++) {
+          if (norm(store[bucket][keys[i]].handle) === handle) { existingKey = keys[i]; break; }
+        }
+      }
+      if (existingKey && existingKey !== key) {
+        var previous = store[bucket][existingKey];
+        if (id && existingKey.indexOf("id:") !== 0) {
+          delete store[bucket][existingKey];
+          if (!user.name) user.name = previous.name;
+          if (!user.verified) user.verified = previous.verified;
+          if (!user.followers) user.followers = previous.followers;
+        } else {
+          key = existingKey;
+          if (!id) id = previous.id || "";
+          if (!user.name) user.name = previous.name;
+          if (!user.verified) user.verified = previous.verified;
+          if (!user.followers) user.followers = previous.followers;
+        }
+      }
       var prev = store[bucket][key];
-      if (!prev || prev.handle !== next.handle || prev.name !== next.name || prev.verified !== next.verified || prev.followers !== next.followers) {
+      var next = {
+        id: id || (prev && prev.id) || "",
+        handle: handle || (prev && prev.handle) || "",
+        name: String((user.name || (prev && prev.name) || "")).slice(0, 40),
+        verified: !!(user.verified || (prev && prev.verified)),
+        followers: user.followers || (prev && prev.followers) || 0,
+        seen: now
+      };
+      if (!prev || prev.handle !== next.handle || prev.name !== next.name || prev.verified !== next.verified || prev.followers !== next.followers || prev.id !== next.id) {
         store[bucket][key] = next;
         changed = true;
       } else prev.seen = now;
@@ -433,10 +667,10 @@ export function coverageReport(store, owner, tz) {
   var me = norm(owner);
   var daysIn = {};
   var daysOut = {};
-  var daysBySrc = {replies: {}, originals: {}, search: {}, detail: {}};
+  var daysBySrc = {replies: {}, originals: {}, search: {}, detail: {}, notifications: {}};
   var countIn = 0;
   var countOut = 0;
-  var srcCount = {replies: 0, originals: 0, search: 0, detail: 0};
+  var srcCount = {replies: 0, originals: 0, search: 0, detail: 0, notifications: 0};
   Object.keys(store.posts || {}).forEach(function (id) {
     var post = store.posts[id];
     var day = localDay(post.ts, tz);
@@ -465,7 +699,8 @@ export function coverageReport(store, owner, tz) {
       replies: Object.keys(daysBySrc.replies).length,
       originals: Object.keys(daysBySrc.originals).length,
       search: Object.keys(daysBySrc.search).length,
-      detail: Object.keys(daysBySrc.detail).length
+      detail: Object.keys(daysBySrc.detail).length,
+      notifications: Object.keys(daysBySrc.notifications).length
     },
     following: Object.keys(store.following || {}).length,
     followers: Object.keys(store.followers || {}).length,
@@ -612,8 +847,12 @@ export function contextProblems(info) {
   }
   if (typeof info.page.XMLHttpRequest !== "function") {
     out.push({level: "error", text: "页面上没有 XMLHttpRequest，钩子没法挂。内容安全策略（CSP）或沙箱可能把脚本和页面隔开了。"});
-  } else if (!info.hookedOpen || info.page.XMLHttpRequest.prototype.open !== info.hookedOpen) {
-    out.push({level: "error", text: "XHR 钩子没有留在页面自己的 XMLHttpRequest 上。CSP 或沙箱可能挡住了注入，这样什么都记不到。"});
+  } else {
+    var onPage = info.pageHookMarked || !!info.page.__fanAuditPageHook;
+    var openMatches = !!(info.hookedOpen && info.page.XMLHttpRequest.prototype.open === info.hookedOpen);
+    if (!onPage && !openMatches) {
+      out.push({level: "error", text: "XHR 钩子没有留在页面自己的 XMLHttpRequest 上。CSP 或沙箱可能挡住了注入，这样什么都记不到。"});
+    }
   }
   if (!info.sawPageApp) {
     out.push({level: "warn", text: "没有检测到 X 页面环境（window 上没有 webpackChunk_twitter_responsive_web）。这是从 twitter-web-exporter 借来的自检：脚本必须跑在页面环境里，而不是扩展沙箱里。若 CSP 拦住注入，这里会一直是空的。如果下面已经开始计数，说明请求还是接住了，这条可能是 X 改了内部变量名（待核实）。"});
@@ -623,7 +862,8 @@ export function contextProblems(info) {
 
 // 只替换页面上的 open / send / fetch，好在 load 和响应体里读页面自己的结果。
 // 不调用 send，不新建请求，不读请求头和 cookie。
-export function installHooks(page, onResponse) {
+// 这个函数不能引用外层变量：跨沙箱时会把它的源码注进页面再执行。
+function attachHooks(page, emit) {
   if (!page || typeof page.XMLHttpRequest !== "function") {
     throw new Error("页面上没有 XMLHttpRequest");
   }
@@ -631,17 +871,47 @@ export function installHooks(page, onResponse) {
   var origOpen = page.XMLHttpRequest.prototype.open;
   var origSend = page.XMLHttpRequest.prototype.send;
   var origFetch = page.fetch;
+  var interesting = /\/(UserRepliesTimeline|UserTweetsAndReplies|UserOriginalsTimeline|UserTweets|SearchTimeline|BlueVerifiedFollowers|Followers|Following|TweetDetail|ModeratedTimeline|NotificationsTimeline)(?:\?|#|$)/;
+  function requestUrl(input) {
+    try {
+      if (typeof input === "string") return input;
+      if (input && typeof input.url === "string" && input.url) return input.url;
+      if (input && typeof input.href === "string") return input.href;
+    } catch (err) {}
+    return "";
+  }
+  function isGraphql(url) {
+    return String(url || "").indexOf("/graphql/") >= 0;
+  }
+  function readXhrBody(xhr) {
+    try {
+      if (typeof xhr.responseText === "string" && xhr.responseText) return xhr.responseText;
+    } catch (err) {}
+    try {
+      if (typeof xhr.response === "string" && xhr.response) return xhr.response;
+    } catch (err) {}
+    try {
+      var response = xhr.response;
+      if (response && typeof response === "object" && typeof response.byteLength !== "number") {
+        var text = JSON.stringify(response);
+        if (text && text.charAt(0) === "{") return text;
+      }
+    } catch (err) {}
+    return "";
+  }
   function hookedOpen(method, url) {
     var xhr = this;
-    xhr.__fanUrl = url;
-    xhr.addEventListener("load", function () {
-      try {
-        if (!classifyUrl(xhr.__fanUrl)) return;
-        if (xhr.status && xhr.status >= 400) return;
-        if (typeof xhr.responseText !== "string") return;
-        onResponse(String(xhr.__fanUrl || ""), xhr.responseText, xhr.__fanBody || "");
-      } catch (err) {}
-    });
+    try { xhr.__fanUrl = url; } catch (err) {}
+    if (isGraphql(url)) {
+      xhr.addEventListener("load", function () {
+        try {
+          if (xhr.status && xhr.status >= 400) return;
+          var current = String(xhr.__fanUrl || "");
+          var text = interesting.test(current) ? readXhrBody(xhr) : "";
+          emit(current, text, xhr.__fanBody || "");
+        } catch (err) {}
+      });
+    }
     return origOpen.apply(xhr, arguments);
   }
   function hookedSend(body) {
@@ -649,19 +919,23 @@ export function installHooks(page, onResponse) {
     return origSend.apply(this, arguments);
   }
   function hookedFetch(input) {
-    var url = "";
-    try { url = typeof input === "string" ? input : (input && input.url) || ""; } catch (err) { url = ""; }
+    var url = requestUrl(input);
     var init = arguments[1];
-    var body = init && typeof init.body === "string" ? init.body : "";
+    var body = "";
+    try { if (init && typeof init.body === "string") body = init.body; } catch (err) {}
     var ret = origFetch.apply(this, arguments);
-    if (!ret || typeof ret.then !== "function" || !classifyUrl(url)) return ret;
+    if (!ret || typeof ret.then !== "function" || !isGraphql(url)) return ret;
     return ret.then(function (res) {
       try {
-        if (res && res.ok === false) return res;
+        if (!res || res.ok === false) return res;
+        if (!interesting.test(String(url))) {
+          emit(String(url), "", body);
+          return res;
+        }
         var clone = res && res.clone ? res.clone() : null;
         if (clone && clone.text) {
           clone.text().then(function (text) {
-            try { onResponse(String(url), text, body); } catch (err) {}
+            try { emit(String(url), text, body); } catch (err) {}
           }, function () {});
         }
       } catch (err) {}
@@ -673,7 +947,19 @@ export function installHooks(page, onResponse) {
   if (typeof origFetch === "function") page.fetch = hookedFetch;
   var hooks = {hookedOpen: hookedOpen, origOpen: origOpen, origFetch: origFetch};
   try { page.__fanAuditHooks = hooks; } catch (err) {}
+  try { page.__fanAuditPageHook = 1; } catch (err) {}
+  try {
+    if (page.document && page.document.documentElement) page.document.documentElement.setAttribute("data-fan-audit-hook", "page");
+  } catch (err) {}
   return hooks;
+}
+
+export function installHooks(page, onResponse) {
+  return attachHooks(page, onResponse);
+}
+
+export function pageHookProgram() {
+  return "try{(" + attachHooks.toString() + ")(window,function(url,text,body){try{document.dispatchEvent(new CustomEvent(\"fan-audit-capture\",{detail:{url:String(url||\"\"),text:String(text||\"\"),body:typeof body===\"string\"?body:\"\"}}));}catch(err){}});}catch(err){}\n";
 }
 
 export var BOARD_CSS = [
@@ -683,7 +969,7 @@ export var BOARD_CSS = [
   ".sub{color:#6B7280;font-size:14px;margin:0 0 12px}",
   ".grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:14px;margin:14px 0}",
   ".card{background:#fff;border:1px solid #E5E7EB;border-radius:14px;padding:16px 18px}",
-  "button.card,a.card{padding:16px 18px;text-align:left;width:100%;cursor:pointer;box-sizing:border-box;font:inherit}",
+  "button.card,a.card{padding:16px 18px;text-align:left;width:100%;cursor:pointer;box-sizing:border-box;font:inherit;color:#1F2937}",
   "a.card{display:block;color:inherit;text-decoration:none}",
   "button.tier-card.empty,button.tier-card.empty .num,button.tier-card.empty .lab{background:#F3F4F6;color:#9CA3AF}",
   ".stat-cards{border-top:1px dashed #D1D5DB;padding-top:8px}",
@@ -693,7 +979,7 @@ export var BOARD_CSS = [
   ".tier-block{margin-bottom:16px;scroll-margin-top:12px}",
   "h2.flash{background:#FDE68A;border-radius:6px}",
   "button.bar{width:100%;background:transparent;border:0;padding:0;cursor:pointer;text-align:left;font:inherit}",
-  ".num{font-size:32px;font-weight:700}.lab{color:#6B7280;font-size:13px;margin-top:4px}",
+  ".num{font-size:32px;font-weight:700;color:#1F2937}.lab{color:#6B7280;font-size:13px;margin-top:4px}",
   ".panels{display:grid;grid-template-columns:1fr;gap:16px;margin-bottom:16px}",
   ".bar{display:flex;align-items:center;margin:6px 0;font-size:14px}",
   ".bar .k{width:210px}.bar .b{height:14px;border-radius:4px;background:#3B82F6;margin-right:8px}",

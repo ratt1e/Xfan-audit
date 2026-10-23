@@ -78,7 +78,7 @@ if (process.argv[2] === "score") {
   const spec = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
   try {
     const result = fan.analyze(spec.data, spec.options || {});
-    const keys = ["account", "tier", "status", "score", "raw", "active_days"];
+    const keys = ["account", "tier", "status", "score", "raw", "active_days", "mutual"];
     process.stdout.write(JSON.stringify({
       ok: true,
       meta: result.meta,
