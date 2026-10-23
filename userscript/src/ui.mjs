@@ -58,7 +58,7 @@ function boot() {
   var ui = {};
   var pending = [];
   var flushing = false;
-  var diag = {hook: "no", world: "unknown", sameRealm: false, pageApp: false, graphqlSeen: 0, matched: {}, unmatched: [], domAccepted: 0, skips: {}};
+  var diag = {hook: "no", world: "unknown", sameRealm: false, pageApp: false, graphqlSeen: 0, matched: {}, unmatched: [], domAccepted: 0, skips: {}, skipsByOp: {}};
 
   function persist() {
     try {
@@ -144,8 +144,13 @@ function boot() {
   function ingest(url, text, body, countTraffic) {
     if (countTraffic) noteTraffic(url);
     var owner = currentOwner();
-    var captured = parseCapture(url, text, {owner: owner, body: body, pageKind: listKindFromPath(location.pathname, owner)});
-    if (captured.skip) diag.skips[captured.skip] = (diag.skips[captured.skip] || 0) + 1;
+    var captured = parseCapture(url, text, {owner: owner, body: body, pageKind: listKindFromPath(location.pathname, owner), pagePath: location.pathname});
+    if (captured.skip) {
+      diag.skips[captured.skip] = (diag.skips[captured.skip] || 0) + 1;
+      var skipOp = captured.op || operationName(url) || "unknown";
+      if (!diag.skipsByOp[skipOp]) diag.skipsByOp[skipOp] = {};
+      diag.skipsByOp[skipOp][captured.skip] = (diag.skipsByOp[skipOp][captured.skip] || 0) + 1;
+    }
     if (captured.skip === "还不知道你的用户名" && text && pending.length < 20 && String(text).length < 1500000) {
       pending.push({url: url, text: text, body: body || ""});
     }
@@ -249,11 +254,14 @@ function boot() {
       ".row{display:flex;flex-wrap:wrap;gap:8px;align-items:end;margin:8px 0}",
       "label.field{font-size:12px;color:#374151;display:flex;flex-direction:column;gap:4px}",
       "input[type=text]{border:1px solid #D1D5DB;border-radius:8px;padding:6px 8px;background:#fff;color:#1F2937}",
-      "button.ctrl{border:1px solid #D1D5DB;background:#fff;border-radius:8px;padding:6px 10px;cursor:pointer;color:#1F2937}",
+      "button.ctrl,a.ctrl{border:1px solid #D1D5DB;background:#fff;border-radius:8px;padding:6px 10px;cursor:pointer;color:#1F2937;text-decoration:none;display:inline-block}",
       "button.ctrl.on{background:#1D4ED8;color:#fff;border-color:#1D4ED8}",
       "button.danger{border-color:#FECACA;color:#B91C1C}",
       ".bar .k{width:132px}",
-      "#status{min-height:1.2em}"
+      "#status{min-height:1.2em}",
+      ".check{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:6px 0}",
+      ".got{color:#047857;font-weight:700}",
+      ".miss{color:#9CA3AF}"
     ].join("\n");
     shadow.appendChild(style);
 
@@ -398,7 +406,8 @@ function boot() {
         storedPosts: Object.keys(store.posts).length,
         storedFollowing: Object.keys(store.following).length,
         storedFollowers: Object.keys(store.followers).length,
-        skips: diag.skips
+        skips: diag.skips,
+        skipsByOp: diag.skipsByOp
       });
       function copied(ok) {
         status.textContent = ok ? "已复制诊断。里面只有接口名和次数，没有账号名。" : "没能复制，请再点一次。";
@@ -553,6 +562,38 @@ function boot() {
     heading.classList.add("flash");
   }
 
+  function captureChecklist(owner, report) {
+    var box = el("div");
+    box.id = "checklist";
+    box.appendChild(el("p", "sub", "采集清单（点按钮在当前页打开，再手动往下翻。脚本不自己发请求。）"));
+    function row(label, href, captured, detail) {
+      var line = el("p", "check");
+      line.appendChild(el("span", captured ? "got" : "miss", captured ? "✓" : "未采集"));
+      if (href) {
+        var link = el("a", "ctrl", label);
+        link.href = href;
+        line.appendChild(link);
+      } else {
+        var plain = el("span", "", label);
+        line.appendChild(plain);
+      }
+      if (detail) line.appendChild(el("span", "muted", " " + detail));
+      box.appendChild(line);
+      return line;
+    }
+    var handle = norm(owner);
+    var home = handle ? "https://x.com/" + encodeURIComponent(handle) : "";
+    var inbound = (report.inboundDays || 0) > 0;
+    var replies = ((report.srcCount && report.srcCount.replies) || 0) > 0;
+    row("别人回我", handle ? "https://x.com/search?q=" + encodeURIComponent("to:" + handle) + "&f=live" : "", inbound, inbound ? (report.inbound + " 条 / " + report.inboundDays + " 天") : "");
+    row("关注列表", home ? home + "/following" : "", !!report.sawFollowing, report.sawFollowing ? (report.following + " 人") : "");
+    row("粉丝列表", home ? home + "/followers" : "", !!report.sawFollowers, report.sawFollowers ? (report.followers + " 人") : "");
+    row("认证粉丝", home ? home + "/verified_followers" : "", !!report.sawBlueFollowers, report.sawBlueFollowers ? "已采集" : "");
+    row("主页回复", home ? home + "/with_replies" : "", replies, replies ? (report.srcCount.replies + " 条 / " + report.srcDays.replies + " 天") : "");
+    box.appendChild(el("p", "warn", "别人回我是搜索页，别一次翻太久。X 会限流，被限了就停下来等一等再翻。脚本不会替你滚动，也不会自己发请求。"));
+    return box;
+  }
+
   function updateBadge() {
     if (!ui.badge) return;
     var total = Object.keys(store.posts).length + Object.keys(store.following).length + Object.keys(store.followers).length;
@@ -580,7 +621,7 @@ function boot() {
       var back = FanAudit.notFollowedBack(data, result.rows);
       var extras = [];
       if (back) extras.push({id: "not-followed-back", count: back.ready ? String(back.items.length) : "—", label: "没回关"});
-      var fragment = FanAudit.boardHtml(result.rows, {masked: !!store.prefs.masked, open: openTiers, extras: extras});
+      var fragment = FanAudit.boardHtml(result.rows, {masked: !!store.prefs.masked, open: openTiers, extras: extras, interactionReady: result.meta.interactionReady !== false, interactionNote: result.meta.interactionNote || ""});
       if (back) fragment += FanAudit.notFollowedBackHtml(back, {masked: !!store.prefs.masked, rows: result.rows});
       return {result: result, fragment: fragment, owner: owner};
     } catch (err) {
@@ -593,12 +634,21 @@ function boot() {
     if (ui.diagLine) {
       var matched = Object.keys(diag.matched).map(function (key) { return key + " " + diag.matched[key]; }).join("、") || "无";
       var unmatched = diag.unmatched.join("、") || "无";
+      var skipBits = [];
+      Object.keys(diag.skipsByOp).sort().forEach(function (op) {
+        var reasons = diag.skipsByOp[op] || {};
+        Object.keys(reasons).sort().forEach(function (reason) {
+          if (skipBits.length >= 6) return;
+          skipBits.push(op + " " + reason + " " + reasons[reason]);
+        });
+      });
       var ownerNow = norm(store.prefs.owner);
       var hookLabel = (diag.hook === "page" || diag.hook === "page-script") ? "已装" : "没装上";
       ui.diagLine.textContent = "诊断：钩子" + hookLabel + "（" + diag.hook + "，世界 " + diag.world + (diag.sameRealm ? "，同一环境" : "，隔离环境") + "）"
         + " · GraphQL " + diag.graphqlSeen
         + " · 匹配 " + matched
         + " · 未识别 " + unmatched
+        + " · 跳过 " + (skipBits.join("、") || "无")
         + " · 用户名 " + (ownerNow || "未识别")
         + " · 页面格子新记 " + diag.domAccepted;
     }
@@ -623,7 +673,9 @@ function boot() {
       ui.coverage.appendChild(el("p", "muted", norm(ui.owner.value)
         ? "名单还是空的。请确认打开的是你自己的关注、粉丝或主页回复页，再手动往下翻。上面的诊断能看出钩子有没有接到请求。默认保留 " + RETENTION_DAYS + " 天。"
         : "如果用户名是空的，先打开自己的主页，或在上面填上，再手动往下翻。默认保留 " + RETENTION_DAYS + " 天。"));
-    } else {
+    }
+    ui.coverage.appendChild(captureChecklist(norm(ui.owner.value), report));
+    if (!empty) {
       ui.coverage.appendChild(el("p", "sub", "数据完整度（按当前时区算天数）"));
       ui.coverage.appendChild(el("p", "muted", "别人回我：" + report.inbound + " 条，覆盖 " + report.inboundDays + " 天。搜索记下 " + report.srcCount.search + " 条（" + report.srcDays.search + " 天），帖子详情 " + report.srcCount.detail + " 条（" + report.srcDays.detail + " 天）。"));
       ui.coverage.appendChild(el("p", "muted", "我发出的回复：" + report.outbound + " 条，覆盖 " + report.outboundDays + " 天。主页回复页 " + report.srcCount.replies + " 条（" + report.srcDays.replies + " 天），主页帖子页 " + report.srcCount.originals + " 条（" + report.srcDays.originals + " 天）。"));

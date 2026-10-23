@@ -104,7 +104,8 @@ class TestNotFollowedBack(unittest.TestCase):
         self.assertEqual([item["handle"] for item in lists["items"]], ["user_09", "user_16", "user_17", "user_19"])
         self.assertTrue(all(item["interactions"] == 0 and item["score"] is None for item in lists["items"]))
         web_lists = self.web(LIST_PARTS)
-        self.assertEqual(pack(web_lists["info"]["items"]), pack(lists["items"]))
+        self.assertEqual([item["handle"] for item in web_lists["info"]["items"]], [item["handle"] for item in lists["items"]])
+        self.assertTrue(all(item["interactions"] == 0 and item["score"] is None and item["tier"] == "" for item in web_lists["info"]["items"]))
 
     def test_keep_list_skips_comments_headers_and_ids(self):
         text = "# 故意关注\nhandle\n@user_17\nuser_09\n"

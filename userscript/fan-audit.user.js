@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         fan-audit 粉丝体检
 // @namespace    https://github.com/ratt1e/Xfan-audit
-// @version      0.1.1
+// @version      0.1.2
 // @description  在 X 上边逛边记下公开回复和关注名单，在页面里出粉丝体检。只读，不自己发请求，不自动翻页。
 // @author       ranger_escape
 // @match        *://x.com/*
@@ -299,6 +299,32 @@ var root = {};
     res.stars = stars; res.greet_cap = capped;
     return res;
   }
+  var ABSENCE_TIERS = {"沉睡互关": 1, "零互动": 1, "单向·他常来我少回": 1, "单向·我常去他没回": 1};
+  var INTERACTION_THIN = "互动数据还不够，先去主页回复页和「别人回我」搜索页滑几屏";
+  // 互动天数只数回复（出=我发出的，入=别人回我）。关注/粉丝名单不产生这些行，所以不算覆盖。
+  // 门槛：两边都至少 1 天，并且合计至少 2 个不同日期（与样本不足的最少天数同一量级）。
+  // 只有一边，或两边挤在同一天，都不能把没采到的日子当成零互动。
+  function interactionCoverage(rows, start, end) {
+    var daysIn = {}, daysOut = {}, talkDays = {};
+    rows.forEach(function (r) {
+      if (!TALK[r.type]) return;
+      var day = r.day;
+      if (!day || day < start || day > end) return;
+      if (r.direction === "in") daysIn[day] = 1;
+      else if (r.direction === "out") daysOut[day] = 1;
+      else return;
+      talkDays[day] = 1;
+    });
+    var inboundDays = Object.keys(daysIn).length;
+    var outboundDays = Object.keys(daysOut).length;
+    var days = Object.keys(talkDays).length;
+    return {
+      inboundDays: inboundDays,
+      outboundDays: outboundDays,
+      talkDays: days,
+      interactionReady: inboundDays >= 1 && outboundDays >= 1 && days >= 2
+    };
+  }
   function classify(x) {
     var g = CONFIG.tiers.gold, s = CONFIG.tiers.silver, o = CONFIG.tiers.one_way;
     var their = x.I_raw || 0, rounds = x.rounds || 0;
@@ -369,6 +395,7 @@ var root = {};
     Object.keys(data.following || {}).forEach(function (a) { if (!excl[a]) accounts[a] = 1; });
     Object.keys(data.followers || {}).forEach(function (a) { if (!excl[a]) accounts[a] = 1; });
     var pb = CONFIG.tiers.priority_bonus;
+    var talk = interactionCoverage(prep, start, end);
     var res = Object.keys(accounts).sort().map(function (a) {
       var x = score(by[a] || [], start, end, CONFIG.likes.time_mode, observed);
       x.account = a;
@@ -381,9 +408,12 @@ var root = {};
       var count = parseInt(p.followers_count || f.followers_count || 0, 10);
       x.followers_count = isNaN(count) || !count ? null : count;
       x.tier = classify(x);
+      if (!talk.interactionReady && ABSENCE_TIERS[x.tier]) {
+        x.tier = "";
+        x.action = "";
+      } else x.action = action(x);
       var bonus = pb.mutual * (x.mutual ? 1 : 0) + pb.verified * (x.verified ? 1 : 0) + pb.followers_log10_max * Math.min(1, Math.log10((x.followers_count || 0) + 1) / 4);
       x.priority = pyRound((x.score || 0) + bonus, 1);
-      x.action = action(x);
       return x;
     });
     res.sort(function (a, b) {
@@ -395,7 +425,7 @@ var root = {};
     var span = [];
     for (var i = 0; i <= dayNum(end) - dayNum(start); i++) span.push(addDays(start, i));
     var covered = observed ? span.filter(function (d) { return observed[d]; }) : span.slice();
-    return {rows: res, meta: {start: start, end: end, days: days, tz: tz, covered: covered.length, uncovered: span.length - covered.length, gapsAreEmpty: !!options.gapsAreEmpty}};
+    return {rows: res, meta: {start: start, end: end, days: days, tz: tz, covered: covered.length, uncovered: span.length - covered.length, gapsAreEmpty: !!options.gapsAreEmpty, inboundDays: talk.inboundDays, outboundDays: talk.outboundDays, talkDays: talk.talkDays, interactionReady: talk.interactionReady, interactionNote: talk.interactionReady ? "" : INTERACTION_THIN}};
   }
   function usersFrom(records) {
     var map = {};
@@ -662,16 +692,24 @@ var root = {};
     TIERS.forEach(function (t) { count[t] = 0; });
     rows.forEach(function (x) { count[x.tier] = (count[x.tier] || 0) + 1; });
     var mutual = rows.filter(function (x) { return x.mutual; }).length;
+    function statCards() {
+      var html = '<div class="grid stat-cards"><div class="card stat-card"><div class="num">' + mutual + '</div><div class="lab">互关</div><div class="tag">统计</div></div>';
+      (options.extras || []).forEach(function (item) {
+        html += '<button type="button" class="card tier-card" data-jump-id="' + escHtml(item.id) + '" data-count="' + escHtml(item.count) + '"><div class="num">' + escHtml(item.count) + '</div><div class="lab">' + escHtml(item.label) + "</div></button>";
+      });
+      return html + "</div>";
+    }
+    if (options.interactionReady === false) {
+      var note = options.interactionNote || INTERACTION_THIN;
+      var why = "分层门槛：至少 1 天有你发出的回复，并且至少 1 天有别人回复你，两边合计不少于 2 个不同日期。只采到关注或粉丝名单时，这些天是无数据，不会把互关记成沉睡互关、零互动或单向。";
+      return '<div class="warn" id="interaction-thin">' + escHtml(note) + '</div><p class="muted">' + escHtml(why) + "</p>" + statCards();
+    }
     var cards = '<div class="grid tier-cards">';
     TIERS.forEach(function (t) {
       var n = count[t] || 0;
       cards += '<button type="button" class="card tier-card' + (n ? "" : " empty") + '" data-jump="' + escHtml(t) + '" data-count="' + n + '"><div class="num">' + n + "</div><div class=\"lab\">" + escHtml(t) + "</div></button>";
     });
-    cards += '</div><div class="grid stat-cards"><div class="card stat-card"><div class="num">' + mutual + '</div><div class="lab">互关</div><div class="tag">统计</div></div>';
-    (options.extras || []).forEach(function (item) {
-      cards += '<button type="button" class="card tier-card" data-jump-id="' + escHtml(item.id) + '" data-count="' + escHtml(item.count) + '"><div class="num">' + escHtml(item.count) + '</div><div class="lab">' + escHtml(item.label) + "</div></button>";
-    });
-    cards += "</div>";
+    cards += "</div>" + statCards();
     cards += '<p id="jump-note" class="muted"></p>';
     function bars(items, jump) {
       var max = 0;
@@ -958,7 +996,7 @@ var root = {};
       });
       extras.push({id: "follow-diff", count: changeSeen ? String(changeTotal) : "—", label: "关注变化"});
     }
-    var html = boardHtml(rows, {masked: !!options.masked, open: options.open || {}, extras: extras, showAll: !!options.showAll});
+    var html = boardHtml(rows, {masked: !!options.masked, open: options.open || {}, extras: extras, showAll: !!options.showAll, interactionReady: result.meta.interactionReady !== false, interactionNote: result.meta.interactionNote || ""});
     if (back) html += notFollowedBackHtml(back, {masked: !!options.masked, rows: rows});
     if (diff) html += followDiffHtml(diff, {masked: !!options.masked, rows: rows});
     return {html: html, rows: rows, meta: result.meta, back: back, diff: diff};
@@ -995,7 +1033,8 @@ var OPS = {
   BlueVerifiedFollowers: "blue-followers",
   Following: "following",
   TweetDetail: "detail",
-  ModeratedTimeline: "detail"
+  ModeratedTimeline: "detail",
+  NotificationsTimeline: "notifications"
 };
 
 var POST_FIELDS = ["id", "uid", "handle", "name", "verified", "replyTo", "replyToHandle", "conv", "ts", "text", "src", "seen"];
@@ -1032,6 +1071,14 @@ function listKindFromPath(pathname, owner) {
   if (match[2] === "following") return "following";
   if (match[2] === "verified_followers") return "blue-followers";
   return "followers";
+}
+
+function timelineKindFromPath(pathname, owner) {
+  var me = norm(owner);
+  if (!me) return "";
+  var match = String(pathname || "").match(/^\/([A-Za-z0-9_]{1,15})(\/with_replies)?\/?$/);
+  if (!match || norm(match[1]) !== me) return "";
+  return match[2] ? "replies" : "originals";
 }
 
 function userFromVisible(hrefs, nameText, verified) {
@@ -1085,15 +1132,29 @@ function diagnosticsCopy(state) {
     if (op && unmatched.indexOf(op) < 0) unmatched.push(op);
   });
   var skips = [];
-  Object.keys(state.skips || {}).sort().forEach(function (key) {
-    var label = SKIP_OK[key] ? key : "other";
-    var count = state.skips[key] | 0;
-    var found = false;
-    for (var i = 0; i < skips.length; i++) {
-      if (skips[i].label === label) { skips[i].count += count; found = true; }
-    }
-    if (!found) skips.push({label: label, count: count});
-  });
+  var byOp = state.skipsByOp || {};
+  var opKeys = Object.keys(byOp);
+  if (opKeys.length) {
+    opKeys.sort().forEach(function (rawOp) {
+      var op = safeOp(rawOp) || "other";
+      var reasons = byOp[rawOp] || {};
+      Object.keys(reasons).sort().forEach(function (reason) {
+        var label = SKIP_OK[reason] ? reason : "other";
+        skips.push(op + ":" + label + "=" + (reasons[reason] | 0));
+      });
+    });
+  } else {
+    Object.keys(state.skips || {}).sort().forEach(function (key) {
+      var label = SKIP_OK[key] ? key : "other";
+      var count = state.skips[key] | 0;
+      var found = false;
+      for (var i = 0; i < skips.length; i++) {
+        if (skips[i].label === label) { skips[i].count += count; found = true; }
+      }
+      if (!found) skips.push({label: label, count: count});
+    });
+    skips = skips.map(function (item) { return item.label + "=" + item.count; });
+  }
   return [
     "fan-audit diagnostics",
     "hook=" + safeCode(state.hook),
@@ -1108,7 +1169,7 @@ function diagnosticsCopy(state) {
     "storedPosts=" + (state.storedPosts | 0),
     "storedFollowing=" + (state.storedFollowing | 0),
     "storedFollowers=" + (state.storedFollowers | 0),
-    "skips=" + (skips.map(function (item) { return item.label + "=" + item.count; }).join(",") || "none")
+    "skips=" + (skips.join(",") || "none")
   ].join("\n");
 }
 
@@ -1319,12 +1380,40 @@ function readInstructions(json, kind) {
       var moderated = data.tweet && data.tweet.result && data.tweet.result.timeline_response && data.tweet.result.timeline_response.timeline;
       specific = (moderated && moderated.instructions) || [];
     }
+  } else if (kind === "notifications") {
+    var viewer = (data.viewer_v2 && data.viewer_v2.user_results && data.viewer_v2.user_results.result)
+      || (data.viewer && data.viewer.user_results && data.viewer.user_results.result)
+      || null;
+    var noteTimeline = viewer && (viewer.notification_timeline || viewer.notifications_timeline);
+    specific = (noteTimeline && noteTimeline.timeline && noteTimeline.timeline.instructions) || [];
   } else {
     var direct = data.user && data.user.result && data.user.result.timeline && data.user.result.timeline.timeline;
     specific = (direct && direct.instructions) || [];
   }
   if (specific.length) return specific;
   return findInstructions(data, 0) || [];
+}
+
+function screenNameFromRequest(url, body) {
+  function from(source) {
+    if (!source) return "";
+    var text = String(source);
+    var match = text.match(/(?:[?&])variables=([^&#]+)/);
+    var raw = "";
+    if (match) {
+      try { raw = decodeURIComponent(match[1]); } catch (err) { raw = match[1]; }
+    } else if (text.indexOf("screen_name") >= 0 || text.indexOf("screenName") >= 0) raw = text;
+    else return "";
+    try {
+      var obj = JSON.parse(raw);
+      if (obj && obj.variables) obj = obj.variables;
+      if (obj && (obj.screen_name || obj.screenName)) return norm(obj.screen_name || obj.screenName);
+    } catch (err) {}
+    var found = raw.match(/"screen_?[Nn]ame"\s*:\s*"((?:\\.|[^"\\])*)"/);
+    if (!found) return "";
+    try { return norm(JSON.parse('"' + found[1] + '"')); } catch (err2) { return norm(found[1]); }
+  }
+  return from(url) || from(body);
 }
 
 function queryFromText(text) {
@@ -1387,47 +1476,63 @@ function stamp(tweets, src) {
   });
 }
 
+function timelineOwned(profile, owner, pagePath, url, body) {
+  var handle = profile && norm(profile.handle);
+  if (handle) return handle === owner;
+  if (timelineKindFromPath(pagePath, owner)) return true;
+  var requested = screenNameFromRequest(url, body);
+  return !!requested && requested === owner;
+}
+
 function parseCapture(url, text, options) {
   options = options || {};
+  var op = operationName(url);
+  function finish(result) {
+    result.op = op;
+    return result;
+  }
   var kind = classifyUrl(url);
-  if (!kind) return {kind: "", skip: "不在采集名单", posts: [], users: []};
+  if (!kind) return finish({kind: "", skip: "不在采集名单", posts: [], users: []});
   var json;
   try { json = JSON.parse(text); } catch (err) {
-    return {kind: kind, skip: "响应不是 JSON", posts: [], users: []};
+    return finish({kind: kind, skip: "响应不是 JSON", posts: [], users: []});
   }
-  if (!json || typeof json !== "object") return {kind: kind, skip: "响应不是 JSON", posts: [], users: []};
+  if (!json || typeof json !== "object") return finish({kind: kind, skip: "响应不是 JSON", posts: [], users: []});
   var owner = norm(options.owner);
   var profile = readProfile(json);
   var instructions = readInstructions(json, kind);
   var collected = collect(instructions);
   if (kind === "following" || kind === "followers" || kind === "blue-followers") {
-    if (!owner) return {kind: kind, skip: "还不知道你的用户名", posts: [], users: [], profile: profile};
+    if (!owner) return finish({kind: kind, skip: "还不知道你的用户名", posts: [], users: [], profile: profile});
     var profileHandle = profile && norm(profile.handle);
     if (profileHandle && profileHandle !== owner) {
-      return {kind: kind, skip: "不是你的关注或粉丝列表", posts: [], users: [], profile: profile};
+      return finish({kind: kind, skip: "不是你的关注或粉丝列表", posts: [], users: [], profile: profile});
     }
     if (!profileHandle && options.pageKind !== kind) {
-      return {kind: kind, skip: "不是你的关注或粉丝列表", posts: [], users: [], profile: profile};
+      return finish({kind: kind, skip: "不是你的关注或粉丝列表", posts: [], users: [], profile: profile});
     }
     var users = collected.users.filter(function (user) { return norm(user.handle) !== owner; });
-    return {kind: kind, skip: "", posts: [], users: users, profile: profile};
+    return finish({kind: kind, skip: "", posts: [], users: users, profile: profile});
   }
   if (kind === "replies" || kind === "originals") {
-    if (!owner) return {kind: kind, skip: "还不知道你的用户名", posts: [], users: [], profile: profile};
-    if (!profile || norm(profile.handle) !== owner) {
-      return {kind: kind, skip: "不是你的主页时间线", posts: [], users: [], profile: profile};
+    if (!owner) return finish({kind: kind, skip: "还不知道你的用户名", posts: [], users: [], profile: profile});
+    if (!timelineOwned(profile, owner, options.pagePath, url, options.body)) {
+      return finish({kind: kind, skip: "不是你的主页时间线", posts: [], users: [], profile: profile});
     }
-    return {kind: kind, skip: "", posts: stamp(collected.tweets, kind), users: [], profile: profile};
+    return finish({kind: kind, skip: "", posts: stamp(collected.tweets, kind), users: [], profile: profile});
   }
-  if (!owner) return {kind: kind, skip: "还不知道你的用户名", posts: [], users: [], profile: profile};
+  if (!owner) return finish({kind: kind, skip: "还不知道你的用户名", posts: [], users: [], profile: profile});
   if (kind === "search") {
     var query = readRawQuery(url, options.body);
     if (query && !queryMentionsTo(query, owner)) {
-      return {kind: kind, skip: "搜索不是 to:你的用户名", posts: [], users: [], profile: profile, query: query};
+      return finish({kind: kind, skip: "搜索不是 to:你的用户名", posts: [], users: [], profile: profile, query: query});
     }
-    return {kind: kind, skip: "", posts: stamp(relatedTweets(collected.tweets, owner), "search"), users: [], profile: profile, query: query};
+    return finish({kind: kind, skip: "", posts: stamp(relatedTweets(collected.tweets, owner), "search"), users: [], profile: profile, query: query});
   }
-  return {kind: kind, skip: "", posts: stamp(relatedTweets(collected.tweets, owner), "detail"), users: [], profile: profile};
+  if (kind === "notifications") {
+    return finish({kind: kind, skip: "", posts: stamp(relatedTweets(collected.tweets, owner), "notifications"), users: [], profile: profile});
+  }
+  return finish({kind: kind, skip: "", posts: stamp(relatedTweets(collected.tweets, owner), "detail"), users: [], profile: profile});
 }
 
 function compactPost(post, now) {
@@ -1569,10 +1674,10 @@ function coverageReport(store, owner, tz) {
   var me = norm(owner);
   var daysIn = {};
   var daysOut = {};
-  var daysBySrc = {replies: {}, originals: {}, search: {}, detail: {}};
+  var daysBySrc = {replies: {}, originals: {}, search: {}, detail: {}, notifications: {}};
   var countIn = 0;
   var countOut = 0;
-  var srcCount = {replies: 0, originals: 0, search: 0, detail: 0};
+  var srcCount = {replies: 0, originals: 0, search: 0, detail: 0, notifications: 0};
   Object.keys(store.posts || {}).forEach(function (id) {
     var post = store.posts[id];
     var day = localDay(post.ts, tz);
@@ -1601,7 +1706,8 @@ function coverageReport(store, owner, tz) {
       replies: Object.keys(daysBySrc.replies).length,
       originals: Object.keys(daysBySrc.originals).length,
       search: Object.keys(daysBySrc.search).length,
-      detail: Object.keys(daysBySrc.detail).length
+      detail: Object.keys(daysBySrc.detail).length,
+      notifications: Object.keys(daysBySrc.notifications).length
     },
     following: Object.keys(store.following || {}).length,
     followers: Object.keys(store.followers || {}).length,
@@ -1772,7 +1878,7 @@ function attachHooks(page, emit) {
   var origOpen = page.XMLHttpRequest.prototype.open;
   var origSend = page.XMLHttpRequest.prototype.send;
   var origFetch = page.fetch;
-  var interesting = /\/(UserRepliesTimeline|UserTweetsAndReplies|UserOriginalsTimeline|UserTweets|SearchTimeline|BlueVerifiedFollowers|Followers|Following|TweetDetail|ModeratedTimeline)(?:\?|#|$)/;
+  var interesting = /\/(UserRepliesTimeline|UserTweetsAndReplies|UserOriginalsTimeline|UserTweets|SearchTimeline|BlueVerifiedFollowers|Followers|Following|TweetDetail|ModeratedTimeline|NotificationsTimeline)(?:\?|#|$)/;
   function requestUrl(input) {
     try {
       if (typeof input === "string") return input;
@@ -1870,7 +1976,7 @@ var BOARD_CSS = [
   ".sub{color:#6B7280;font-size:14px;margin:0 0 12px}",
   ".grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:14px;margin:14px 0}",
   ".card{background:#fff;border:1px solid #E5E7EB;border-radius:14px;padding:16px 18px}",
-  "button.card,a.card{padding:16px 18px;text-align:left;width:100%;cursor:pointer;box-sizing:border-box;font:inherit}",
+  "button.card,a.card{padding:16px 18px;text-align:left;width:100%;cursor:pointer;box-sizing:border-box;font:inherit;color:#1F2937}",
   "a.card{display:block;color:inherit;text-decoration:none}",
   "button.tier-card.empty,button.tier-card.empty .num,button.tier-card.empty .lab{background:#F3F4F6;color:#9CA3AF}",
   ".stat-cards{border-top:1px dashed #D1D5DB;padding-top:8px}",
@@ -1880,7 +1986,7 @@ var BOARD_CSS = [
   ".tier-block{margin-bottom:16px;scroll-margin-top:12px}",
   "h2.flash{background:#FDE68A;border-radius:6px}",
   "button.bar{width:100%;background:transparent;border:0;padding:0;cursor:pointer;text-align:left;font:inherit}",
-  ".num{font-size:32px;font-weight:700}.lab{color:#6B7280;font-size:13px;margin-top:4px}",
+  ".num{font-size:32px;font-weight:700;color:#1F2937}.lab{color:#6B7280;font-size:13px;margin-top:4px}",
   ".panels{display:grid;grid-template-columns:1fr;gap:16px;margin-bottom:16px}",
   ".bar{display:flex;align-items:center;margin:6px 0;font-size:14px}",
   ".bar .k{width:210px}.bar .b{height:14px;border-radius:4px;background:#3B82F6;margin-right:8px}",
@@ -1967,7 +2073,7 @@ function boot() {
   var ui = {};
   var pending = [];
   var flushing = false;
-  var diag = {hook: "no", world: "unknown", sameRealm: false, pageApp: false, graphqlSeen: 0, matched: {}, unmatched: [], domAccepted: 0, skips: {}};
+  var diag = {hook: "no", world: "unknown", sameRealm: false, pageApp: false, graphqlSeen: 0, matched: {}, unmatched: [], domAccepted: 0, skips: {}, skipsByOp: {}};
 
   function persist() {
     try {
@@ -2053,8 +2159,13 @@ function boot() {
   function ingest(url, text, body, countTraffic) {
     if (countTraffic) noteTraffic(url);
     var owner = currentOwner();
-    var captured = parseCapture(url, text, {owner: owner, body: body, pageKind: listKindFromPath(location.pathname, owner)});
-    if (captured.skip) diag.skips[captured.skip] = (diag.skips[captured.skip] || 0) + 1;
+    var captured = parseCapture(url, text, {owner: owner, body: body, pageKind: listKindFromPath(location.pathname, owner), pagePath: location.pathname});
+    if (captured.skip) {
+      diag.skips[captured.skip] = (diag.skips[captured.skip] || 0) + 1;
+      var skipOp = captured.op || operationName(url) || "unknown";
+      if (!diag.skipsByOp[skipOp]) diag.skipsByOp[skipOp] = {};
+      diag.skipsByOp[skipOp][captured.skip] = (diag.skipsByOp[skipOp][captured.skip] || 0) + 1;
+    }
     if (captured.skip === "还不知道你的用户名" && text && pending.length < 20 && String(text).length < 1500000) {
       pending.push({url: url, text: text, body: body || ""});
     }
@@ -2158,11 +2269,14 @@ function boot() {
       ".row{display:flex;flex-wrap:wrap;gap:8px;align-items:end;margin:8px 0}",
       "label.field{font-size:12px;color:#374151;display:flex;flex-direction:column;gap:4px}",
       "input[type=text]{border:1px solid #D1D5DB;border-radius:8px;padding:6px 8px;background:#fff;color:#1F2937}",
-      "button.ctrl{border:1px solid #D1D5DB;background:#fff;border-radius:8px;padding:6px 10px;cursor:pointer;color:#1F2937}",
+      "button.ctrl,a.ctrl{border:1px solid #D1D5DB;background:#fff;border-radius:8px;padding:6px 10px;cursor:pointer;color:#1F2937;text-decoration:none;display:inline-block}",
       "button.ctrl.on{background:#1D4ED8;color:#fff;border-color:#1D4ED8}",
       "button.danger{border-color:#FECACA;color:#B91C1C}",
       ".bar .k{width:132px}",
-      "#status{min-height:1.2em}"
+      "#status{min-height:1.2em}",
+      ".check{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:6px 0}",
+      ".got{color:#047857;font-weight:700}",
+      ".miss{color:#9CA3AF}"
     ].join("\n");
     shadow.appendChild(style);
 
@@ -2307,7 +2421,8 @@ function boot() {
         storedPosts: Object.keys(store.posts).length,
         storedFollowing: Object.keys(store.following).length,
         storedFollowers: Object.keys(store.followers).length,
-        skips: diag.skips
+        skips: diag.skips,
+        skipsByOp: diag.skipsByOp
       });
       function copied(ok) {
         status.textContent = ok ? "已复制诊断。里面只有接口名和次数，没有账号名。" : "没能复制，请再点一次。";
@@ -2462,6 +2577,38 @@ function boot() {
     heading.classList.add("flash");
   }
 
+  function captureChecklist(owner, report) {
+    var box = el("div");
+    box.id = "checklist";
+    box.appendChild(el("p", "sub", "采集清单（点按钮在当前页打开，再手动往下翻。脚本不自己发请求。）"));
+    function row(label, href, captured, detail) {
+      var line = el("p", "check");
+      line.appendChild(el("span", captured ? "got" : "miss", captured ? "✓" : "未采集"));
+      if (href) {
+        var link = el("a", "ctrl", label);
+        link.href = href;
+        line.appendChild(link);
+      } else {
+        var plain = el("span", "", label);
+        line.appendChild(plain);
+      }
+      if (detail) line.appendChild(el("span", "muted", " " + detail));
+      box.appendChild(line);
+      return line;
+    }
+    var handle = norm(owner);
+    var home = handle ? "https://x.com/" + encodeURIComponent(handle) : "";
+    var inbound = (report.inboundDays || 0) > 0;
+    var replies = ((report.srcCount && report.srcCount.replies) || 0) > 0;
+    row("别人回我", handle ? "https://x.com/search?q=" + encodeURIComponent("to:" + handle) + "&f=live" : "", inbound, inbound ? (report.inbound + " 条 / " + report.inboundDays + " 天") : "");
+    row("关注列表", home ? home + "/following" : "", !!report.sawFollowing, report.sawFollowing ? (report.following + " 人") : "");
+    row("粉丝列表", home ? home + "/followers" : "", !!report.sawFollowers, report.sawFollowers ? (report.followers + " 人") : "");
+    row("认证粉丝", home ? home + "/verified_followers" : "", !!report.sawBlueFollowers, report.sawBlueFollowers ? "已采集" : "");
+    row("主页回复", home ? home + "/with_replies" : "", replies, replies ? (report.srcCount.replies + " 条 / " + report.srcDays.replies + " 天") : "");
+    box.appendChild(el("p", "warn", "别人回我是搜索页，别一次翻太久。X 会限流，被限了就停下来等一等再翻。脚本不会替你滚动，也不会自己发请求。"));
+    return box;
+  }
+
   function updateBadge() {
     if (!ui.badge) return;
     var total = Object.keys(store.posts).length + Object.keys(store.following).length + Object.keys(store.followers).length;
@@ -2489,7 +2636,7 @@ function boot() {
       var back = FanAudit.notFollowedBack(data, result.rows);
       var extras = [];
       if (back) extras.push({id: "not-followed-back", count: back.ready ? String(back.items.length) : "—", label: "没回关"});
-      var fragment = FanAudit.boardHtml(result.rows, {masked: !!store.prefs.masked, open: openTiers, extras: extras});
+      var fragment = FanAudit.boardHtml(result.rows, {masked: !!store.prefs.masked, open: openTiers, extras: extras, interactionReady: result.meta.interactionReady !== false, interactionNote: result.meta.interactionNote || ""});
       if (back) fragment += FanAudit.notFollowedBackHtml(back, {masked: !!store.prefs.masked, rows: result.rows});
       return {result: result, fragment: fragment, owner: owner};
     } catch (err) {
@@ -2502,12 +2649,21 @@ function boot() {
     if (ui.diagLine) {
       var matched = Object.keys(diag.matched).map(function (key) { return key + " " + diag.matched[key]; }).join("、") || "无";
       var unmatched = diag.unmatched.join("、") || "无";
+      var skipBits = [];
+      Object.keys(diag.skipsByOp).sort().forEach(function (op) {
+        var reasons = diag.skipsByOp[op] || {};
+        Object.keys(reasons).sort().forEach(function (reason) {
+          if (skipBits.length >= 6) return;
+          skipBits.push(op + " " + reason + " " + reasons[reason]);
+        });
+      });
       var ownerNow = norm(store.prefs.owner);
       var hookLabel = (diag.hook === "page" || diag.hook === "page-script") ? "已装" : "没装上";
       ui.diagLine.textContent = "诊断：钩子" + hookLabel + "（" + diag.hook + "，世界 " + diag.world + (diag.sameRealm ? "，同一环境" : "，隔离环境") + "）"
         + " · GraphQL " + diag.graphqlSeen
         + " · 匹配 " + matched
         + " · 未识别 " + unmatched
+        + " · 跳过 " + (skipBits.join("、") || "无")
         + " · 用户名 " + (ownerNow || "未识别")
         + " · 页面格子新记 " + diag.domAccepted;
     }
@@ -2532,7 +2688,9 @@ function boot() {
       ui.coverage.appendChild(el("p", "muted", norm(ui.owner.value)
         ? "名单还是空的。请确认打开的是你自己的关注、粉丝或主页回复页，再手动往下翻。上面的诊断能看出钩子有没有接到请求。默认保留 " + RETENTION_DAYS + " 天。"
         : "如果用户名是空的，先打开自己的主页，或在上面填上，再手动往下翻。默认保留 " + RETENTION_DAYS + " 天。"));
-    } else {
+    }
+    ui.coverage.appendChild(captureChecklist(norm(ui.owner.value), report));
+    if (!empty) {
       ui.coverage.appendChild(el("p", "sub", "数据完整度（按当前时区算天数）"));
       ui.coverage.appendChild(el("p", "muted", "别人回我：" + report.inbound + " 条，覆盖 " + report.inboundDays + " 天。搜索记下 " + report.srcCount.search + " 条（" + report.srcDays.search + " 天），帖子详情 " + report.srcCount.detail + " 条（" + report.srcDays.detail + " 天）。"));
       ui.coverage.appendChild(el("p", "muted", "我发出的回复：" + report.outbound + " 条，覆盖 " + report.outboundDays + " 天。主页回复页 " + report.srcCount.replies + " 条（" + report.srcDays.replies + " 天），主页帖子页 " + report.srcCount.originals + " 条（" + report.srcDays.originals + " 天）。"));
