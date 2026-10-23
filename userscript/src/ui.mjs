@@ -1,4 +1,4 @@
-import { EMPTY_GUIDE, RETENTION_DAYS, BOARD_CSS, emptyStore, normalizeStore, prune, parseCapture, applyCapture, coverageReport, toEngineData, contextProblems, installHooks, exportBackup, importBackup, standaloneHtml, norm } from "./logic.mjs";
+import { EMPTY_GUIDE, RETENTION_DAYS, BOARD_CSS, emptyStore, normalizeStore, prune, parseCapture, applyCapture, coverageReport, toEngineData, contextProblems, installHooks, pageHookProgram, exportBackup, importBackup, standaloneHtml, norm, operationName, classifyUrl, listKindFromPath, userFromVisible, diagnosticsCopy, sameRealm } from "./logic.mjs";
 
 var STORE_KEY = "fan-audit-v1";
 
@@ -56,6 +56,9 @@ function boot() {
   var openTiers = {};
   var saveTimer = 0;
   var ui = {};
+  var pending = [];
+  var flushing = false;
+  var diag = {hook: "no", world: "unknown", sameRealm: false, pageApp: false, graphqlSeen: 0, matched: {}, unmatched: [], domAccepted: 0, skips: {}};
 
   function persist() {
     try {
@@ -79,22 +82,142 @@ function boot() {
     scheduleSave();
     return detected;
   }
-  function onResponse(url, text, body) {
-    var captured = parseCapture(url, text, {owner: currentOwner(), body: body, now: Date.now()});
+  function fallbackCopy(text) {
+    try {
+      var area = document.createElement("textarea");
+      area.value = text;
+      area.setAttribute("readonly", "readonly");
+      area.style.position = "fixed";
+      area.style.left = "-9999px";
+      (document.body || document.documentElement).appendChild(area);
+      area.select();
+      var ok = document.execCommand("copy");
+      area.remove();
+      return !!ok;
+    } catch (err) {
+      return false;
+    }
+  }
+  function scanCells() {
+    var owner = currentOwner();
+    if (!flushing) flushPending();
+    var kind = listKindFromPath(location.pathname, owner);
+    if (!kind || !owner) return;
+    var root = document.querySelector('[data-testid="primaryColumn"]') || document.querySelector('main[role="main"]');
+    if (!root) return;
+    var cells = root.querySelectorAll('[data-testid="UserCell"]');
+    var users = [];
+    for (var i = 0; i < cells.length; i++) {
+      var cell = cells[i];
+      var nameBox = cell.querySelector('[data-testid="User-Name"]');
+      var hrefs = [];
+      var links = cell.querySelectorAll("a[href]");
+      for (var j = 0; j < links.length; j++) hrefs.push(links[j].getAttribute("href") || "");
+      var verified = !!cell.querySelector('[data-testid="icon-verified"], [data-testid="icon-verified-enterprise"], [data-testid="verificationBadge"]');
+      var user = userFromVisible(hrefs, nameBox ? nameBox.textContent : "", verified);
+      if (user && user.handle !== owner) users.push(user);
+    }
+    if (!users.length) return;
+    var bucket = kind === "following" ? store.following : store.followers;
+    var before = Object.keys(bucket).length;
+    if (applyCapture(store, {kind: kind, skip: "", posts: [], users: users}, Date.now())) {
+      var after = Object.keys(bucket).length;
+      if (after > before) diag.domAccepted += after - before;
+      scheduleSave();
+      updateBadge();
+      if (panelOpen) render();
+    }
+  }
+  function noteTraffic(url) {
+    var op = operationName(url);
+    if (!op) return;
+    diag.graphqlSeen += 1;
+    if (!classifyUrl(url)) {
+      if (diag.unmatched.indexOf(op) < 0) {
+        diag.unmatched.push(op);
+        if (diag.unmatched.length > 8) diag.unmatched.shift();
+      }
+      return;
+    }
+    diag.matched[op] = (diag.matched[op] || 0) + 1;
+  }
+  function ingest(url, text, body, countTraffic) {
+    if (countTraffic) noteTraffic(url);
+    var owner = currentOwner();
+    var captured = parseCapture(url, text, {owner: owner, body: body, pageKind: listKindFromPath(location.pathname, owner)});
+    if (captured.skip) diag.skips[captured.skip] = (diag.skips[captured.skip] || 0) + 1;
+    if (captured.skip === "还不知道你的用户名" && text && pending.length < 20 && String(text).length < 1500000) {
+      pending.push({url: url, text: text, body: body || ""});
+    }
     if (applyCapture(store, captured, Date.now())) scheduleSave();
     updateBadge();
     if (panelOpen) render();
+    if (!flushing && currentOwner()) flushPending();
   }
-  if (page) {
-    try { hooks = installHooks(page, onResponse); }
-    catch (err) { hookError = "钩子没有装上。CSP 或沙箱可能挡住了页面环境。"; }
+  function flushPending() {
+    if (flushing || !currentOwner() || !pending.length) return;
+    flushing = true;
+    var batch = pending.splice(0, pending.length);
+    try {
+      batch.forEach(function (item) { ingest(item.url, item.text, item.body, false); });
+    } finally {
+      flushing = false;
+    }
   }
+  function onResponse(url, text, body) {
+    ingest(url, text, body, true);
+  }
+  function injectPageHook() {
+    var code = pageHookProgram();
+    function added() {
+      return document.documentElement && document.documentElement.getAttribute("data-fan-audit-hook") === "page";
+    }
+    try {
+      if (typeof GM_addElement === "function") {
+        try { GM_addElement(document.documentElement, "script", {textContent: code}); }
+        catch (err) { GM_addElement("script", {textContent: code}); }
+      }
+    } catch (err) {}
+    if (!added()) {
+      try {
+        var script = document.createElement("script");
+        script.textContent = code;
+        (document.documentElement || document.head || document).appendChild(script);
+        script.remove();
+      } catch (err) {}
+    }
+    return added();
+  }
+  diag.sameRealm = sameRealm(page);
+  try {
+    diag.world = (typeof GM_info !== "undefined" && GM_info && GM_info.sandboxMode) || (diag.sameRealm ? "page" : "isolated");
+  } catch (err) {
+    diag.world = diag.sameRealm ? "page" : "isolated";
+  }
+  if (page && diag.sameRealm) {
+    try { hooks = installHooks(page, onResponse); diag.hook = "page"; }
+    catch (err) { hookError = "钩子没有装上。CSP 或沙箱可能挡住了页面环境。"; diag.hook = "failed"; }
+  } else if (page) {
+    document.addEventListener("fan-audit-capture", function (event) {
+      var detail = (event && event.detail) || {};
+      onResponse(String(detail.url || ""), String(detail.text || ""), String(detail.body || ""));
+    });
+    if (injectPageHook()) diag.hook = "page-script";
+    else {
+      diag.hook = "blocked";
+      hookError = "钩子没有进到页面自己的环境。x.com 的内容安全策略会拦住内联脚本；油猴若跑在隔离世界里，就读不到页面自己的请求。自己的粉丝页、关注页上已经画出来的账号仍会记下。";
+    }
+  } else diag.hook = "no-window";
 
   function problems() {
+    var sawPageApp = false;
+    try { sawPageApp = !!(page && ("webpackChunk_twitter_responsive_web" in page)); } catch (err) { sawPageApp = false; }
+    diag.pageApp = sawPageApp;
     var list = contextProblems({
       page: page,
       hookedOpen: hooks && hooks.hookedOpen,
-      sawPageApp: !!(page && ("webpackChunk_twitter_responsive_web" in page))
+      pageHookMarked: diag.hook === "page" || diag.hook === "page-script",
+      sawPageApp: sawPageApp
     });
     if (hookError) list.unshift({level: "error", text: hookError});
     if (typeof GM_setValue !== "function") {
@@ -153,6 +276,11 @@ function boot() {
     var title = el("h1", "", "粉丝体检");
     title.id = "top";
     var lead = el("p", "privacy", "只被动记录你正在浏览时页面已经收到的内容。脚本自己不发请求，也不会点赞、关注、取关或发帖。");
+    var diagLine = el("p", "muted");
+    diagLine.id = "diag";
+    var copyDiag = el("button", "ctrl", "复制诊断");
+    copyDiag.type = "button";
+    copyDiag.id = "copy-diag";
     var maskBtn = el("button", "ctrl", "一键打码");
     maskBtn.type = "button";
     maskBtn.id = "mask";
@@ -232,6 +360,8 @@ function boot() {
 
     scroller.appendChild(title);
     scroller.appendChild(lead);
+    scroller.appendChild(diagLine);
+    scroller.appendChild(copyDiag);
     scroller.appendChild(row1);
     scroller.appendChild(row2);
     scroller.appendChild(row3);
@@ -242,15 +372,44 @@ function boot() {
     scroller.appendChild(status);
     scroller.appendChild(results);
     scroller.appendChild(footer);
-    ui = {owner: owner, tz: tz, maskBtn: maskBtn, shadow: shadow, scroller: scroller, results: results, warnings: warnings, coverage: coverage, status: status, tzLine: tzLine, launcher: launcher, badge: badge, panel: panel};
+    ui = {owner: owner, tz: tz, maskBtn: maskBtn, shadow: shadow, scroller: scroller, results: results, warnings: warnings, coverage: coverage, status: status, tzLine: tzLine, launcher: launcher, badge: badge, panel: panel, diagLine: diagLine};
 
     launcher.addEventListener("click", function () {
       panelOpen = !panelOpen;
       panel.hidden = !panelOpen;
       if (panelOpen) {
         if (!norm(store.prefs.owner)) currentOwner();
+        flushPending();
+        scanCells();
         render();
       }
+    });
+    copyDiag.addEventListener("click", function () {
+      var text = diagnosticsCopy({
+        hook: diag.hook,
+        world: diag.world,
+        sameRealm: diag.sameRealm,
+        pageApp: diag.pageApp,
+        graphqlSeen: diag.graphqlSeen,
+        matched: diag.matched,
+        unmatched: diag.unmatched,
+        domAccepted: diag.domAccepted,
+        ownerDetected: !!norm(store.prefs.owner),
+        storedPosts: Object.keys(store.posts).length,
+        storedFollowing: Object.keys(store.following).length,
+        storedFollowers: Object.keys(store.followers).length,
+        skips: diag.skips
+      });
+      function copied(ok) {
+        status.textContent = ok ? "已复制诊断。里面只有接口名和次数，没有账号名。" : "没能复制，请再点一次。";
+      }
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(function () { copied(true); }, function () { copied(fallbackCopy(text)); });
+          return;
+        }
+      } catch (err) {}
+      copied(fallbackCopy(text));
     });
     maskBtn.addEventListener("click", function () {
       store.prefs.masked = !store.prefs.masked;
@@ -349,8 +508,8 @@ function boot() {
 
     (document.body || document.documentElement).appendChild(host);
     updateBadge();
-    setTimeout(function () { if (!norm(store.prefs.owner)) currentOwner(); updateBadge(); if (panelOpen) render(); }, 1000);
-    setTimeout(function () { if (!norm(store.prefs.owner)) currentOwner(); updateBadge(); if (panelOpen) render(); }, 5000);
+    setTimeout(function () { currentOwner(); flushPending(); scanCells(); updateBadge(); if (panelOpen) render(); }, 1000);
+    setTimeout(function () { currentOwner(); flushPending(); scanCells(); updateBadge(); if (panelOpen) render(); }, 5000);
     try {
       page && page.addEventListener("pagehide", persist);
     } catch (err) {}
@@ -431,6 +590,18 @@ function boot() {
 
   function render() {
     if (!ui.results) return;
+    if (ui.diagLine) {
+      var matched = Object.keys(diag.matched).map(function (key) { return key + " " + diag.matched[key]; }).join("、") || "无";
+      var unmatched = diag.unmatched.join("、") || "无";
+      var ownerNow = norm(store.prefs.owner);
+      var hookLabel = (diag.hook === "page" || diag.hook === "page-script") ? "已装" : "没装上";
+      ui.diagLine.textContent = "诊断：钩子" + hookLabel + "（" + diag.hook + "，世界 " + diag.world + (diag.sameRealm ? "，同一环境" : "，隔离环境") + "）"
+        + " · GraphQL " + diag.graphqlSeen
+        + " · 匹配 " + matched
+        + " · 未识别 " + unmatched
+        + " · 用户名 " + (ownerNow || "未识别")
+        + " · 页面格子新记 " + diag.domAccepted;
+    }
     ui.maskBtn.classList.toggle("on", !!store.prefs.masked);
     ui.maskBtn.textContent = store.prefs.masked ? "一键打码（已开）" : "一键打码";
     ui.maskBtn.setAttribute("aria-pressed", store.prefs.masked ? "true" : "false");
@@ -449,7 +620,9 @@ function boot() {
       var guide = el("p", "warn", EMPTY_GUIDE);
       guide.id = "empty-guide";
       ui.coverage.appendChild(guide);
-      ui.coverage.appendChild(el("p", "muted", "如果用户名是空的，先打开自己的主页，或在上面填上，再手动往下翻。默认保留 " + RETENTION_DAYS + " 天。"));
+      ui.coverage.appendChild(el("p", "muted", norm(ui.owner.value)
+        ? "名单还是空的。请确认打开的是你自己的关注、粉丝或主页回复页，再手动往下翻。上面的诊断能看出钩子有没有接到请求。默认保留 " + RETENTION_DAYS + " 天。"
+        : "如果用户名是空的，先打开自己的主页，或在上面填上，再手动往下翻。默认保留 " + RETENTION_DAYS + " 天。"));
     } else {
       ui.coverage.appendChild(el("p", "sub", "数据完整度（按当前时区算天数）"));
       ui.coverage.appendChild(el("p", "muted", "别人回我：" + report.inbound + " 条，覆盖 " + report.inboundDays + " 天。搜索记下 " + report.srcCount.search + " 条（" + report.srcDays.search + " 天），帖子详情 " + report.srcCount.detail + " 条（" + report.srcDays.detail + " 天）。"));
@@ -483,6 +656,17 @@ function boot() {
     ui.results.innerHTML = view.fragment;
     updateBadge();
   }
+
+  var scanTimer = 0;
+  function scheduleScan() {
+    if (scanTimer) return;
+    scanTimer = setTimeout(function () { scanTimer = 0; scanCells(); }, 400);
+  }
+  try {
+    var observer = new MutationObserver(scheduleScan);
+    observer.observe(document.documentElement, {childList: true, subtree: true});
+  } catch (err) {}
+  setInterval(scanCells, 2000);
 
   if (document.body) mount();
   else document.addEventListener("DOMContentLoaded", mount);

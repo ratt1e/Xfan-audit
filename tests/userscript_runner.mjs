@@ -5,7 +5,7 @@ import {fileURLToPath} from "url";
 import {
   EMPTY_GUIDE, RETENTION_DAYS, classifyUrl, textForStore, snippet, parseCapture, applyCapture,
   emptyStore, coverageReport, toEngineData, prune, exportBackup, importBackup, contextProblems,
-  installHooks, norm
+  installHooks, pageHookProgram, norm, operationName, listKindFromPath, userFromVisible, diagnosticsCopy
 } from "../userscript/src/logic.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -47,6 +47,9 @@ check(built.includes("document.cookie") === false, "不读 cookie");
 check(built.includes("scrollBy") === false, "不自动滚动");
 check(built.includes(EMPTY_GUIDE), "空状态文案在安装文件里");
 const meta = "// " + "@";
+check(built.includes(meta + "version      0.1.1"), "版本号");
+check(built.includes(meta + "sandbox      raw"), "要求页面环境");
+check(built.includes(meta + "grant        GM_addElement"), "可以用元素注入把钩子送进页面");
 check(built.includes(meta + "run-at       document-start"), "document-start");
 check(built.includes(meta + "match        *://x.com/*"), "匹配 x.com");
 check(built.includes(meta + "author       " + ("ranger" + "_escape")), "作者署名");
@@ -188,8 +191,8 @@ const quiet = new page.XMLHttpRequest();
 quiet.open("GET", "https://x.com/i/api/1.1/jot/client_event");
 quiet.responseText = "{}";
 quiet.send(null);
-quiet.listeners.load.forEach(function (fn) { fn(); });
-check(seen.length === 1, "非白名单地址不读");
+if (quiet.listeners.load) quiet.listeners.load.forEach(function (fn) { fn(); });
+check(seen.length === 1 && !quiet.listeners.load, "非 GraphQL 地址不读、也不挂监听");
 const fetchUrl = "https://x.com/i/api/graphql/hash/Followers";
 page.bodies[fetchUrl] = JSON.stringify(sample.events[1].body);
 await page.fetch(fetchUrl);
@@ -199,6 +202,104 @@ check(page.fetchCalls === 1, "fetch 兜底没有多打一次请求");
 check(page.XMLHttpRequest.prototype.open === hooks.hookedOpen, "钩子挂在页面的 XMLHttpRequest 上");
 const fine = contextProblems({page: page, hookedOpen: hooks.hookedOpen, sawPageApp: true});
 check(fine.length === 0, "页面环境和钩子都在时自检通过");
+
+const home = new page.XMLHttpRequest();
+home.open("GET", "https://x.com/i/api/graphql/hash/HomeTimeline");
+home.responseText = "{\"data\":{\"user_01\":true}}";
+home.send(null);
+home.listeners.load.forEach(function (fn) { fn(); });
+check(seen.length === 3 && seen[2].indexOf("HomeTimeline") >= 0 && seen[2].endsWith(" 0"), "未识别的 GraphQL 只记操作名，不读正文");
+check(seen[2].indexOf("user_01") < 0, "未识别响应的正文不会交给上层");
+
+function ThrowingXHR() { this.listeners = {}; this.status = 200; this.response = {data: {ok: 1}}; }
+ThrowingXHR.prototype.open = function () {};
+ThrowingXHR.prototype.send = function () {};
+ThrowingXHR.prototype.addEventListener = function (type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); };
+Object.defineProperty(ThrowingXHR.prototype, "responseText", {get: function () { throw new Error("json"); }});
+const jsonPage = {XMLHttpRequest: ThrowingXHR, fetch: function () { return Promise.resolve({ok: true, clone: function () { return {text: function () { return Promise.resolve(""); }}; }}); }};
+const jsonSeen = [];
+installHooks(jsonPage, function (url, text) { jsonSeen.push(text); });
+const jsonXhr = new jsonPage.XMLHttpRequest();
+jsonXhr.open("GET", "https://x.com/i/api/graphql/hash/Followers");
+jsonXhr.send(null);
+jsonXhr.listeners.load.forEach(function (fn) { fn(); });
+check(jsonSeen.length === 1 && jsonSeen[0].indexOf("\"ok\":1") >= 0, "responseText 读不到时改读 JSON 响应");
+
+const urlPage = makePage();
+const urlSeen = [];
+installHooks(urlPage, function (url, text) { urlSeen.push(url + " " + text.length); });
+const followersUrl = "https://x.com/i/api/graphql/hash/Followers";
+urlPage.bodies[followersUrl] = "{\"ok\":true}";
+await urlPage.fetch({href: followersUrl});
+await new Promise(function (resolve) { setTimeout(resolve, 0); });
+check(urlSeen.length === 1 && urlSeen[0].indexOf(followersUrl) === 0, "fetch 的 URL 对象也能读到地址");
+
+const early = parseCapture("https://x.com/i/api/graphql/hash/Followers", JSON.stringify(sample.events[1].body), {owner: ""});
+check(early.skip === "还不知道你的用户名" && early.users.length === 0, "还不知道用户名时先不要收下粉丝");
+const later = parseCapture("https://x.com/i/api/graphql/hash/Followers", JSON.stringify(sample.events[1].body), {owner: sample.owner});
+check(later.skip === "" && later.users.length > 0, "知道用户名之后同一份响应能收下");
+
+const moved = JSON.parse(JSON.stringify(sample.events[1].body));
+moved.data.user.result.timeline_v2 = moved.data.user.result.timeline;
+delete moved.data.user.result.timeline;
+const movedCap = parseCapture("https://x.com/i/api/graphql/hash/Followers", JSON.stringify(moved), {owner: sample.owner});
+check(movedCap.skip === "" && movedCap.users.length > 0, "时间线改到 timeline_v2 仍能收下");
+
+check(listKindFromPath("/demo_owner/verified_followers", "demo_owner") === "blue-followers", "认证粉丝页路径");
+check(listKindFromPath("/user_02/followers", "demo_owner") === "", "别人的粉丝页不算自己的名单");
+check(listKindFromPath("/demo_owner/followers", "") === "", "没有用户名时不从路径猜");
+const visible = userFromVisible(["/user_12"], "演示甲\n@user_12", true);
+check(visible && visible.handle === "user_12" && visible.verified === true && visible.id === "", "页面格子只留下短字段");
+const domStore = emptyStore();
+domStore.prefs.owner = "demo_owner";
+applyCapture(domStore, {kind: "followers", skip: "", posts: [], users: [visible]}, Date.parse("2026-10-22T00:00:00Z"));
+applyCapture(domStore, {kind: "followers", skip: "", posts: [], users: [{id: "1000012", handle: "user_12", name: "演示甲", verified: true, followers: 3}]}, Date.parse("2026-10-22T00:00:00Z"));
+check(Object.keys(domStore.followers).length === 1 && domStore.followers["id:1000012"].followers === 3, "格子和接口里的同一个人合成一条");
+
+const copied = diagnosticsCopy({
+  hook: "page-script",
+  world: "raw",
+  sameRealm: false,
+  pageApp: true,
+  graphqlSeen: 3,
+  matched: {Followers: 2, BlueVerifiedFollowers: 1},
+  unmatched: ["HomeTimeline", "user_01"],
+  domAccepted: 4,
+  ownerDetected: true,
+  storedPosts: 0,
+  storedFollowing: 1,
+  storedFollowers: 4,
+  skips: {"还不知道你的用户名": 1, "demo_owner": 2}
+});
+check(copied.indexOf("Followers=2") >= 0 && copied.indexOf("BlueVerifiedFollowers=1") >= 0, "诊断复制件有接口次数");
+check(copied.indexOf("HomeTimeline") >= 0 && copied.indexOf("user_01") < 0 && copied.indexOf("demo_owner") < 0 && copied.indexOf("@") < 0, "诊断复制件丢掉账号名");
+check(copied.indexOf("ownerDetected=yes") >= 0, "诊断只报告有没有认出用户名");
+
+const events = [];
+const hookPage = makePage();
+const sandbox = {
+  URL: URL,
+  JSON: JSON,
+  Promise: Promise,
+  CustomEvent: function CustomEvent(type, init) { this.type = type; this.detail = init && init.detail; },
+  document: {
+    documentElement: {setAttribute: function () {}, getAttribute: function () { return "page"; }},
+    dispatchEvent: function (event) { events.push(event); }
+  }
+};
+sandbox.window = sandbox;
+sandbox.XMLHttpRequest = hookPage.XMLHttpRequest;
+sandbox.fetch = hookPage.fetch;
+vm.runInContext(pageHookProgram(), vm.createContext(sandbox), {filename: "page-hook.js"});
+check(sandbox.__fanAuditPageHook === 1, "页面钩子脚本能执行");
+check(pageHookProgram().indexOf("document.cookie") < 0 && pageHookProgram().indexOf("GM_") < 0, "注进页面的钩子不读 cookie、不用 GM");
+const hookedXhr = new sandbox.XMLHttpRequest();
+hookedXhr.open("GET", "https://x.com/i/api/graphql/hash/Following");
+hookedXhr.responseText = "{\"data\":{}}";
+hookedXhr.send(null);
+hookedXhr.listeners.load.forEach(function (fn) { fn(); });
+check(events.length === 1 && events[0].detail.url.indexOf("Following") >= 0 && events[0].detail.text.indexOf("data") >= 0, "页面里的钩子用事件把响应交回来");
+check(operationName(events[0].detail.url) === "Following", "事件里能取出操作名");
 
 const maskedNames = fan.boardHtml(result.rows, {masked: true});
 check(maskedNames.split("tier-").length > 2, "分层卡片还在");
