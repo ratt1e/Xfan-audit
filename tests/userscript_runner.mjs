@@ -9,6 +9,7 @@ import {
   pageContext, badgeText, listIsComplete, exportTimeFromName, recordSnapshot, snapshotDiffInput,
   addKeep, removeKeep, applyImported, headerListCount, headerVerifiedCount, SNAPSHOT_WAITING, looksLikeBackup,
   progressText, AUTO_READ_MAX_SCREENS, AUTO_READ_GAP_MIN_MS, AUTO_READ_GAP_MAX_MS, AUTO_READ_DRY_LIMIT,
+  AUTO_READ_FLAT_SCREENS, AUTO_READ_FLAT_MS, fastPageStopReason,
   autoReadGapMs, autoReadBlockReason, createAutoReader, FAST_READ_PAGE_SIZE, FAST_READ_MAX_PAGES,
   FAST_READ_REMAINING_FLOOR, buildListPageRequest, bottomCursor, fastReadStopReason, createFastReader,
   isOwnListApiUrl
@@ -57,7 +58,7 @@ check(built.split("不能保证安全").length === 2, "只写明不能保证安�
 check(!/Bearer [A-Za-z0-9_\-.]{20,}/.test(built), "没有硬编码 Bearer 令牌");
 check(built.includes(EMPTY_GUIDE), "空状态文案在安装文件里");
 const meta = "// " + "@";
-check(built.includes(meta + "version      0.3.0"), "版本号");
+check(built.includes(meta + "version      0.3.1"), "版本号");
 check(built.includes(meta + "sandbox      raw"), "要求页面环境");
 check(built.includes(meta + "grant        GM_addElement"), "可以用元素注入把钩子送进页面");
 check(built.includes(meta + "run-at       document-start"), "document-start");
@@ -698,7 +699,41 @@ for (let i = 0; i < 12; i++) {
   if (step.action === "stop") { knownStopped = step.reason; break; }
   knownScrolls += 1;
 }
-check(knownScrolls === 12 && knownStopped === "" && knownReader.phase() === "running", "已记过的人换到屏幕上仍继续滚");
+check(knownScrolls === 12 && knownStopped === "" && knownReader.phase() === "running", "刚开始的十几屏，已记过的人换到屏幕上仍继续滚");
+const flatReader = createAutoReader();
+flatReader.openConfirm();
+flatReader.setAcknowledged(true);
+flatReader.start(0, "blue-followers", 1005);
+let flatScrolls = 0;
+let flatReason = "";
+for (let i = 0; i < 40; i++) {
+  const step = flatReader.tick(i * 1000, {
+    pageKind: "blue-followers",
+    count: 1005,
+    expected: 0,
+    visibleKey: "seen_" + i,
+    moved: true,
+    atBottom: false,
+    unit: 0
+  });
+  if (step.action === "stop") { flatReason = step.reason; break; }
+  flatScrolls += 1;
+}
+check(flatReason.indexOf("已记数长时间没有增加") >= 0 && flatScrolls === AUTO_READ_FLAT_SCREENS - 1 && flatReader.phase() === "off", "已记数不涨、画面一直在换，大约 30 屏后停");
+check(flatReader.tick(999999, {pageKind: "blue-followers", count: 1006, visibleKey: "seen_x", moved: true, atBottom: false, unit: 0}).action === "idle", "已记数不涨停下后保持关闭");
+const flatTime = createAutoReader();
+flatTime.openConfirm();
+flatTime.setAcknowledged(true);
+flatTime.start(0, "followers", 100);
+flatTime.tick(0, {pageKind: "followers", count: 100, visibleKey: "a", moved: true, atBottom: false, unit: 0});
+const timed = flatTime.tick(AUTO_READ_FLAT_MS, {pageKind: "followers", count: 100, visibleKey: "b", moved: true, atBottom: false, unit: 0});
+check(timed.action === "stop" && timed.reason.indexOf("已记数长时间没有增加") >= 0, "已记数约 1 分钟不增加就停");
+const nearDone = createAutoReader();
+nearDone.openConfirm();
+nearDone.setAcknowledged(true);
+nearDone.start(0, "following", 95);
+const nearly = nearDone.tick(1000, {pageKind: "following", count: 95, expected: 100, visibleKey: "c", moved: true, atBottom: false, unit: 0});
+check(nearly.action === "stop" && nearly.reason.indexOf("差不多了") >= 0, "已记人数接近总数就停");
 const bottomReader = createAutoReader();
 bottomReader.openConfirm();
 bottomReader.setAcknowledged(true);
@@ -797,6 +832,10 @@ check(fastReadStopReason(429, "5").indexOf("429") >= 0, "429 立刻停");
 check(fastReadStopReason(500, "").indexOf("500") >= 0, "错误状态码立刻停");
 check(fastReadStopReason(200, String(FAST_READ_REMAINING_FLOOR)).indexOf("接近 0") >= 0, "剩余额度接近 0 立刻停");
 check(fastReadStopReason(200, "20") === "", "额度还够就继续");
+check(fastPageStopReason(10, 10, "c1", "c2") === "这一页没有新账号，已停止", "重复页没有新账号就停");
+check(fastPageStopReason(10, 10, "", "") === "这一页没有新账号，也没有下一页，已停止", "空页没有下一页就停");
+check(fastPageStopReason(10, 12, "c1", "c1") === "游标没有变化，已停止", "游标不变就停");
+check(fastPageStopReason(10, 12, "c1", "c2") === "", "有新账号并且游标前进才继续");
 const fastIdle = createFastReader();
 check(fastIdle.notePage().action === "stop", "没点开始不会发快速请求");
 check(fastIdle.start().ok === true, "快速读取可以开始");

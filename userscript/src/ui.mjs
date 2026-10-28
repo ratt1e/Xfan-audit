@@ -1,4 +1,4 @@
-import { EMPTY_GUIDE, RETENTION_DAYS, SNAPSHOT_WAITING, BOARD_CSS, emptyStore, normalizeStore, prune, parseCapture, applyCapture, coverageReport, toEngineData, snapshotDiffInput, recordSnapshot, exportTimeFromName, maybeSnapshot, addKeep, removeKeep, looksLikeBackup, headerListCount, headerVerifiedCount, applyImported, contextProblems, installHooks, pageHookProgram, exportBackup, importBackup, standaloneHtml, norm, operationName, classifyUrl, listKindFromPath, userFromVisible, diagnosticsCopy, sameRealm, pageContext, badgeText, progressText, AUTO_READ_RISK, AUTO_READ_ACK, AUTO_READ_MAX_SCREENS, FAST_READ_MAX_PAGES, autoReadGapMs, autoReadPageKind, autoReadCount, autoReadBlockReason, createAutoReader, buildListPageRequest, bottomCursor, fastReadStopReason, createFastReader } from "./logic.mjs";
+import { EMPTY_GUIDE, RETENTION_DAYS, SNAPSHOT_WAITING, BOARD_CSS, emptyStore, normalizeStore, prune, parseCapture, applyCapture, coverageReport, toEngineData, snapshotDiffInput, recordSnapshot, exportTimeFromName, maybeSnapshot, addKeep, removeKeep, looksLikeBackup, headerListCount, headerVerifiedCount, applyImported, contextProblems, installHooks, pageHookProgram, exportBackup, importBackup, standaloneHtml, norm, operationName, classifyUrl, listKindFromPath, userFromVisible, diagnosticsCopy, sameRealm, pageContext, badgeText, progressText, AUTO_READ_RISK, AUTO_READ_ACK, AUTO_READ_MAX_SCREENS, FAST_READ_MAX_PAGES, autoReadGapMs, autoReadPageKind, autoReadCount, autoReadBlockReason, createAutoReader, buildListPageRequest, bottomCursor, fastReadStopReason, fastPageStopReason, createFastReader } from "./logic.mjs";
 
 var STORE_KEY = "fan-audit-v1";
 
@@ -607,8 +607,8 @@ function boot() {
       }
       autoShown = phase;
       var reason = autoReader.stopReason();
-      if (phase === "running" && fastReader.running()) autoStatus.textContent = "正在快速读取你自己的关注和粉丝。已请求 " + fastReader.pages() + " 页。可以随时停止。刷新页面后会回到关闭。";
-      else if (phase === "running") autoStatus.textContent = "正在滚动你自己的名单。已滚 " + autoReader.screens() + " 屏。可以随时停止。刷新页面后会回到关闭。";
+      if (phase === "running" && fastReader.running()) autoStatus.textContent = "正在快速读取。已请求 " + fastReader.pages() + " 页。这一页没有新账号就会停。可以随时停止。";
+      else if (phase === "running") autoStatus.textContent = "正在滚动。已滚 " + autoReader.screens() + " 屏，距离上次新增 " + autoReader.screensSinceGain() + " 屏。可以随时停止。";
       else if (phase === "confirm") autoStatus.textContent = "先看完上面的提示，选一种方式并勾选后才能开始。现在还没有滚动，也没有发请求。";
       else if (reason) autoStatus.textContent = reason + " 自动读取已关闭。";
       else autoStatus.textContent = "默认关闭。不点开始就不会滚动。";
@@ -725,6 +725,7 @@ function boot() {
         pageKind: kind,
         blocked: pageBlockReason(),
         count: autoReadCount(store, kind),
+        expected: kind === "following" ? (store.totals.following || 0) : kind === "blue-followers" ? (store.totals.blue || 0) : (store.totals.followers || 0),
         visibleKey: visibleListKey(),
         moved: lastScroll.moved,
         atBottom: lastScroll.atBottom,
@@ -783,13 +784,21 @@ function boot() {
           haltAuto(stop);
           return;
         }
+        var kind = op === "Following" ? "following" : op === "BlueVerifiedFollowers" ? "blue-followers" : "followers";
+        var before = autoReadCount(store, kind);
         ingest(req.url, res.text || "", req.body || "", false, "");
+        var after = autoReadCount(store, kind);
         var next = "";
         try { next = bottomCursor(JSON.parse(res.text || "")); } catch (err) { next = ""; }
         renderAutoRead();
         updateBadge();
         if (panelOpen) render();
-        if (!next || next === cursor) {
+        var pageStop = fastPageStopReason(before, after, cursor, next);
+        if (pageStop) {
+          haltAuto(pageStop);
+          return;
+        }
+        if (!next) {
           done();
           return;
         }

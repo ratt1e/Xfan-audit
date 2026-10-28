@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         fan-audit 粉丝体检
 // @namespace    https://github.com/ratt1e/Xfan-audit
-// @version      0.3.0
+// @version      0.3.1
 // @description  在 X 上边逛边记下公开回复和关注名单，也能导入导出的 JSON。默认只读你浏览过的内容。可选自动读取名单默认关闭，可选滚动或快速请求。
 // @author       ranger_escape
 // @match        *://x.com/*
@@ -1060,8 +1060,11 @@ var AUTO_READ_MAX_MS = 12 * 60 * 1000;
 var AUTO_READ_STALL_MS = 45000;
 var AUTO_READ_STALL_SCREENS = 4;
 var AUTO_READ_STALL_FLOOR_MS = 12000;
-// 到底或页面不再滚动之后，还要连续这么多次看不到加载，才停。滚动过程中已记过的人不算「没新数据」。
+// 到底或页面不再滚动之后，还要连续这么多次看不到加载，才停。
 var AUTO_READ_DRY_LIMIT = 5;
+// 已记人数完全不增加时，满 30 屏或满 1 分钟就停。画面还在换也不再无限滚。
+var AUTO_READ_FLAT_SCREENS = 30;
+var AUTO_READ_FLAT_MS = 60 * 1000;
 var FAST_READ_PAGE_SIZE = 100;
 var FAST_READ_MAX_PAGES = 120;
 var FAST_READ_REMAINING_FLOOR = 2;
@@ -2233,6 +2236,17 @@ function bottomCursor(json) {
 }
 
 // 429、任何非 2xx、或 x-rate-limit-remaining 小于等于 2，都立刻停。不自动重试。
+// 快速翻页：这一页没有新账号、游标没动、或空页，都立刻停。有新账号且游标前进才继续。
+function fastPageStopReason(beforeCount, afterCount, prevCursor, nextCursor) {
+  var added = (afterCount | 0) > (beforeCount | 0);
+  var cursor = String(nextCursor || "");
+  var prev = String(prevCursor || "");
+  if (cursor && prev && cursor === prev) return "游标没有变化，已停止";
+  if (!added && !cursor) return "这一页没有新账号，也没有下一页，已停止";
+  if (!added) return "这一页没有新账号，已停止";
+  return "";
+}
+
 function fastReadStopReason(status, remaining) {
   var code = Number(status);
   if (!isFinite(code)) code = 0;
@@ -2294,6 +2308,8 @@ function createAutoReader() {
   var screens = 0;
   var lastCount = 0;
   var lastVisible = "";
+  var lastGainAt = 0;
+  var flatScreens = 0;
   var dry = 0;
   var stopReason = "";
   function resetRun() {
@@ -2304,6 +2320,8 @@ function createAutoReader() {
     screens = 0;
     lastCount = 0;
     lastVisible = "";
+    lastGainAt = 0;
+    flatScreens = 0;
     dry = 0;
   }
   function finish(reason) {
@@ -2314,6 +2332,7 @@ function createAutoReader() {
   return {
     phase: function () { return phase; },
     screens: function () { return screens; },
+    screensSinceGain: function () { return flatScreens; },
     stopReason: function () { return stopReason; },
     openConfirm: function () {
       if (phase === "running") return "running";
@@ -2332,7 +2351,9 @@ function createAutoReader() {
       startedKind = pageKind;
       lastCount = count | 0;
       lastVisible = "";
+      lastGainAt = now;
       screens = 0;
+      flatScreens = 0;
       dry = 0;
       stopReason = "";
       return {ok: true};
@@ -2346,28 +2367,29 @@ function createAutoReader() {
       info = info || {};
       var count = info.count | 0;
       var visible = String(info.visibleKey || "");
-      // 新账号，或屏幕上的人换了（含已经记过的），都算页面还在加载。
-      var loaded = false;
+      var expected = info.expected | 0;
+      // 只有已记人数变多才算「新增」。屏幕上换人（含已经记过的）只说明页面还在动，不重置新增计时。
       if (count > lastCount) {
         lastCount = count;
-        loaded = true;
-      }
+        lastGainAt = now;
+        flatScreens = 0;
+      } else flatScreens += 1;
       if (visible && visible !== lastVisible) {
         lastVisible = visible;
-        loaded = true;
-      }
-      if (loaded) dry = 0;
-      else dry += 1;
+        dry = 0;
+      } else dry += 1;
       var moved = info.moved === true || (info.moved == null && info.stuck !== true);
       var atBottom = info.atBottom === true;
       if (!info.pageKind || info.pageKind !== startedKind) return finish("不在刚才那份自己的名单页了，已停止");
       if (info.blocked) return finish(info.blocked);
       if (now - startedAt >= AUTO_READ_MAX_MS) return finish("已到单次 " + (AUTO_READ_MAX_MS / 60000) + " 分钟上限，已停止");
       if (screens >= AUTO_READ_MAX_SCREENS) return finish("已到单次 " + AUTO_READ_MAX_SCREENS + " 屏上限，已停止");
+      if (expected > 0 && (count >= expected || listIsComplete(count, expected))) return finish("已记人数接近总数，差不多了，已停止");
+      if (flatScreens >= AUTO_READ_FLAT_SCREENS || now - lastGainAt >= AUTO_READ_FLAT_MS) return finish("已记数长时间没有增加，可能已读完或页面不再提供新名单");
       if (atBottom && dry >= AUTO_READ_DRY_LIMIT) return finish("已到列表底，没有继续加载，已停止");
       if (!moved && dry >= AUTO_READ_DRY_LIMIT) return finish("页面没有继续加载，已停止");
       screens += 1;
-      return {action: "scroll", gapMs: autoReadGapMs(info.unit), screens: screens};
+      return {action: "scroll", gapMs: autoReadGapMs(info.unit), screens: screens, sinceGain: flatScreens};
     }
   };
 }
@@ -3787,8 +3809,8 @@ function boot() {
       }
       autoShown = phase;
       var reason = autoReader.stopReason();
-      if (phase === "running" && fastReader.running()) autoStatus.textContent = "正在快速读取你自己的关注和粉丝。已请求 " + fastReader.pages() + " 页。可以随时停止。刷新页面后会回到关闭。";
-      else if (phase === "running") autoStatus.textContent = "正在滚动你自己的名单。已滚 " + autoReader.screens() + " 屏。可以随时停止。刷新页面后会回到关闭。";
+      if (phase === "running" && fastReader.running()) autoStatus.textContent = "正在快速读取。已请求 " + fastReader.pages() + " 页。这一页没有新账号就会停。可以随时停止。";
+      else if (phase === "running") autoStatus.textContent = "正在滚动。已滚 " + autoReader.screens() + " 屏，距离上次新增 " + autoReader.screensSinceGain() + " 屏。可以随时停止。";
       else if (phase === "confirm") autoStatus.textContent = "先看完上面的提示，选一种方式并勾选后才能开始。现在还没有滚动，也没有发请求。";
       else if (reason) autoStatus.textContent = reason + " 自动读取已关闭。";
       else autoStatus.textContent = "默认关闭。不点开始就不会滚动。";
@@ -3905,6 +3927,7 @@ function boot() {
         pageKind: kind,
         blocked: pageBlockReason(),
         count: autoReadCount(store, kind),
+        expected: kind === "following" ? (store.totals.following || 0) : kind === "blue-followers" ? (store.totals.blue || 0) : (store.totals.followers || 0),
         visibleKey: visibleListKey(),
         moved: lastScroll.moved,
         atBottom: lastScroll.atBottom,
@@ -3963,13 +3986,21 @@ function boot() {
           haltAuto(stop);
           return;
         }
+        var kind = op === "Following" ? "following" : op === "BlueVerifiedFollowers" ? "blue-followers" : "followers";
+        var before = autoReadCount(store, kind);
         ingest(req.url, res.text || "", req.body || "", false, "");
+        var after = autoReadCount(store, kind);
         var next = "";
         try { next = bottomCursor(JSON.parse(res.text || "")); } catch (err) { next = ""; }
         renderAutoRead();
         updateBadge();
         if (panelOpen) render();
-        if (!next || next === cursor) {
+        var pageStop = fastPageStopReason(before, after, cursor, next);
+        if (pageStop) {
+          haltAuto(pageStop);
+          return;
+        }
+        if (!next) {
           done();
           return;
         }

@@ -24,8 +24,11 @@ export var AUTO_READ_MAX_MS = 12 * 60 * 1000;
 export var AUTO_READ_STALL_MS = 45000;
 export var AUTO_READ_STALL_SCREENS = 4;
 export var AUTO_READ_STALL_FLOOR_MS = 12000;
-// 到底或页面不再滚动之后，还要连续这么多次看不到加载，才停。滚动过程中已记过的人不算「没新数据」。
+// 到底或页面不再滚动之后，还要连续这么多次看不到加载，才停。
 export var AUTO_READ_DRY_LIMIT = 5;
+// 已记人数完全不增加时，满 30 屏或满 1 分钟就停。画面还在换也不再无限滚。
+export var AUTO_READ_FLAT_SCREENS = 30;
+export var AUTO_READ_FLAT_MS = 60 * 1000;
 export var FAST_READ_PAGE_SIZE = 100;
 export var FAST_READ_MAX_PAGES = 120;
 export var FAST_READ_REMAINING_FLOOR = 2;
@@ -1197,6 +1200,17 @@ export function bottomCursor(json) {
 }
 
 // 429、任何非 2xx、或 x-rate-limit-remaining 小于等于 2，都立刻停。不自动重试。
+// 快速翻页：这一页没有新账号、游标没动、或空页，都立刻停。有新账号且游标前进才继续。
+export function fastPageStopReason(beforeCount, afterCount, prevCursor, nextCursor) {
+  var added = (afterCount | 0) > (beforeCount | 0);
+  var cursor = String(nextCursor || "");
+  var prev = String(prevCursor || "");
+  if (cursor && prev && cursor === prev) return "游标没有变化，已停止";
+  if (!added && !cursor) return "这一页没有新账号，也没有下一页，已停止";
+  if (!added) return "这一页没有新账号，已停止";
+  return "";
+}
+
 export function fastReadStopReason(status, remaining) {
   var code = Number(status);
   if (!isFinite(code)) code = 0;
@@ -1258,6 +1272,8 @@ export function createAutoReader() {
   var screens = 0;
   var lastCount = 0;
   var lastVisible = "";
+  var lastGainAt = 0;
+  var flatScreens = 0;
   var dry = 0;
   var stopReason = "";
   function resetRun() {
@@ -1268,6 +1284,8 @@ export function createAutoReader() {
     screens = 0;
     lastCount = 0;
     lastVisible = "";
+    lastGainAt = 0;
+    flatScreens = 0;
     dry = 0;
   }
   function finish(reason) {
@@ -1278,6 +1296,7 @@ export function createAutoReader() {
   return {
     phase: function () { return phase; },
     screens: function () { return screens; },
+    screensSinceGain: function () { return flatScreens; },
     stopReason: function () { return stopReason; },
     openConfirm: function () {
       if (phase === "running") return "running";
@@ -1296,7 +1315,9 @@ export function createAutoReader() {
       startedKind = pageKind;
       lastCount = count | 0;
       lastVisible = "";
+      lastGainAt = now;
       screens = 0;
+      flatScreens = 0;
       dry = 0;
       stopReason = "";
       return {ok: true};
@@ -1310,28 +1331,29 @@ export function createAutoReader() {
       info = info || {};
       var count = info.count | 0;
       var visible = String(info.visibleKey || "");
-      // 新账号，或屏幕上的人换了（含已经记过的），都算页面还在加载。
-      var loaded = false;
+      var expected = info.expected | 0;
+      // 只有已记人数变多才算「新增」。屏幕上换人（含已经记过的）只说明页面还在动，不重置新增计时。
       if (count > lastCount) {
         lastCount = count;
-        loaded = true;
-      }
+        lastGainAt = now;
+        flatScreens = 0;
+      } else flatScreens += 1;
       if (visible && visible !== lastVisible) {
         lastVisible = visible;
-        loaded = true;
-      }
-      if (loaded) dry = 0;
-      else dry += 1;
+        dry = 0;
+      } else dry += 1;
       var moved = info.moved === true || (info.moved == null && info.stuck !== true);
       var atBottom = info.atBottom === true;
       if (!info.pageKind || info.pageKind !== startedKind) return finish("不在刚才那份自己的名单页了，已停止");
       if (info.blocked) return finish(info.blocked);
       if (now - startedAt >= AUTO_READ_MAX_MS) return finish("已到单次 " + (AUTO_READ_MAX_MS / 60000) + " 分钟上限，已停止");
       if (screens >= AUTO_READ_MAX_SCREENS) return finish("已到单次 " + AUTO_READ_MAX_SCREENS + " 屏上限，已停止");
+      if (expected > 0 && (count >= expected || listIsComplete(count, expected))) return finish("已记人数接近总数，差不多了，已停止");
+      if (flatScreens >= AUTO_READ_FLAT_SCREENS || now - lastGainAt >= AUTO_READ_FLAT_MS) return finish("已记数长时间没有增加，可能已读完或页面不再提供新名单");
       if (atBottom && dry >= AUTO_READ_DRY_LIMIT) return finish("已到列表底，没有继续加载，已停止");
       if (!moved && dry >= AUTO_READ_DRY_LIMIT) return finish("页面没有继续加载，已停止");
       screens += 1;
-      return {action: "scroll", gapMs: autoReadGapMs(info.unit), screens: screens};
+      return {action: "scroll", gapMs: autoReadGapMs(info.unit), screens: screens, sinceGain: flatScreens};
     }
   };
 }
