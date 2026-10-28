@@ -24,6 +24,8 @@ export var AUTO_READ_MAX_MS = 12 * 60 * 1000;
 export var AUTO_READ_STALL_MS = 45000;
 export var AUTO_READ_STALL_SCREENS = 4;
 export var AUTO_READ_STALL_FLOOR_MS = 12000;
+// 到底或页面不再滚动之后，还要连续这么多次看不到加载，才停。滚动过程中已记过的人不算「没新数据」。
+export var AUTO_READ_DRY_LIMIT = 5;
 export var FAST_READ_PAGE_SIZE = 100;
 export var FAST_READ_MAX_PAGES = 120;
 export var FAST_READ_REMAINING_FLOOR = 2;
@@ -1113,13 +1115,13 @@ function listUrlParts(url) {
 // 只接受页面自己打过的 Following / Followers。接口编号留在捕获到的路径里，这里不写死。
 export function isOwnListApiUrl(url, op) {
   var parts = listUrlParts(url);
-  var match = parts.path.match(/^https?:\/\/([^/]+)\/i\/api\/graphql\/[^/?#]+\/(Following|Followers)$/i);
+  var match = parts.path.match(/^https?:\/\/([^/]+)\/i\/api\/graphql\/[^/?#]+\/(Following|Followers|BlueVerifiedFollowers)$/i);
   if (!match) return false;
   var host = match[1].toLowerCase();
   var name = match[2];
   if (op && name !== op) return false;
   if (host !== "x.com" && host !== "twitter.com" && host !== "api.x.com" && host.slice(-6) !== ".x.com") return false;
-  return name === "Following" || name === "Followers";
+  return name === "Following" || name === "Followers" || name === "BlueVerifiedFollowers";
 }
 
 export function listTemplateFromRequest(url, method, body) {
@@ -1255,8 +1257,8 @@ export function createAutoReader() {
   var startedKind = "";
   var screens = 0;
   var lastCount = 0;
-  var lastNewAt = 0;
-  var stallScreens = 0;
+  var lastVisible = "";
+  var dry = 0;
   var stopReason = "";
   function resetRun() {
     phase = "off";
@@ -1265,8 +1267,8 @@ export function createAutoReader() {
     startedKind = "";
     screens = 0;
     lastCount = 0;
-    lastNewAt = 0;
-    stallScreens = 0;
+    lastVisible = "";
+    dry = 0;
   }
   function finish(reason) {
     stopReason = reason;
@@ -1292,10 +1294,10 @@ export function createAutoReader() {
       phase = "running";
       startedAt = now;
       startedKind = pageKind;
-      lastNewAt = now;
       lastCount = count | 0;
+      lastVisible = "";
       screens = 0;
-      stallScreens = 0;
+      dry = 0;
       stopReason = "";
       return {ok: true};
     },
@@ -1307,21 +1309,28 @@ export function createAutoReader() {
       if (phase !== "running") return {action: "idle"};
       info = info || {};
       var count = info.count | 0;
+      var visible = String(info.visibleKey || "");
+      // 新账号，或屏幕上的人换了（含已经记过的），都算页面还在加载。
+      var loaded = false;
       if (count > lastCount) {
         lastCount = count;
-        lastNewAt = now;
-        stallScreens = 0;
+        loaded = true;
       }
-      var quiet = now - lastNewAt;
+      if (visible && visible !== lastVisible) {
+        lastVisible = visible;
+        loaded = true;
+      }
+      if (loaded) dry = 0;
+      else dry += 1;
+      var moved = info.moved === true || (info.moved == null && info.stuck !== true);
+      var atBottom = info.atBottom === true;
       if (!info.pageKind || info.pageKind !== startedKind) return finish("不在刚才那份自己的名单页了，已停止");
       if (info.blocked) return finish(info.blocked);
       if (now - startedAt >= AUTO_READ_MAX_MS) return finish("已到单次 " + (AUTO_READ_MAX_MS / 60000) + " 分钟上限，已停止");
       if (screens >= AUTO_READ_MAX_SCREENS) return finish("已到单次 " + AUTO_READ_MAX_SCREENS + " 屏上限，已停止");
-      if (quiet >= AUTO_READ_STALL_MS) return finish("有 " + (AUTO_READ_STALL_MS / 1000) + " 秒没有新数据，已停止");
-      if (info.stuck && stallScreens >= 2 && quiet >= AUTO_READ_STALL_FLOOR_MS) return finish("页面滑不动且没有新数据，已停止");
-      if (stallScreens >= AUTO_READ_STALL_SCREENS && quiet >= AUTO_READ_STALL_FLOOR_MS) return finish("连续几屏没有新数据，已停止");
+      if (atBottom && dry >= AUTO_READ_DRY_LIMIT) return finish("已到列表底，没有继续加载，已停止");
+      if (!moved && dry >= AUTO_READ_DRY_LIMIT) return finish("页面没有继续加载，已停止");
       screens += 1;
-      stallScreens += 1;
       return {action: "scroll", gapMs: autoReadGapMs(info.unit), screens: screens};
     }
   };
@@ -1903,9 +1912,9 @@ function attachHooks(page, emit) {
   }
   function listOp(url) {
     var op = "";
-    var match = String(url || "").match(/\/graphql\/[^/?#]+\/(Following|Followers)(?:\?|#|$)/);
+    var match = String(url || "").match(/\/graphql\/[^/?#]+\/(Following|Followers|BlueVerifiedFollowers)(?:\?|#|$)/);
     if (match) op = match[1];
-    return op === "Following" || op === "Followers" ? op : "";
+    return op === "Following" || op === "Followers" || op === "BlueVerifiedFollowers" ? op : "";
   }
   function rememberList(url, method, headers, body) {
     var op = listOp(url);
@@ -2028,7 +2037,7 @@ function attachHooks(page, emit) {
     });
   }
   function allowedReplay(url, op) {
-    return listOp(url) === op && (op === "Following" || op === "Followers");
+    return listOp(url) === op && (op === "Following" || op === "Followers" || op === "BlueVerifiedFollowers");
   }
   function readListPage(op, url, method, body) {
     var tpl = listTemplates[op];

@@ -179,7 +179,7 @@ function boot() {
     if (!listId || !page) return;
     var keep = page.__fanAuditKeepListTemplate;
     var drop = page.__fanAuditDropListTemplate;
-    if ((captured.kind === "following" || captured.kind === "followers") && !captured.skip && typeof keep === "function") keep(listId);
+    if ((captured.kind === "following" || captured.kind === "followers" || captured.kind === "blue-followers") && !captured.skip && typeof keep === "function") keep(listId);
     else if (typeof drop === "function") drop(listId);
   }
   function ingest(url, text, body, countTraffic, listId) {
@@ -483,7 +483,7 @@ function boot() {
     var fastReader = createFastReader();
     var autoShown = "off";
     var autoTimer = 0;
-    var lastMoved = true;
+    var lastScroll = {moved: true, atBottom: false};
     var autoBox = el("section");
     autoBox.id = "auto-read";
     autoBox.appendChild(el("p", "", "自动读取我自己的关注 / 粉丝名单"));
@@ -640,12 +640,49 @@ function boot() {
       }
       return {node: doc.scrollingElement || doc.documentElement, view: view, windowScroll: true};
     }
+    function scrollMetrics(found) {
+      var view = found.view;
+      var node = found.node;
+      var doc = view.document || document;
+      if (found.windowScroll) {
+        var y = view.scrollY || view.pageYOffset || 0;
+        var height = view.innerHeight || 0;
+        var full = 0;
+        try { full = (doc.scrollingElement || doc.documentElement).scrollHeight || 0; } catch (err) {}
+        return {pos: y, atBottom: full > 0 && y + height >= full - 48};
+      }
+      var pos = node.scrollTop || 0;
+      var client = node.clientHeight || 0;
+      var total = node.scrollHeight || 0;
+      return {pos: pos, atBottom: total > 0 && pos + client >= total - 48};
+    }
+    function visibleListKey() {
+      var doc = document;
+      try {
+        var pageView = pageWindow();
+        if (pageView && pageView.document) doc = pageView.document;
+      } catch (err) {}
+      var root = doc.querySelector('[data-testid="primaryColumn"]') || doc.querySelector('main[role="main"]');
+      if (!root) return "";
+      var cells = root.querySelectorAll('[data-testid="UserCell"]');
+      var names = [];
+      for (var i = 0; i < cells.length; i++) {
+        var links = cells[i].querySelectorAll("a[href]");
+        var handle = "";
+        for (var j = 0; j < links.length; j++) {
+          var match = String(links[j].getAttribute("href") || "").match(/^\/([A-Za-z0-9_]{1,15})\/?$/);
+          if (match) { handle = match[1].toLowerCase(); break; }
+        }
+        if (handle) names.push(handle);
+      }
+      return names.join("\n");
+    }
     function nudgeOwnList() {
       var found = findPageScroller();
-      if (!found || !found.node) return false;
+      if (!found || !found.node) return {moved: false, atBottom: false};
       var scrollerNode = found.node;
       var view = found.view;
-      var before = found.windowScroll ? (view.scrollY || view.pageYOffset || 0) : (scrollerNode.scrollTop || 0);
+      var before = scrollMetrics(found).pos;
       var cells = [];
       try {
         var column = (view.document || document).querySelector('[data-testid="primaryColumn"]');
@@ -654,12 +691,13 @@ function boot() {
       if (cells.length) {
         try { cells[cells.length - 1].scrollIntoView({block: "end", inline: "nearest"}); } catch (err) {}
       }
+      var mid = scrollMetrics(found).pos;
       var viewHeight = found.windowScroll ? (view.innerHeight || 700) : (scrollerNode.clientHeight || 700);
-      var delta = Math.max(320, Math.floor(viewHeight * 0.85));
-      if (found.windowScroll) view.scrollTo(0, before + delta);
-      else scrollerNode.scrollTop = before + delta;
-      var after = found.windowScroll ? (view.scrollY || view.pageYOffset || 0) : (scrollerNode.scrollTop || 0);
-      return after > before + 8;
+      var delta = Math.max(480, Math.floor(viewHeight * 0.95));
+      if (found.windowScroll) view.scrollTo(0, mid + delta);
+      else scrollerNode.scrollTop = mid + delta;
+      var afterMetrics = scrollMetrics(found);
+      return {moved: afterMetrics.pos > before + 8, atBottom: afterMetrics.atBottom};
     }
     function pageBlockReason() {
       var doc = document;
@@ -687,7 +725,9 @@ function boot() {
         pageKind: kind,
         blocked: pageBlockReason(),
         count: autoReadCount(store, kind),
-        stuck: !lastMoved,
+        visibleKey: visibleListKey(),
+        moved: lastScroll.moved,
+        atBottom: lastScroll.atBottom,
         unit: Math.random()
       });
       if (decision.action !== "scroll") {
@@ -696,7 +736,7 @@ function boot() {
         updateBadge();
         return;
       }
-      lastMoved = nudgeOwnList();
+      lastScroll = nudgeOwnList();
       scanCells();
       scanTotals();
       scheduleAuto(decision.gapMs);
@@ -732,7 +772,7 @@ function boot() {
       var tpl = page && page.__fanAuditListTemplate ? page.__fanAuditListTemplate(op) : null;
       var req = buildListPageRequest(tpl, cursor);
       if (!req || typeof page.__fanAuditFetchList !== "function") {
-        haltAuto("还不能发这一页。请先在你自己的关注页或粉丝页手动往下滑一点，让页面自己加载一页后再试。");
+        haltAuto("还不能发这一页。请先在当前这个名单页手动往下滑一点，让页面自己加载一页后再试。关注页对应正在关注，粉丝页对应关注者，认证粉丝页对应认证粉丝。");
         return;
       }
       Promise.resolve(page.__fanAuditFetchList(op, req.url, req.method, req.body)).then(function (res) {
@@ -759,12 +799,31 @@ function boot() {
         haltAuto("请求失败，已停止，不会自动重试");
       });
     }
+    function fastOpForKind(kind) {
+      if (kind === "following") return "Following";
+      if (kind === "followers") return "Followers";
+      if (kind === "blue-followers") return "BlueVerifiedFollowers";
+      return "";
+    }
+    function fastListLabel(op) {
+      if (op === "Following") return "正在关注";
+      if (op === "Followers") return "关注者";
+      if (op === "BlueVerifiedFollowers") return "认证粉丝";
+      return "名单";
+    }
     function startFastRead() {
+      var here = fastOpForKind(autoReadPageKind(location.pathname, currentOwner()));
+      if (here && !hasListTemplate(here)) {
+        status.textContent = "还没有捕获到你自己的" + fastListLabel(here) + "列表请求。请留在这个页面，手动往下滑一点，让页面自己加载一页后再试。关注页对应正在关注，粉丝页对应关注者，认证粉丝页对应认证粉丝。脚本不会去猜接口编号。";
+        return;
+      }
       var ops = [];
-      if (hasListTemplate("Following")) ops.push("Following");
-      if (hasListTemplate("Followers")) ops.push("Followers");
+      if (here) ops.push(here);
+      ["Following", "Followers", "BlueVerifiedFollowers"].forEach(function (op) {
+        if (ops.indexOf(op) < 0 && hasListTemplate(op)) ops.push(op);
+      });
       if (!ops.length) {
-        status.textContent = "还没有捕获到你自己的关注或粉丝列表请求。请先打开自己的关注页和粉丝页，手动往下滑一点，让页面自己加载一页后再试。脚本不会去猜接口编号。";
+        status.textContent = "还没有捕获到你自己的正在关注、关注者或认证粉丝列表请求。请打开对应页面，手动往下滑一点后再试。脚本不会去猜接口编号。";
         return;
       }
       var begun = fastReader.start();
@@ -773,7 +832,7 @@ function boot() {
         return;
       }
       autoReader.stop("");
-      status.textContent = "已开始快速读取。只请求你自己的正在关注和关注者，页与页之间不等待。";
+      status.textContent = "已开始快速读取。只请求已捕获的正在关注、关注者或认证粉丝，页与页之间不等待。";
       renderAutoRead();
       function nextOp(index) {
         if (!fastReader.running()) return;
@@ -802,8 +861,8 @@ function boot() {
         renderAutoRead();
         return;
       }
-      lastMoved = true;
-      status.textContent = "已开始滚动。只滚动当前这份你自己的名单，由页面自己加载。";
+      lastScroll = {moved: true, atBottom: false};
+      status.textContent = "已开始滚动。只滚动当前这份你自己的名单，由页面自己加载。已经记过的人也会算作页面还在加载。";
       renderAutoRead();
       scheduleAuto(autoReadGapMs(Math.random()));
     });

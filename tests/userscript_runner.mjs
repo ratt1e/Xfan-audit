@@ -8,7 +8,7 @@ import {
   installHooks, pageHookProgram, norm, operationName, listKindFromPath, timelineKindFromPath, userFromVisible, diagnosticsCopy,
   pageContext, badgeText, listIsComplete, exportTimeFromName, recordSnapshot, snapshotDiffInput,
   addKeep, removeKeep, applyImported, headerListCount, headerVerifiedCount, SNAPSHOT_WAITING, looksLikeBackup,
-  progressText, AUTO_READ_MAX_SCREENS, AUTO_READ_GAP_MIN_MS, AUTO_READ_GAP_MAX_MS,
+  progressText, AUTO_READ_MAX_SCREENS, AUTO_READ_GAP_MIN_MS, AUTO_READ_GAP_MAX_MS, AUTO_READ_DRY_LIMIT,
   autoReadGapMs, autoReadBlockReason, createAutoReader, FAST_READ_PAGE_SIZE, FAST_READ_MAX_PAGES,
   FAST_READ_REMAINING_FLOOR, buildListPageRequest, bottomCursor, fastReadStopReason, createFastReader,
   isOwnListApiUrl
@@ -680,18 +680,62 @@ check(idleReader.start(1000, "followers", 0).ok === true, "勾选后可以开始
 const blocked = idleReader.tick(1000, {pageKind: "followers", count: 0, blocked: "看到限流提示，已停止，不会自动重试", unit: 0});
 check(blocked.action === "stop" && idleReader.phase() === "off", "限流立刻停下");
 check(idleReader.tick(5000, {pageKind: "followers", count: 9, unit: 0}).action === "idle", "停下后不自动重试");
-const stallReader = createAutoReader();
-stallReader.openConfirm();
-stallReader.setAcknowledged(true);
-stallReader.start(0, "following", 0);
-let stallStopped = "";
-let stallNow = 0;
-for (let i = 0; i < 20; i++) {
-  const step = stallReader.tick(stallNow, {pageKind: "following", count: 0, unit: 0, stuck: false});
-  if (step.action === "stop") { stallStopped = step.reason; break; }
-  stallNow += step.gapMs;
+const knownReader = createAutoReader();
+knownReader.openConfirm();
+knownReader.setAcknowledged(true);
+knownReader.start(0, "blue-followers", 100);
+let knownScrolls = 0;
+let knownStopped = "";
+for (let i = 0; i < 12; i++) {
+  const step = knownReader.tick(i * 1500, {
+    pageKind: "blue-followers",
+    count: 100,
+    visibleKey: "user_" + i + "\nuser_" + (i + 1),
+    moved: true,
+    atBottom: false,
+    unit: 0
+  });
+  if (step.action === "stop") { knownStopped = step.reason; break; }
+  knownScrolls += 1;
 }
-check(stallStopped.indexOf("没有新数据") >= 0 && stallReader.phase() === "off", "一段时间没有新数据就停");
+check(knownScrolls === 12 && knownStopped === "" && knownReader.phase() === "running", "已记过的人换到屏幕上仍继续滚");
+const bottomReader = createAutoReader();
+bottomReader.openConfirm();
+bottomReader.setAcknowledged(true);
+bottomReader.start(0, "followers", 100);
+bottomReader.tick(0, {pageKind: "followers", count: 100, visibleKey: "user_a", moved: true, atBottom: false, unit: 0});
+let bottomReason = "";
+for (let i = 0; i < 8; i++) {
+  const step = bottomReader.tick(1000 + i * 1000, {
+    pageKind: "followers",
+    count: 100,
+    visibleKey: "user_a",
+    moved: false,
+    atBottom: true,
+    unit: 0
+  });
+  if (step.action === "stop") { bottomReason = step.reason; break; }
+}
+check(bottomReason.indexOf("已到列表底") >= 0 && bottomReader.phase() === "off", "到底且不再加载才停");
+check(bottomReader.tick(20000, {pageKind: "followers", count: 100, visibleKey: "user_b", moved: true, atBottom: false, unit: 0}).action === "idle", "停下后保持关闭");
+const stuckReader = createAutoReader();
+stuckReader.openConfirm();
+stuckReader.setAcknowledged(true);
+stuckReader.start(0, "following", 3);
+stuckReader.tick(0, {pageKind: "following", count: 3, visibleKey: "user_a", moved: true, atBottom: false, unit: 0});
+let stuckReason = "";
+for (let i = 0; i < AUTO_READ_DRY_LIMIT + 2; i++) {
+  const step = stuckReader.tick(1000 + i * 1000, {
+    pageKind: "following",
+    count: 3,
+    visibleKey: "user_a",
+    moved: false,
+    atBottom: false,
+    unit: 0
+  });
+  if (step.action === "stop") { stuckReason = step.reason; break; }
+}
+check(stuckReason.indexOf("页面没有继续加载") >= 0, "滚不动且画面不变就说明没有继续加载");
 const capReader = createAutoReader();
 capReader.openConfirm();
 capReader.setAcknowledged(true);
@@ -724,6 +768,20 @@ check(built.includes("更多") && built.includes("一键打码") && built.includ
 check(built.includes("脚本自己连续请求") && built.includes("风险比滚动更高"), "风险提示写明快速模式是自己请求列表");
 const listUrl = "https://x.com/i/api/graphql/capturedHash/Following?variables=" + encodeURIComponent(JSON.stringify({userId: "1", count: 20, cursor: "old"})) + "&features=" + encodeURIComponent(JSON.stringify({responsive: true}));
 check(isOwnListApiUrl(listUrl, "Following") && !isOwnListApiUrl(listUrl, "Followers"), "只认自己捕获到的关注或粉丝接口");
+const blueUrl = "https://x.com/i/api/graphql/capturedHash/BlueVerifiedFollowers?variables=" + encodeURIComponent(JSON.stringify({userId: "1", count: 20}));
+check(isOwnListApiUrl(blueUrl, "BlueVerifiedFollowers"), "认证粉丝页的列表请求也能捕获");
+const bluePage = buildListPageRequest({op: "BlueVerifiedFollowers", url: blueUrl, method: "GET", body: ""}, "next-blue");
+check(bluePage && bluePage.url.indexOf("BlueVerifiedFollowers") >= 0 && JSON.parse(decodeURIComponent(bluePage.url.split("variables=")[1].split("&")[0])).cursor === "next-blue", "认证粉丝沿用捕获到的请求翻页");
+const blueHookPage = makePage();
+const blueIds = [];
+installHooks(blueHookPage, function (url, text, body, listId) { if (listId) blueIds.push(String(listId)); });
+const blueXhr = new blueHookPage.XMLHttpRequest();
+blueXhr.open("GET", blueUrl);
+blueXhr.responseText = "{}";
+blueXhr.send(null);
+blueXhr.listeners.load.forEach(function (fn) { fn(); });
+check(blueIds.length === 1 && blueHookPage.__fanAuditKeepListTemplate(blueIds[0]) === true && blueHookPage.__fanAuditHasListTemplate("BlueVerifiedFollowers") === true, "认证粉丝页的请求能被捕获");
+check(blueHookPage.__fanAuditHasListTemplate("Followers") !== true, "认证粉丝请求不会当成普通粉丝");
 check(!isOwnListApiUrl("https://x.com/i/api/graphql/capturedHash/FavoriteTweet", ""), "写接口不在快速读取里");
 const firstPage = buildListPageRequest({op: "Following", url: listUrl, method: "GET", body: ""}, "");
 check(firstPage && firstPage.url.indexOf("capturedHash") >= 0 && firstPage.url.indexOf("Bearer") < 0, "下一页沿用捕获到的接口编号，不带令牌");
