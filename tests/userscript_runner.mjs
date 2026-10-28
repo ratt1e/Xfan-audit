@@ -9,7 +9,9 @@ import {
   pageContext, badgeText, listIsComplete, exportTimeFromName, recordSnapshot, snapshotDiffInput,
   addKeep, removeKeep, applyImported, headerListCount, headerVerifiedCount, SNAPSHOT_WAITING, looksLikeBackup,
   progressText, AUTO_READ_MAX_SCREENS, AUTO_READ_GAP_MIN_MS, AUTO_READ_GAP_MAX_MS,
-  autoReadGapMs, autoReadBlockReason, createAutoReader
+  autoReadGapMs, autoReadBlockReason, createAutoReader, FAST_READ_PAGE_SIZE, FAST_READ_MAX_PAGES,
+  FAST_READ_REMAINING_FLOOR, buildListPageRequest, bottomCursor, fastReadStopReason, createFastReader,
+  isOwnListApiUrl
 } from "../userscript/src/logic.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -49,7 +51,7 @@ check(!new RegExp("(^|\\n)\\s*//\\s*" + "@" + "connect\\b").test(built), "没有
 check(built.includes("document.cookie") === false, "不读 cookie");
 check(built.includes("nudgeOwnList"), "自动读取靠滚动页面本身");
 check(built.includes("createAutoReader"), "自动读取有独立开关");
-check(built.includes("这个功能会让脚本代替你自动连续翻页读取名单") && built.includes("不想冒险就用默认的手动滑动") && built.includes("也不会读取别人的名单"), "风险提示原文在安装文件里");
+check(built.includes("脚本自己连续请求 X 的关注和粉丝列表接口") && built.includes("不想冒险就关掉，继续用手动滑动") && built.includes("也不会读别人的名单"), "风险提示原文在安装文件里");
 check(built.includes("不封号") === false, "不写不封号");
 check(built.split("不能保证安全").length === 2, "只写明不能保证安全，没有别的安全保证");
 check(!/Bearer [A-Za-z0-9_\-.]{20,}/.test(built), "没有硬编码 Bearer 令牌");
@@ -358,7 +360,7 @@ check(built.indexOf(".num{font-size:32px;font-weight:700;color:#1F2937}") >= 0, 
 check(built.indexOf("别人回我") >= 0 && built.indexOf("f=live") >= 0 && built.indexOf("别一次翻太久") >= 0, "采集清单和限流说明在安装文件里");
 check(built.indexOf("诊断信息") >= 0 && built.indexOf("全屏") >= 0 && built.indexOf("退出全屏") >= 0, "诊断可折叠，面板可全屏");
 check(built.indexOf("https://x.com/notifications/mentions") >= 0, "通知清单指向提及页");
-check(built.indexOf("GM_openInTab") < 0 && built.indexOf("GM_xmlhttpRequest") < 0, "清单只是普通链接，脚本不自己打开也不自己请求");
+check(built.indexOf("GM_openInTab") < 0 && built.indexOf("GM_xmlhttpRequest") < 0, "不用 GM_openInTab 或 GM_xmlhttpRequest");
 
 check(timelineKindFromPath("/demo_owner/with_replies", "demo_owner") === "replies", "主页回复页路径");
 check(timelineKindFromPath("/demo_owner", "demo_owner") === "originals", "自己的主页路径");
@@ -661,7 +663,8 @@ const blueRound = importBackup(exportBackup(blueStore, 1));
 check(coverageReport(blueRound, "demo_owner", "UTC").blueFollowers === 1, "备份保留认证粉丝标记");
 check(!("autoRead" in emptyStore().prefs), "自动读取不写入本地偏好");
 
-check(autoReadGapMs(0) === AUTO_READ_GAP_MIN_MS && autoReadGapMs(1) === AUTO_READ_GAP_MAX_MS, "滚动间隔在 2 到 5 秒");
+check(autoReadGapMs(0) === AUTO_READ_GAP_MIN_MS && autoReadGapMs(1) === AUTO_READ_GAP_MAX_MS, "滚动间隔在 1 到 2 秒");
+check(AUTO_READ_GAP_MIN_MS === 1000 && AUTO_READ_GAP_MAX_MS === 2000 && AUTO_READ_MAX_SCREENS >= 200, "滚动单次上限够读大约 2000 人");
 check(autoReadGapMs(0.5) >= AUTO_READ_GAP_MIN_MS && autoReadGapMs(0.5) <= AUTO_READ_GAP_MAX_MS, "中间的随机数也落在间隔里");
 check(autoReadBlockReason("超出速率限制。请稍等片刻") === "看到限流提示，已停止，不会自动重试", "限流文案会让自动读取停下");
 check(autoReadBlockReason("Something went wrong. Try reloading.") === "看到页面报错，已停止，不会自动重试", "页面报错会让自动读取停下");
@@ -696,14 +699,14 @@ capReader.start(0, "followers", 0);
 let scrolls = 0;
 let capNow = 0;
 let capCount = 0;
-for (let i = 0; i < 80; i++) {
+for (let i = 0; i < 300; i++) {
   capCount += 1;
   const step = capReader.tick(capNow, {pageKind: "followers", count: capCount, unit: 0, stuck: false});
   if (step.action !== "scroll") break;
   scrolls += 1;
   capNow += 1000;
 }
-check(scrolls === AUTO_READ_MAX_SCREENS && capReader.phase() === "off", "单次最多 60 屏");
+check(scrolls === AUTO_READ_MAX_SCREENS && capReader.phase() === "off", "单次最多 220 屏");
 const switched = createAutoReader();
 switched.openConfirm();
 switched.setAcknowledged(true);
@@ -718,6 +721,73 @@ const maskedFacts = fan.boardHtml([{account: "user_01", tier: "银牌", status: 
 check(maskedFacts.indexOf("user_01") < 0 && maskedFacts.indexOf("回访 50%") >= 0, "打码后账号名隐藏，数据仍显示");
 check(maskedFacts.indexOf("重点维护") < 0 && maskedFacts.indexOf("建议动作") < 0, "名单不写建议");
 check(built.includes("更多") && built.includes("一键打码") && built.includes("全屏") && built.includes("查看风险并决定是否开启"), "主界面留打码和全屏，其余收进更多");
+check(built.includes("脚本自己连续请求") && built.includes("风险比滚动更高"), "风险提示写明快速模式是自己请求列表");
+const listUrl = "https://x.com/i/api/graphql/capturedHash/Following?variables=" + encodeURIComponent(JSON.stringify({userId: "1", count: 20, cursor: "old"})) + "&features=" + encodeURIComponent(JSON.stringify({responsive: true}));
+check(isOwnListApiUrl(listUrl, "Following") && !isOwnListApiUrl(listUrl, "Followers"), "只认自己捕获到的关注或粉丝接口");
+check(!isOwnListApiUrl("https://x.com/i/api/graphql/capturedHash/FavoriteTweet", ""), "写接口不在快速读取里");
+const firstPage = buildListPageRequest({op: "Following", url: listUrl, method: "GET", body: ""}, "");
+check(firstPage && firstPage.url.indexOf("capturedHash") >= 0 && firstPage.url.indexOf("Bearer") < 0, "下一页沿用捕获到的接口编号，不带令牌");
+const firstVars = JSON.parse(decodeURIComponent(firstPage.url.split("variables=")[1].split("&")[0]));
+check(firstVars.count === FAST_READ_PAGE_SIZE && firstVars.cursor == null && firstVars.userId === "1", "第一页每页 100 人并且从名单开头读");
+const secondPage = buildListPageRequest({op: "Following", url: listUrl, method: "GET", body: ""}, "cursor-2");
+const secondVars = JSON.parse(decodeURIComponent(secondPage.url.split("variables=")[1].split("&")[0]));
+check(secondVars.cursor === "cursor-2" && secondVars.count === 100, "下一页带上游标");
+check(buildListPageRequest({op: "Followers", url: listUrl, method: "GET", body: ""}, "") == null, "关注请求不能拿去读粉丝");
+check(bottomCursor({data: {user: {result: {timeline: {timeline: {instructions: [{entries: [{entryId: "cursor-bottom-1", content: {cursorType: "Bottom", value: "NEXT"}}]}]}}}}}}) === "NEXT", "从时间线里取底部游标");
+check(bottomCursor({data: {}}) === "", "没有游标就停");
+check(fastReadStopReason(429, "5").indexOf("429") >= 0, "429 立刻停");
+check(fastReadStopReason(500, "").indexOf("500") >= 0, "错误状态码立刻停");
+check(fastReadStopReason(200, String(FAST_READ_REMAINING_FLOOR)).indexOf("接近 0") >= 0, "剩余额度接近 0 立刻停");
+check(fastReadStopReason(200, "20") === "", "额度还够就继续");
+const fastIdle = createFastReader();
+check(fastIdle.notePage().action === "stop", "没点开始不会发快速请求");
+check(fastIdle.start().ok === true, "快速读取可以开始");
+let fastPages = 0;
+for (let i = 0; i < 200; i++) {
+  const step = fastIdle.notePage();
+  if (step.action !== "continue") break;
+  fastPages += 1;
+}
+check(fastPages === FAST_READ_MAX_PAGES && fastIdle.running() === false, "快速读取单次最多 120 页");
+check(fastIdle.notePage().action === "stop", "到上限后不自动再请求");
+const replayPage = makePage();
+replayPage.XMLHttpRequest.prototype.setRequestHeader = function (name, value) {
+  this.sentHeaders = this.sentHeaders || {};
+  this.sentHeaders[name] = value;
+};
+let replayInit = null;
+replayPage.fetch = function (input, init) {
+  replayPage.fetchCalls += 1;
+  replayInit = init;
+  return Promise.resolve({
+    status: 200,
+    ok: true,
+    headers: {get: function (name) { return name === "x-rate-limit-remaining" ? "9" : ""; }},
+    text: function () { return Promise.resolve("{\"data\":{}}"); },
+    clone: function () { return {text: function () { return Promise.resolve("{\"data\":{}}"); }}; }
+  });
+};
+const replaySeen = [];
+installHooks(replayPage, function (url, text, body, listId) { replaySeen.push({url: url, listId: listId}); });
+const replayXhr = new replayPage.XMLHttpRequest();
+replayXhr.open("GET", listUrl);
+replayXhr.setRequestHeader("authorization", "Bearer test-token");
+replayXhr.setRequestHeader("cookie", "ct0=secret");
+replayXhr.responseText = "{\"data\":{}}";
+replayXhr.send(null);
+replayXhr.listeners.load.forEach(function (fn) { fn(); });
+check(replaySeen.length === 1 && replaySeen[0].listId, "列表请求带一个内存编号");
+check(JSON.stringify(replaySeen[0]).indexOf("test-token") < 0 && JSON.stringify(replaySeen[0]).indexOf("secret") < 0, "响应事件里不带令牌或 cookie");
+check(replayPage.__fanAuditKeepListTemplate(replaySeen[0].listId) === true, "确认是自己的名单后才留下请求");
+const exposed = replayPage.__fanAuditListTemplate("Following");
+check(exposed && exposed.url.indexOf("capturedHash") >= 0 && exposed.headers == null, "交出去的模板没有请求头");
+const replayReq = buildListPageRequest(exposed, "");
+const replayResult = await replayPage.__fanAuditFetchList("Following", replayReq.url, replayReq.method, replayReq.body);
+check(replayResult.status === 200 && replayResult.remaining === "9", "快速读取走页面原来的 fetch");
+check(replayInit && replayInit.headers.authorization === "Bearer test-token" && replayInit.headers.cookie == null, "复用页面设置过的令牌，不带 cookie 头");
+check(replayPage.__fanAuditFetchList("Followers", replayReq.url, "GET", "").then, "别的名单没有捕获到就不会发");
+const wrong = await replayPage.__fanAuditFetchList("FavoriteTweet", "https://x.com/i/api/graphql/x/FavoriteTweet", "POST", "{}");
+check(wrong.status === 0, "写接口直接拒绝");
 
 if (failed) {
   console.error(failed + " checks failed");

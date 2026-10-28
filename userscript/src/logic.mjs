@@ -17,15 +17,18 @@ export var EMPTY_GUIDE = "刚安装还没有数据？依次打开你的关注列
 export var TEXT_LIMIT = 30;
 export var SNAPSHOT_WAITING = "下次完整采集后自动对比";
 // 自动读取默认关闭，刷新后也不恢复。这些数只约束「用户勾选并点了开始」之后的那一次。
-export var AUTO_READ_GAP_MIN_MS = 2000;
-export var AUTO_READ_GAP_MAX_MS = 5000;
-export var AUTO_READ_MAX_SCREENS = 60;
-export var AUTO_READ_MAX_MS = 8 * 60 * 1000;
+export var AUTO_READ_GAP_MIN_MS = 1000;
+export var AUTO_READ_GAP_MAX_MS = 2000;
+export var AUTO_READ_MAX_SCREENS = 220;
+export var AUTO_READ_MAX_MS = 12 * 60 * 1000;
 export var AUTO_READ_STALL_MS = 45000;
 export var AUTO_READ_STALL_SCREENS = 4;
 export var AUTO_READ_STALL_FLOOR_MS = 12000;
-export var AUTO_READ_RISK = "这个功能会让脚本代替你自动连续翻页读取名单，不属于「只读你浏览过的内容」。X 的条款不允许未经许可的自动化抓取，可能导致限流、临时限制甚至封号。X 没有公布具体阈值，不能保证安全，后果自负。不想冒险就用默认的手动滑动。\n\n脚本只滚动你自己的关注页、粉丝页或认证粉丝页，好让页面自己加载下一屏。不会关注、取关、点赞、转发、回复、私信或拉黑，也不会读取别人的名单。";
-export var AUTO_READ_ACK = "我已阅读上面的提示。我知道这会自动翻页，可能被限流、临时限制甚至封号，后果自己承担。";
+export var FAST_READ_PAGE_SIZE = 100;
+export var FAST_READ_MAX_PAGES = 120;
+export var FAST_READ_REMAINING_FLOOR = 2;
+export var AUTO_READ_RISK = "自动读取默认关闭。两种方式都只读你自己的关注和粉丝名单，不会关注、取关、点赞、转发、回复、私信或拉黑，也不会读别人的名单。\n\n滚动：脚本代替你在当前页面往下翻，让页面自己加载。这已经不属于「只读你浏览过的内容」。\n\n快速：脚本自己连续请求 X 的关注和粉丝列表接口，用游标一页一页往下读。这是自动化抓取，风险比滚动更高，可能被限流、临时限制甚至封号。X 没有公布具体阈值，不能保证安全，后果自负。不想冒险就关掉，继续用手动滑动。";
+export var AUTO_READ_ACK = "我已阅读上面的提示。我知道快速模式会由脚本自己连续请求列表接口，可能被限流、临时限制甚至封号，后果自己承担。";
 
 var OPS = {
   UserRepliesTimeline: "replies",
@@ -1073,6 +1076,169 @@ export function autoReadCount(store, kind) {
   return 0;
 }
 
+function parseQuery(query) {
+  var out = {};
+  String(query || "").split("&").forEach(function (part) {
+    if (!part) return;
+    var eq = part.indexOf("=");
+    var rawKey = eq >= 0 ? part.slice(0, eq) : part;
+    var rawVal = eq >= 0 ? part.slice(eq + 1) : "";
+    var key = "";
+    var val = "";
+    try { key = decodeURIComponent(rawKey.replace(/\+/g, " ")); } catch (err) { key = rawKey; }
+    try { val = decodeURIComponent(rawVal.replace(/\+/g, " ")); } catch (err) { val = rawVal; }
+    if (key) out[key] = val;
+  });
+  return out;
+}
+
+function encodeQuery(params) {
+  return Object.keys(params).map(function (key) {
+    return encodeURIComponent(key) + "=" + encodeURIComponent(params[key] == null ? "" : String(params[key]));
+  }).join("&");
+}
+
+function listUrlParts(url) {
+  var text = String(url || "");
+  var hash = "";
+  var hashAt = text.indexOf("#");
+  if (hashAt >= 0) {
+    hash = text.slice(hashAt);
+    text = text.slice(0, hashAt);
+  }
+  var qAt = text.indexOf("?");
+  return {path: qAt >= 0 ? text.slice(0, qAt) : text, query: qAt >= 0 ? text.slice(qAt + 1) : "", hash: hash};
+}
+
+// 只接受页面自己打过的 Following / Followers。接口编号留在捕获到的路径里，这里不写死。
+export function isOwnListApiUrl(url, op) {
+  var parts = listUrlParts(url);
+  var match = parts.path.match(/^https?:\/\/([^/]+)\/i\/api\/graphql\/[^/?#]+\/(Following|Followers)$/i);
+  if (!match) return false;
+  var host = match[1].toLowerCase();
+  var name = match[2];
+  if (op && name !== op) return false;
+  if (host !== "x.com" && host !== "twitter.com" && host !== "api.x.com" && host.slice(-6) !== ".x.com") return false;
+  return name === "Following" || name === "Followers";
+}
+
+export function listTemplateFromRequest(url, method, body) {
+  var op = operationName(url);
+  if (!isOwnListApiUrl(url, op)) return null;
+  return {
+    op: op,
+    url: String(url || ""),
+    method: String(method || "GET").toUpperCase() === "POST" ? "POST" : "GET",
+    body: typeof body === "string" ? body : ""
+  };
+}
+
+// 用捕获到的那次请求改出下一页：count 设为 100，游标换成这次的。第一页去掉游标，从名单开头读。
+// 不新增接口编号，也不写入令牌。令牌留在页面内存里，不进这个返回值。
+export function buildListPageRequest(template, cursor) {
+  var tpl = listTemplateFromRequest(template && template.url, template && template.method, template && template.body);
+  if (!tpl || tpl.op !== (template && template.op)) return null;
+  var parts = listUrlParts(tpl.url);
+  var params = parseQuery(parts.query);
+  var variables = {};
+  if (params.variables) {
+    try { variables = JSON.parse(params.variables); } catch (err) { return null; }
+  }
+  if (!variables || typeof variables !== "object" || Array.isArray(variables)) return null;
+  variables.count = FAST_READ_PAGE_SIZE;
+  if (cursor) variables.cursor = String(cursor);
+  else delete variables.cursor;
+  params.variables = JSON.stringify(variables);
+  var nextBody = tpl.body || "";
+  if (tpl.method === "POST" && nextBody) {
+    try {
+      var parsed = JSON.parse(nextBody);
+      if (parsed && typeof parsed === "object" && parsed.variables && typeof parsed.variables === "object") {
+        parsed.variables.count = FAST_READ_PAGE_SIZE;
+        if (cursor) parsed.variables.cursor = String(cursor);
+        else delete parsed.variables.cursor;
+        nextBody = JSON.stringify(parsed);
+      }
+    } catch (err) {}
+  }
+  var nextUrl = parts.path + (Object.keys(params).length ? "?" + encodeQuery(params) : "") + parts.hash;
+  if (!isOwnListApiUrl(nextUrl, tpl.op)) return null;
+  return {url: nextUrl, method: tpl.method, body: tpl.method === "POST" ? nextBody : ""};
+}
+
+export function bottomCursor(json) {
+  var found = "";
+  function walk(node, depth) {
+    if (found || !node || depth > 16) return;
+    if (Array.isArray(node)) {
+      for (var i = 0; i < node.length; i++) walk(node[i], depth + 1);
+      return;
+    }
+    if (typeof node !== "object") return;
+    var cursorType = String(node.cursorType || node.cursor_type || "");
+    var entry = String(node.entryId || node.entry_id || "");
+    var value = node.value;
+    if (typeof value !== "string" || !value) value = "";
+    var bottom = cursorType.toLowerCase() === "bottom" || entry.indexOf("cursor-bottom") >= 0;
+    if (bottom && value) {
+      found = value;
+      return;
+    }
+    var keys = Object.keys(node);
+    for (var k = 0; k < keys.length; k++) {
+      if (keys[k] === "value" || keys[k] === "cursor") continue;
+      walk(node[keys[k]], depth + 1);
+    }
+  }
+  walk(json, 0);
+  return found;
+}
+
+// 429、任何非 2xx、或 x-rate-limit-remaining 小于等于 2，都立刻停。不自动重试。
+export function fastReadStopReason(status, remaining) {
+  var code = Number(status);
+  if (!isFinite(code)) code = 0;
+  if (code === 429) return "遇到 429 限流，已停止，不会自动重试";
+  if (code < 200 || code >= 300) return "请求返回 " + code + "，已停止，不会自动重试";
+  if (remaining == null || remaining === "") return "";
+  var left = Number(remaining);
+  if (!isFinite(left)) return "";
+  if (left <= FAST_READ_REMAINING_FLOOR) return "剩余额度接近 0（" + left + "），已停止，不会自动重试";
+  return "";
+}
+
+export function createFastReader() {
+  var running = false;
+  var pages = 0;
+  var stopReason = "";
+  return {
+    running: function () { return running; },
+    pages: function () { return pages; },
+    stopReason: function () { return stopReason; },
+    start: function () {
+      if (running) return {ok: false, reason: "已经在读"};
+      running = true;
+      pages = 0;
+      stopReason = "";
+      return {ok: true};
+    },
+    stop: function (reason) {
+      stopReason = reason || "已停止";
+      running = false;
+    },
+    notePage: function () {
+      if (!running) return {action: "stop", reason: stopReason || "已停止"};
+      if (pages >= FAST_READ_MAX_PAGES) {
+        stopReason = "已到单次 " + FAST_READ_MAX_PAGES + " 页上限，已停止";
+        running = false;
+        return {action: "stop", reason: stopReason};
+      }
+      pages += 1;
+      return {action: "continue", pages: pages};
+    }
+  };
+}
+
 export function autoReadBlockReason(text) {
   var raw = String(text || "").replace(/\s+/g, " ").trim();
   if (!raw || raw.length > 400) return "";
@@ -1690,7 +1856,8 @@ export function contextProblems(info) {
 }
 
 // 只替换页面上的 open / send / fetch，好在 load 和响应体里读页面自己的结果。
-// 不调用 send，不新建请求，不读请求头和 cookie。
+// 不读 cookie。Following / Followers 上页面自己设置的请求头只留在这个函数的内存里，
+// 等用户点了快速读取才用来再发同类请求。不写入备份，不放进诊断，也不通过事件交出去。
 // 这个函数不能引用外层变量：跨沙箱时会把它的源码注进页面再执行。
 function attachHooks(page, emit) {
   if (!page || typeof page.XMLHttpRequest !== "function") {
@@ -1699,7 +1866,63 @@ function attachHooks(page, emit) {
   if (page.__fanAuditHooks) return page.__fanAuditHooks;
   var origOpen = page.XMLHttpRequest.prototype.open;
   var origSend = page.XMLHttpRequest.prototype.send;
+  var origSetHeader = page.XMLHttpRequest.prototype.setRequestHeader;
   var origFetch = page.fetch;
+  var listPending = {};
+  var listTemplates = {};
+  var listSeq = 0;
+  function keepHeaderName(name) {
+    var key = String(name || "").toLowerCase();
+    return !!key && key !== "cookie" && key !== "cookie2" && key !== "set-cookie";
+  }
+  function copyHeaders(source) {
+    var out = {};
+    if (!source) return out;
+    try {
+      if (typeof source.forEach === "function") {
+        source.forEach(function (value, key) {
+          if (keepHeaderName(key)) out[String(key)] = String(value == null ? "" : value);
+        });
+        return out;
+      }
+    } catch (err) {}
+    if (Array.isArray(source)) {
+      source.forEach(function (pair) {
+        if (!pair || pair.length < 2 || !keepHeaderName(pair[0])) return;
+        out[String(pair[0])] = String(pair[1] == null ? "" : pair[1]);
+      });
+      return out;
+    }
+    if (typeof source === "object") {
+      Object.keys(source).forEach(function (key) {
+        if (!keepHeaderName(key)) return;
+        out[key] = String(source[key] == null ? "" : source[key]);
+      });
+    }
+    return out;
+  }
+  function listOp(url) {
+    var op = "";
+    var match = String(url || "").match(/\/graphql\/[^/?#]+\/(Following|Followers)(?:\?|#|$)/);
+    if (match) op = match[1];
+    return op === "Following" || op === "Followers" ? op : "";
+  }
+  function rememberList(url, method, headers, body) {
+    var op = listOp(url);
+    if (!op) return "";
+    listSeq += 1;
+    var id = String(listSeq);
+    listPending[id] = {op: op, url: String(url || ""), method: String(method || "GET").toUpperCase() === "POST" ? "POST" : "GET", headers: copyHeaders(headers), body: typeof body === "string" ? body : ""};
+    return id;
+  }
+  function headerValue(headers, name) {
+    if (!headers) return "";
+    var want = String(name || "").toLowerCase();
+    if (typeof headers.get === "function") {
+      try { return String(headers.get(name) || headers.get(want) || ""); } catch (err) { return ""; }
+    }
+    return "";
+  }
   var interesting = /\/(UserRepliesTimeline|UserTweetsAndReplies|UserOriginalsTimeline|UserTweets|SearchTimeline|BlueVerifiedFollowers|Followers|Following|TweetDetail|ModeratedTimeline|NotificationsTimeline|NotificationsMentionsTimeline|UserByScreenName|UserByRestId)(?:\?|#|$)/;
   function isNotificationsRest(url) {
     return /\/i\/api\/2\/notifications\/(?:all|mentions|verified)\.json(?:\?|#|$)/.test(String(url || ""));
@@ -1741,49 +1964,113 @@ function attachHooks(page, emit) {
   }
   function hookedOpen(method, url) {
     var xhr = this;
-    try { xhr.__fanUrl = url; } catch (err) {}
+    try { xhr.__fanUrl = url; xhr.__fanMethod = method; } catch (err) {}
     if (shouldWatch(url)) {
       xhr.addEventListener("load", function () {
         try {
           if (xhr.status && xhr.status >= 400) return;
           var current = String(xhr.__fanUrl || "");
           var text = wantsBody(current) ? readXhrBody(xhr) : "";
-          emit(current, text, xhr.__fanBody || "");
+          emit(current, text, xhr.__fanBody || "", xhr.__fanListId || "");
         } catch (err) {}
       });
     }
     return origOpen.apply(xhr, arguments);
   }
+  function hookedSetHeader(name, value) {
+    try {
+      if (keepHeaderName(name)) {
+        if (!this.__fanHeaders) this.__fanHeaders = {};
+        this.__fanHeaders[String(name)] = String(value == null ? "" : value);
+      }
+    } catch (err) {}
+    if (typeof origSetHeader !== "function") return undefined;
+    return origSetHeader.apply(this, arguments);
+  }
   function hookedSend(body) {
-    try { this.__fanBody = typeof body === "string" ? body : ""; } catch (err) {}
-    return origSend.apply(this, arguments);
+    var xhr = this;
+    try { xhr.__fanBody = typeof body === "string" ? body : ""; } catch (err) {}
+    try { xhr.__fanListId = rememberList(xhr.__fanUrl, xhr.__fanMethod, xhr.__fanHeaders, xhr.__fanBody || ""); } catch (err) {}
+    return origSend.apply(xhr, arguments);
   }
   function hookedFetch(input) {
     var url = requestUrl(input);
     var init = arguments[1];
     var body = "";
     try { if (init && typeof init.body === "string") body = init.body; } catch (err) {}
+    var headers = {};
+    try { headers = copyHeaders(init && init.headers); } catch (err) {}
+    try {
+      if (input && input.headers) {
+        var fromRequest = copyHeaders(input.headers);
+        Object.keys(fromRequest).forEach(function (key) { if (!headers[key]) headers[key] = fromRequest[key]; });
+      }
+    } catch (err) {}
+    var listId = "";
+    try { listId = rememberList(url, init && init.method, headers, body); } catch (err) {}
     var ret = origFetch.apply(this, arguments);
     if (!ret || typeof ret.then !== "function" || !shouldWatch(url)) return ret;
     return ret.then(function (res) {
       try {
         if (!res || res.ok === false) return res;
         if (!wantsBody(url)) {
-          emit(String(url), "", body);
+          emit(String(url), "", body, listId);
           return res;
         }
         var clone = res && res.clone ? res.clone() : null;
         if (clone && clone.text) {
           clone.text().then(function (text) {
-            try { emit(String(url), text, body); } catch (err) {}
+            try { emit(String(url), text, body, listId); } catch (err) {}
           }, function () {});
         }
       } catch (err) {}
       return res;
     });
   }
+  function allowedReplay(url, op) {
+    return listOp(url) === op && (op === "Following" || op === "Followers");
+  }
+  function readListPage(op, url, method, body) {
+    var tpl = listTemplates[op];
+    if (!tpl || !allowedReplay(url, op)) return Promise.resolve({status: 0, text: "", remaining: ""});
+    if (typeof origFetch !== "function") return Promise.resolve({status: 0, text: "", remaining: ""});
+    var init = {method: method === "POST" ? "POST" : "GET", headers: tpl.headers || {}, credentials: "same-origin", cache: "no-store"};
+    if (init.method === "POST") init.body = typeof body === "string" ? body : "";
+    return origFetch.call(page, url, init).then(function (res) {
+      var status = res && res.status ? res.status : 0;
+      var remaining = headerValue(res && res.headers, "x-rate-limit-remaining");
+      if (!res || typeof res.text !== "function") return {status: status, text: "", remaining: remaining};
+      return res.text().then(function (text) {
+        return {status: status, text: String(text || ""), remaining: remaining};
+      }, function () {
+        return {status: status || 0, text: "", remaining: remaining};
+      });
+    }, function () {
+      return {status: 0, text: "", remaining: ""};
+    });
+  }
+  page.__fanAuditKeepListTemplate = function (id) {
+    var item = listPending[String(id || "")];
+    if (!item) return false;
+    listTemplates[item.op] = item;
+    delete listPending[String(id || "")];
+    return true;
+  };
+  page.__fanAuditDropListTemplate = function (id) {
+    delete listPending[String(id || "")];
+  };
+  page.__fanAuditHasListTemplate = function (op) {
+    return !!(listTemplates[op] && listTemplates[op].url);
+  };
+  page.__fanAuditListTemplate = function (op) {
+    var item = listTemplates[op];
+    if (!item) return null;
+    return {op: item.op, url: item.url, method: item.method, body: item.body || ""};
+  };
+  page.__fanAuditFetchList = readListPage;
   page.XMLHttpRequest.prototype.open = hookedOpen;
   page.XMLHttpRequest.prototype.send = hookedSend;
+  if (typeof origSetHeader === "function") page.XMLHttpRequest.prototype.setRequestHeader = hookedSetHeader;
   if (typeof origFetch === "function") page.fetch = hookedFetch;
   var hooks = {hookedOpen: hookedOpen, origOpen: origOpen, origFetch: origFetch};
   try { page.__fanAuditHooks = hooks; } catch (err) {}
@@ -1799,7 +2086,7 @@ export function installHooks(page, onResponse) {
 }
 
 export function pageHookProgram() {
-  return "try{(" + attachHooks.toString() + ")(window,function(url,text,body){try{document.dispatchEvent(new CustomEvent(\"fan-audit-capture\",{detail:{url:String(url||\"\"),text:String(text||\"\"),body:typeof body===\"string\"?body:\"\"}}));}catch(err){}});}catch(err){}\n";
+  return "try{(" + attachHooks.toString() + ")(window,function(url,text,body,listId){try{document.dispatchEvent(new CustomEvent(\"fan-audit-capture\",{detail:{url:String(url||\"\"),text:String(text||\"\"),body:typeof body===\"string\"?body:\"\",listId:String(listId||\"\")}}));}catch(err){}});}catch(err){}\n";
 }
 
 export var BOARD_CSS = [
