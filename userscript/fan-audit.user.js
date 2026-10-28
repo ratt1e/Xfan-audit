@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         fan-audit 粉丝体检
 // @namespace    https://github.com/ratt1e/Xfan-audit
-// @version      0.2.0
-// @description  在 X 上边逛边记下公开回复和关注名单，也能导入导出的 JSON。只读，不自己发请求，不自动翻页。
+// @version      0.3.0
+// @description  在 X 上边逛边记下公开回复和关注名单，也能导入导出的 JSON。默认只读你浏览过的内容，不自己发请求。另有可选的自动读取名单，默认关闭。
 // @author       ranger_escape
 // @match        *://x.com/*
 // @match        *://twitter.com/*
@@ -676,6 +676,34 @@ var root = {};
     var href = "https:" + "//x.com/" + handle;
     return '<a href="' + escHtml(href) + '" target="_blank" rel="noopener noreferrer">' + escHtml(text) + "</a>";
   }
+  // 回访率只用于名单展示，不进入 score()，也不改变星级门槛。
+  // 分子 I_raw：对方回复我的条数，含问候。score() 里是 count(talk, "in")。
+  // 分母 O_raw：我发给对方的条数，含问候。score() 里是 count(talk, "out")。
+  // 百分比 = round(100 * I_raw / O_raw)。O_raw 不是正数时没有分母，显示「—」，不用 0% 充数。
+  // I_raw 缺失而分母有效时，分子按 0，可以显示 0%。对方回得更多时可以超过 100%，不封顶。
+  function revisitText(row) {
+    if (!row || row.O_raw == null || row.O_raw === "") return "—";
+    var denom = Number(row.O_raw);
+    if (!isFinite(denom) || denom <= 0) return "—";
+    var numer = row.I_raw == null || row.I_raw === "" ? 0 : Number(row.I_raw);
+    if (!isFinite(numer) || numer < 0) return "—";
+    return Math.round((100 * numer) / denom) + "%";
+  }
+  function countText(value) {
+    if (value == null || value === "") return "—";
+    var n = Number(value);
+    if (!isFinite(n) || n < 0) return "—";
+    return String(Math.round(n));
+  }
+  // 互动用 raw（这段时间的说话条数，不含点赞）。往返用已确认的 rounds；另有未确认的父帖时把条数写出来，不算建议。
+  function listFacts(row) {
+    var rounds = countText(row && row.rounds);
+    var extra = "";
+    if (row && row.unconfirmed != null && row.unconfirmed !== "" && Number(row.unconfirmed) > 0) {
+      extra = "，未确认 " + Math.round(Number(row.unconfirmed));
+    }
+    return "回访 " + revisitText(row) + " · 互动 " + countText(row && row.raw) + " · 往返 " + rounds + extra;
+  }
   function boardHtml(rows, options) {
     options = options || {};
     var open = options.open || {};
@@ -737,16 +765,17 @@ var root = {};
       var shown = options.showAll || open[t] ? xs : xs.slice(0, 20);
       var body = '<p class="muted">这一层暂时没有人</p>';
       if (xs.length) {
-        body = "<table><tr><th>账号</th><th>星级</th><th>分数</th><th>建议动作</th></tr>";
+        body = "<table><tr><th>账号</th><th>星级</th><th>分数</th><th>数据</th></tr>";
         shown.forEach(function (x) {
-          body += "<tr><td>" + nameCell(x.account) + "</td><td>" + starsText(x) + "</td><td>" + (x.score == null ? "—" : escHtml(x.score)) + "</td><td>" + escHtml(x.action || "") + "</td></tr>";
+          body += "<tr><td>" + nameCell(x.account) + "</td><td>" + starsText(x) + "</td><td>" + (x.score == null ? "—" : escHtml(x.score)) + "</td><td>" + escHtml(listFacts(x)) + "</td></tr>";
         });
         body += "</table>";
         if (!options.showAll && xs.length > 20 && !open[t]) body += '<button type="button" data-expand="' + escHtml(t) + '">展开全部</button>';
       }
       return '<section class="card tier-block" id="tier-' + t + '" data-total="' + xs.length + '" data-shown="' + shown.length + '"><div class="block-head"><h2>' + escHtml(t) + "（" + xs.length + '）</h2><a class="back-top" href="#top">回到顶部</a></div>' + body + "</section>";
     }).join("");
-    return cards + panels + blocks;
+    var factNote = '<p class="muted">回访率 = 对方回复我的条数 ÷ 我发出的条数（都含问候）。我没有发出过就写 —，不写 0%。互动是这段时间的说话条数，往返是确认对上的轮数。这些只是展示，不改分数。</p>';
+    return cards + panels + factNote + blocks;
   }
   function indexAccounts(records) {
     var items = [], byId = {}, byHandle = {};
@@ -1001,7 +1030,7 @@ var root = {};
     if (diff) html += followDiffHtml(diff, {masked: !!options.masked, rows: rows});
     return {html: html, rows: rows, meta: result.meta, back: back, diff: diff};
   }
-  root.FanAudit = {CONFIG: CONFIG, TIERS: TIERS, defaultTimeZone: defaultTimeZone, analyze: analyze, loadTexts: loadTexts, parseCsv: parseCsv, fileKind: fileKind, nameKind: nameKind, inferOwner: inferOwner, repliesFromTweets: repliesFromTweets, boardHtml: boardHtml, jumpPlan: jumpPlan, followDiff: followDiff, followDiffHtml: followDiffHtml, notFollowedBack: notFollowedBack, notFollowedBackHtml: notFollowedBackHtml, renderReport: renderReport};
+  root.FanAudit = {CONFIG: CONFIG, TIERS: TIERS, defaultTimeZone: defaultTimeZone, analyze: analyze, loadTexts: loadTexts, parseCsv: parseCsv, fileKind: fileKind, nameKind: nameKind, inferOwner: inferOwner, repliesFromTweets: repliesFromTweets, boardHtml: boardHtml, revisitText: revisitText, listFacts: listFacts, jumpPlan: jumpPlan, followDiff: followDiff, followDiffHtml: followDiffHtml, notFollowedBack: notFollowedBack, notFollowedBackHtml: notFollowedBackHtml, renderReport: renderReport};
 })(root);
 /* FAN_ENGINE_END */
 var FanAudit = root.FanAudit;
@@ -1020,9 +1049,19 @@ var FanAudit = root.FanAudit;
 
 var RETENTION_DAYS = 90;
 var RETENTION_MS = RETENTION_DAYS * 24 * 60 * 60 * 1000;
-var EMPTY_GUIDE = "刚安装还没有数据？依次打开你的关注列表、粉丝列表和主页回复页，手动往下滑几屏，脚本会自动记录。";
+var EMPTY_GUIDE = "刚安装还没有数据？依次打开你的关注列表、粉丝列表和主页回复页，手动往下滑几屏，脚本会记下。";
 var TEXT_LIMIT = 30;
 var SNAPSHOT_WAITING = "下次完整采集后自动对比";
+// 自动读取默认关闭，刷新后也不恢复。这些数只约束「用户勾选并点了开始」之后的那一次。
+var AUTO_READ_GAP_MIN_MS = 2000;
+var AUTO_READ_GAP_MAX_MS = 5000;
+var AUTO_READ_MAX_SCREENS = 60;
+var AUTO_READ_MAX_MS = 8 * 60 * 1000;
+var AUTO_READ_STALL_MS = 45000;
+var AUTO_READ_STALL_SCREENS = 4;
+var AUTO_READ_STALL_FLOOR_MS = 12000;
+var AUTO_READ_RISK = "这个功能会让脚本代替你自动连续翻页读取名单，不属于「只读你浏览过的内容」。X 的条款不允许未经许可的自动化抓取，可能导致限流、临时限制甚至封号。X 没有公布具体阈值，不能保证安全，后果自负。不想冒险就用默认的手动滑动。\n\n脚本只滚动你自己的关注页、粉丝页或认证粉丝页，好让页面自己加载下一屏。不会关注、取关、点赞、转发、回复、私信或拉黑，也不会读取别人的名单。";
+var AUTO_READ_ACK = "我已阅读上面的提示。我知道这会自动翻页，可能被限流、临时限制甚至封号，后果自己承担。";
 
 var OPS = {
   UserRepliesTimeline: "replies",
@@ -1049,7 +1088,7 @@ function emptyStore() {
     posts: {},
     following: {},
     followers: {},
-    totals: {followers: 0, following: 0},
+    totals: {followers: 0, following: 0, blue: 0},
     snapshots: [],
     keepEntries: [],
     keepIds: {},
@@ -1664,6 +1703,11 @@ function parseCapture(url, text, options) {
   if (kind === "counts") return finish({kind: kind, skip: "", posts: [], users: [], counts: readOwnerCounts(json)});
   var owner = norm(options.owner);
   var profile = readProfile(json);
+  function attachCounts(result) {
+    var counts = readOwnerCounts(json);
+    if (counts && owner && counts.handle === owner) result.counts = counts;
+    return finish(result);
+  }
   var instructions = readInstructions(json, kind);
   var collected = collect(instructions);
   if (kind === "following" || kind === "followers" || kind === "blue-followers") {
@@ -1676,14 +1720,14 @@ function parseCapture(url, text, options) {
       return finish({kind: kind, skip: "不是你的关注或粉丝列表", posts: [], users: [], profile: profile});
     }
     var users = collected.users.filter(function (user) { return norm(user.handle) !== owner; });
-    return finish({kind: kind, skip: "", posts: [], users: users, profile: profile});
+    return attachCounts({kind: kind, skip: "", posts: [], users: users, profile: profile});
   }
   if (kind === "replies" || kind === "originals") {
     if (!owner) return finish({kind: kind, skip: "还不知道你的用户名", posts: [], users: [], profile: profile});
     if (!timelineOwned(profile, owner, options.pagePath, url, options.body)) {
       return finish({kind: kind, skip: "不是你的主页时间线", posts: [], users: [], profile: profile});
     }
-    return finish({kind: kind, skip: "", posts: stamp(collected.tweets, kind), users: [], profile: profile});
+    return attachCounts({kind: kind, skip: "", posts: stamp(collected.tweets, kind), users: [], profile: profile});
   }
   if (!owner) return finish({kind: kind, skip: "还不知道你的用户名", posts: [], users: [], profile: profile});
   if (kind === "search") {
@@ -1748,26 +1792,14 @@ function applyCapture(store, captured, now) {
   if (!store || !captured || captured.skip || !captured.kind) return false;
   ensureStore(store);
   now = now || Date.now();
+  var countsChanged = applyOwnerCounts(store, captured.counts);
   if (captured.kind === "counts") {
-    var counts = captured.counts;
-    var me = norm(store.prefs && store.prefs.owner);
-    var counted = false;
-    if (counts && me && counts.handle === me) {
-      if (counts.followers > 0 && store.totals.followers !== counts.followers) {
-        store.totals.followers = counts.followers;
-        counted = true;
-      }
-      if (counts.following > 0 && store.totals.following !== counts.following) {
-        store.totals.following = counts.following;
-        counted = true;
-      }
-      if (maybeSnapshot(store, "followers", now)) counted = true;
-      if (maybeSnapshot(store, "following", now)) counted = true;
-    }
+    if (maybeSnapshot(store, "followers", now)) countsChanged = true;
+    if (maybeSnapshot(store, "following", now)) countsChanged = true;
     prune(store, now);
-    return counted;
+    return countsChanged;
   }
-  var changed = false;
+  var changed = countsChanged;
   (captured.posts || []).forEach(function (post) {
     if (!post.id) return;
     var next = compactPost(post, now);
@@ -1799,6 +1831,7 @@ function applyCapture(store, captured, now) {
       if (!id && !handle) return;
       var key = id ? "id:" + id : "h:" + handle;
       var existingKey = "";
+      var carriedBlue = false;
       if (handle) {
         var keys = Object.keys(store[bucket]);
         for (var i = 0; i < keys.length; i++) {
@@ -1807,6 +1840,7 @@ function applyCapture(store, captured, now) {
       }
       if (existingKey && existingKey !== key) {
         var previous = store[bucket][existingKey];
+        if (previous && previous.fromBlue) carriedBlue = true;
         if (id && existingKey.indexOf("id:") !== 0) {
           delete store[bucket][existingKey];
           if (!user.name) user.name = previous.name;
@@ -1830,7 +1864,8 @@ function applyCapture(store, captured, now) {
         seen: now
       };
       if (prev && prev.src === "export") next.src = "export";
-      if (!prev || prev.handle !== next.handle || prev.name !== next.name || prev.verified !== next.verified || prev.followers !== next.followers || prev.id !== next.id) {
+      if (bucket === "followers" && (captured.kind === "blue-followers" || (prev && prev.fromBlue) || carriedBlue)) next.fromBlue = true;
+      if (!prev || prev.handle !== next.handle || prev.name !== next.name || prev.verified !== next.verified || prev.followers !== next.followers || prev.id !== next.id || !!prev.fromBlue !== !!next.fromBlue) {
         store[bucket][key] = next;
         changed = true;
       } else prev.seen = now;
@@ -1905,8 +1940,22 @@ function coverageReport(store, owner, tz) {
     sawFollowers: !!meta.sawFollowers,
     sawBlueFollowers: !!meta.sawBlueFollowers,
     sawNotifications: !!meta.sawNotifications,
-    sawExport: !!meta.sawExport
+    sawExport: !!meta.sawExport,
+    blueFollowers: blueFollowerCount(store),
+    totals: {
+      followers: (store.totals && store.totals.followers) || 0,
+      following: (store.totals && store.totals.following) || 0,
+      blue: (store.totals && store.totals.blue) || 0
+    }
   };
+}
+
+function blueFollowerCount(store) {
+  var n = 0;
+  Object.keys((store && store.followers) || {}).forEach(function (key) {
+    if (store.followers[key] && store.followers[key].fromBlue) n += 1;
+  });
+  return n;
 }
 
 function countNum(value) {
@@ -1926,16 +1975,56 @@ function readOwnerCounts(json) {
   if (node.result && typeof node.result === "object" && !node.rest_id && !node.restId && !node.core && !node.legacy) node = node.result;
   var legacy = (node && node.legacy) || {};
   var rel = (node && (node.relationship_counts || node.relationshipCounts)) || {};
+  var metrics = {};
+  function takeMetrics(bag) {
+    if (!bag || typeof bag !== "object") return;
+    ["followers_count", "following_count", "friends_count", "verified_followers_count"].forEach(function (key) {
+      if (metrics[key] == null && bag[key] != null) metrics[key] = bag[key];
+    });
+    if (bag.verifiedFollowersCount != null && metrics.verified_followers_count == null) metrics.verified_followers_count = bag.verifiedFollowersCount;
+  }
+  takeMetrics(node.public_metrics);
+  takeMetrics(node.publicMetrics);
+  takeMetrics(legacy.public_metrics);
+  takeMetrics(legacy.publicMetrics);
   var followers = countNum(legacy.followers_count);
   if (!followers) followers = countNum(rel.followers != null ? rel.followers : rel.followers_count);
+  if (!followers) followers = countNum(metrics.followers_count);
   if (!followers) followers = profile.followers || 0;
   var following = countNum(legacy.friends_count);
   if (!following) following = countNum(rel.following != null ? rel.following : (rel.friends != null ? rel.friends : rel.following_count));
-  return {handle: profile.handle, followers: followers, following: following};
+  if (!following) following = countNum(metrics.following_count != null ? metrics.following_count : metrics.friends_count);
+  var blue = countNum(metrics.verified_followers_count);
+  if (!blue) blue = countNum(legacy.verified_followers_count);
+  if (!blue) blue = countNum(node.verified_followers_count);
+  if (!blue) blue = countNum(rel.verified_followers != null ? rel.verified_followers : rel.verified_followers_count);
+  return {handle: profile.handle, followers: followers, following: following, blue: blue};
+}
+
+function applyOwnerCounts(store, counts) {
+  if (!counts) return false;
+  ensureStore(store);
+  var me = norm(store.prefs && store.prefs.owner);
+  if (!me || counts.handle !== me) return false;
+  var changed = false;
+  if (counts.followers > 0 && store.totals.followers !== counts.followers) {
+    store.totals.followers = counts.followers;
+    changed = true;
+  }
+  if (counts.following > 0 && store.totals.following !== counts.following) {
+    store.totals.following = counts.following;
+    changed = true;
+  }
+  if (counts.blue > 0 && store.totals.blue !== counts.blue) {
+    store.totals.blue = counts.blue;
+    changed = true;
+  }
+  return changed;
 }
 
 function ensureStore(store) {
-  if (!store.totals) store.totals = {followers: 0, following: 0};
+  if (!store.totals) store.totals = {followers: 0, following: 0, blue: 0};
+  if (store.totals.blue == null) store.totals.blue = 0;
   if (!store.snapshots) store.snapshots = [];
   if (!store.keepEntries) store.keepEntries = [];
   if (!store.keepIds) store.keepIds = {};
@@ -1966,17 +2055,146 @@ function exportTimeFromName(name, fallback) {
   return n;
 }
 
+function plainCount(text) {
+  var raw = String(text || "");
+  if (/[kKmM万亿]/.test(raw)) return 0;
+  var digits = raw.replace(/,/g, "").match(/\d+/);
+  if (!digits) return 0;
+  var count = parseInt(digits[0], 10);
+  return count > 0 ? count : 0;
+}
+
 function headerListCount(href, text, owner) {
   var match = String(href || "").match(/^\/([A-Za-z0-9_]{1,15})\/(followers|following|verified_followers)\/?$/);
   if (!match || norm(match[1]) !== norm(owner)) return null;
   if (match[2] === "verified_followers") return null;
-  var raw = String(text || "");
-  if (/[kKmM万亿]/.test(raw)) return null;
-  var digits = raw.replace(/,/g, "").match(/\d+/);
-  if (!digits) return null;
-  var count = parseInt(digits[0], 10);
+  var count = plainCount(text);
   if (!count) return null;
   return {kind: match[2] === "following" ? "following" : "followers", count: count};
+}
+
+function headerVerifiedCount(href, text, owner) {
+  var match = String(href || "").match(/^\/([A-Za-z0-9_]{1,15})\/verified_followers\/?$/);
+  if (!match || norm(match[1]) !== norm(owner)) return 0;
+  return plainCount(text);
+}
+
+// 已记 N / 共约 M。M 只用已经读到的公开人数；没有就写总数待核实。接近的口径和名单快照的完整线相同。
+function progressText(captured, expected) {
+  var n = countNum(captured);
+  var total = countNum(expected);
+  var text = "已记 " + n + " / " + (total > 0 ? "共约 " + total : "总数待核实");
+  if (total > 0 && (n >= total || listIsComplete(n, total))) text += "，差不多了";
+  return text;
+}
+
+function autoReadGapMs(unit) {
+  var u = Number(unit);
+  if (!isFinite(u) || u < 0) u = 0;
+  if (u >= 1) return AUTO_READ_GAP_MAX_MS;
+  return AUTO_READ_GAP_MIN_MS + Math.floor(u * (AUTO_READ_GAP_MAX_MS - AUTO_READ_GAP_MIN_MS + 1));
+}
+
+function autoReadPageKind(pathname, owner) {
+  var kind = listKindFromPath(pathname, owner);
+  if (kind === "following" || kind === "followers" || kind === "blue-followers") return kind;
+  return "";
+}
+
+function autoReadCount(store, kind) {
+  ensureStore(store);
+  if (kind === "following") return Object.keys(store.following).length;
+  if (kind === "blue-followers") return blueFollowerCount(store);
+  if (kind === "followers") return Object.keys(store.followers).length;
+  return 0;
+}
+
+function autoReadBlockReason(text) {
+  var raw = String(text || "").replace(/\s+/g, " ").trim();
+  if (!raw || raw.length > 400) return "";
+  if (/速率限制|超出速率|rate limit|too many requests/i.test(raw)) return "看到限流提示，已停止，不会自动重试";
+  if (/something went wrong|出错了|请稍后再试|try again later|请尝试重新加载/i.test(raw)) return "看到页面报错，已停止，不会自动重试";
+  return "";
+}
+
+// 内存里的开关。不写入油猴存储，所以刷新页面后一定是关闭。没勾选、没点开始时 tick 不会要求滚动。
+function createAutoReader() {
+  var phase = "off";
+  var acked = false;
+  var startedAt = 0;
+  var startedKind = "";
+  var screens = 0;
+  var lastCount = 0;
+  var lastNewAt = 0;
+  var stallScreens = 0;
+  var stopReason = "";
+  function resetRun() {
+    phase = "off";
+    acked = false;
+    startedAt = 0;
+    startedKind = "";
+    screens = 0;
+    lastCount = 0;
+    lastNewAt = 0;
+    stallScreens = 0;
+  }
+  function finish(reason) {
+    stopReason = reason;
+    resetRun();
+    return {action: "stop", reason: reason};
+  }
+  return {
+    phase: function () { return phase; },
+    screens: function () { return screens; },
+    stopReason: function () { return stopReason; },
+    openConfirm: function () {
+      if (phase === "running") return "running";
+      phase = "confirm";
+      acked = false;
+      stopReason = "";
+      return "confirm";
+    },
+    setAcknowledged: function (checked) { acked = !!checked; },
+    start: function (now, pageKind, count) {
+      if (phase === "running") return {ok: false, reason: "已经在读"};
+      if (!acked) return {ok: false, reason: "需要先勾选确认"};
+      if (!pageKind) return {ok: false, reason: "请先打开你自己的关注或粉丝页"};
+      phase = "running";
+      startedAt = now;
+      startedKind = pageKind;
+      lastNewAt = now;
+      lastCount = count | 0;
+      screens = 0;
+      stallScreens = 0;
+      stopReason = "";
+      return {ok: true};
+    },
+    stop: function (reason) {
+      stopReason = reason || "已停止";
+      resetRun();
+    },
+    tick: function (now, info) {
+      if (phase !== "running") return {action: "idle"};
+      info = info || {};
+      var count = info.count | 0;
+      if (count > lastCount) {
+        lastCount = count;
+        lastNewAt = now;
+        stallScreens = 0;
+      }
+      var quiet = now - lastNewAt;
+      if (!info.pageKind || info.pageKind !== startedKind) return finish("不在刚才那份自己的名单页了，已停止");
+      if (info.blocked) return finish(info.blocked);
+      if (now - startedAt >= AUTO_READ_MAX_MS) return finish("已到单次 " + (AUTO_READ_MAX_MS / 60000) + " 分钟上限，已停止");
+      if (screens >= AUTO_READ_MAX_SCREENS) return finish("已到单次 " + AUTO_READ_MAX_SCREENS + " 屏上限，已停止");
+      if (quiet >= AUTO_READ_STALL_MS) return finish("有 " + (AUTO_READ_STALL_MS / 1000) + " 秒没有新数据，已停止");
+      if (info.stuck && stallScreens >= 2 && quiet >= AUTO_READ_STALL_FLOOR_MS) return finish("页面滑不动且没有新数据，已停止");
+      if (stallScreens >= AUTO_READ_STALL_SCREENS && quiet >= AUTO_READ_STALL_FLOOR_MS) return finish("连续几屏没有新数据，已停止");
+      screens += 1;
+      stallScreens += 1;
+      return {action: "scroll", gapMs: autoReadGapMs(info.unit), screens: screens};
+    }
+  };
 }
 
 function compactPeople(list) {
@@ -2392,6 +2610,7 @@ function normalizeStore(input) {
   store.meta.sawExport = !!meta.sawExport;
   store.totals.followers = countNum(input.totals && input.totals.followers);
   store.totals.following = countNum(input.totals && input.totals.following);
+  store.totals.blue = countNum(input.totals && input.totals.blue);
   Object.keys(input.posts || {}).forEach(function (id) {
     var post = input.posts[id];
     if (!post || typeof post !== "object") return;
@@ -2417,6 +2636,7 @@ function normalizeStore(input) {
         seen: user.seen || 0
       };
       if (user.src === "export") store[bucket][storedKey].src = "export";
+      if (bucket === "followers" && user.fromBlue) store[bucket][storedKey].fromBlue = true;
     });
   });
   var kept = [];
@@ -2720,6 +2940,7 @@ function boot() {
   var openTiers = {};
   var saveTimer = 0;
   var ui = {};
+  var renderAutoRead = function () {};
   var pending = [];
   var flushing = false;
   var diag = {hook: "no", world: "unknown", sameRealm: false, pageApp: false, graphqlSeen: 0, matched: {}, unmatched: [], domAccepted: 0, skips: {}, skipsByOp: {}};
@@ -2804,10 +3025,17 @@ function boot() {
     var changed = false;
     var links = root.querySelectorAll("a[href]");
     for (var i = 0; i < links.length; i++) {
-      var found = headerListCount(links[i].getAttribute("href") || "", links[i].textContent || "", owner);
-      if (!found) continue;
-      if ((store.totals[found.kind] || 0) !== found.count) {
+      var href = links[i].getAttribute("href") || "";
+      var text = links[i].textContent || "";
+      var found = headerListCount(href, text, owner);
+      if (found && (store.totals[found.kind] || 0) !== found.count) {
         store.totals[found.kind] = found.count;
+        changed = true;
+      }
+      var blue = headerVerifiedCount(href, text, owner);
+      if (blue && (store.totals.blue || 0) !== blue) {
+        if (!store.totals) store.totals = {followers: 0, following: 0, blue: 0};
+        store.totals.blue = blue;
         changed = true;
       }
     }
@@ -2966,7 +3194,16 @@ function boot() {
       ".miss{color:#9CA3AF}",
       "#import-drop{border:1px dashed #D1D5DB;border-radius:12px;padding:10px 12px;margin:8px 0;background:#fff;color:#4B5563;font-size:13px}",
       "#import-drop.over{border-color:#1D4ED8;background:#EFF6FF}",
-      "#keep-box{margin:8px 0 12px}"
+      "#keep-box{margin:8px 0 12px}",
+      "#more{margin:8px 0 12px;background:#fff;border:1px solid #E5E7EB;border-radius:12px;padding:8px 12px}",
+      "#more summary{cursor:pointer;font-weight:650;color:#374151}",
+      "#auto-read{border:1px solid #FDE68A;background:#FFFBEB;border-radius:12px;padding:10px 12px;margin:8px 0}",
+      "#auto-read p{margin:6px 0}",
+      "#auto-read .risk{white-space:pre-wrap;color:#92400E;font-size:13px;line-height:1.5}",
+      "#auto-read label{display:flex;gap:8px;align-items:flex-start;font-size:13px}",
+      "button.ctrl:disabled{opacity:.45;cursor:not-allowed}",
+      "#auto-stop{position:fixed;right:132px;bottom:16px;z-index:2147483646;border:1px solid #B91C1C;background:#fff;color:#B91C1C;border-radius:999px;padding:8px 14px;font:600 14px -apple-system,'PingFang SC','Noto Sans CJK SC','Microsoft YaHei',sans-serif;cursor:pointer}",
+      "#results table{display:block;overflow-x:auto}"
     ].join("\n");
     shadow.appendChild(style);
 
@@ -2988,7 +3225,7 @@ function boot() {
 
     var title = el("h1", "", "粉丝体检");
     title.id = "top";
-    var lead = el("p", "privacy", "只被动记录你正在浏览时页面已经收到的内容。脚本自己不发请求，也不会点赞、关注、取关或发帖。");
+    var lead = el("p", "privacy", "默认只记下你正在浏览时页面已经收到的内容，不自己发请求，也不自动滚动。不会点赞、关注、取关或发帖。自动读取名单在下面，默认关闭。");
     var diagBox = el("details");
     diagBox.id = "diag-box";
     var diagSummary = el("summary", "", "诊断信息");
@@ -3003,8 +3240,14 @@ function boot() {
     var maskBtn = el("button", "ctrl", "一键打码");
     maskBtn.type = "button";
     maskBtn.id = "mask";
+    var widenBtn = el("button", "ctrl", "全屏");
+    widenBtn.type = "button";
+    widenBtn.id = "widen";
+    widenBtn.setAttribute("aria-pressed", "false");
+    var rowMain = el("div", "row");
+    rowMain.appendChild(maskBtn);
+    rowMain.appendChild(widenBtn);
     var row1 = el("div", "row");
-    row1.appendChild(maskBtn);
     var ownerLabel = el("label", "field", "你的用户名");
     var owner = el("input");
     owner.type = "text";
@@ -3025,7 +3268,6 @@ function boot() {
     row1.appendChild(ownerLabel);
     row1.appendChild(tzLabel);
 
-    var row2 = el("div", "row");
     function modeButton(mode, label) {
       var button = el("button", "ctrl", label);
       button.type = "button";
@@ -3035,7 +3277,7 @@ function boot() {
         scheduleSave();
         render();
       });
-      row2.appendChild(button);
+      rowMain.appendChild(button);
       return button;
     }
     modeButton("7", "最近 7 天");
@@ -3051,14 +3293,9 @@ function boot() {
     importBtn.type = "button";
     var downloadBtn = el("button", "ctrl", "下载看板 HTML");
     downloadBtn.type = "button";
-    var widenBtn = el("button", "ctrl", "全屏");
-    widenBtn.type = "button";
-    widenBtn.id = "widen";
-    widenBtn.setAttribute("aria-pressed", "false");
     var openTabBtn = el("button", "ctrl", "新标签打开");
     openTabBtn.type = "button";
     openTabBtn.id = "open-tab";
-    row3.appendChild(widenBtn);
     row3.appendChild(openTabBtn);
     row3.appendChild(delBtn);
     row3.appendChild(exportBtn);
@@ -3080,7 +3317,7 @@ function boot() {
     importFile.id = "import-files";
     var drop = el("div", "");
     drop.id = "import-drop";
-    drop.textContent = "把 twitter-web-exporter 的 JSON 拖到这里，或点「导入导出文件」。能认用户推文 / UserTweets、正在关注 / Following、关注者 / Followers。数据只在你的浏览器里处理，不会上传。";
+    drop.textContent = "把导出的 JSON 拖到这里，或点「导入导出文件」。能认用户推文 / UserTweets、正在关注 / Following、关注者 / Followers。数据只在你的浏览器里处理，不会上传。";
     var importTable = el("div");
     importTable.id = "import-table";
     var keepBox = el("section", "card");
@@ -3108,6 +3345,64 @@ function boot() {
     keepList.id = "keep-list";
     keepBox.appendChild(keepRow);
     keepBox.appendChild(keepList);
+    var more = el("details");
+    more.id = "more";
+    more.appendChild(el("summary", "", "更多"));
+    more.appendChild(el("p", "muted", "导出、导入、删除和诊断收在这里。平时用上面的打码、全屏和日期就够。"));
+    more.appendChild(diagBox);
+    more.appendChild(row3);
+    more.appendChild(drop);
+    more.appendChild(importTable);
+    more.appendChild(keepBox);
+
+    var autoReader = createAutoReader();
+    var autoShown = "off";
+    var autoTimer = 0;
+    var lastMoved = true;
+    var autoBox = el("section");
+    autoBox.id = "auto-read";
+    autoBox.appendChild(el("p", "", "自动读取我自己的关注 / 粉丝名单"));
+    autoBox.appendChild(el("p", "muted", "默认关闭。只滚动你已经打开的、你自己的关注页、粉丝页或认证粉丝页，让页面自己加载。不读别人的名单。刷新后回到关闭。"));
+    var autoOpen = el("button", "ctrl", "查看风险并决定是否开启");
+    autoOpen.type = "button";
+    autoOpen.id = "auto-read-open";
+    var autoRisk = el("div");
+    autoRisk.id = "auto-read-risk";
+    autoRisk.hidden = true;
+    autoRisk.appendChild(el("p", "risk", AUTO_READ_RISK));
+    var autoAckLabel = el("label");
+    var autoAck = el("input");
+    autoAck.type = "checkbox";
+    autoAck.id = "auto-read-ack";
+    autoAckLabel.appendChild(autoAck);
+    autoAckLabel.appendChild(document.createTextNode(AUTO_READ_ACK));
+    var autoStart = el("button", "ctrl", "开始读取");
+    autoStart.type = "button";
+    autoStart.id = "auto-read-start";
+    autoStart.disabled = true;
+    var autoCancel = el("button", "ctrl", "先用手动滑动");
+    autoCancel.type = "button";
+    autoCancel.id = "auto-read-cancel";
+    var autoRiskRow = el("div", "row");
+    autoRiskRow.appendChild(autoStart);
+    autoRiskRow.appendChild(autoCancel);
+    autoRisk.appendChild(autoAckLabel);
+    autoRisk.appendChild(autoRiskRow);
+    var autoStatus = el("p", "muted", "默认关闭。不点开始就不会滚动。");
+    autoStatus.id = "auto-read-status";
+    var autoStop = el("button", "ctrl danger", "停止");
+    autoStop.type = "button";
+    autoStop.id = "auto-read-stop";
+    autoStop.hidden = true;
+    autoBox.appendChild(autoOpen);
+    autoBox.appendChild(autoRisk);
+    autoBox.appendChild(autoStatus);
+    autoBox.appendChild(autoStop);
+    var autoFloat = el("button", "", "停止读取");
+    autoFloat.type = "button";
+    autoFloat.id = "auto-stop";
+    autoFloat.hidden = true;
+    shadow.appendChild(autoFloat);
 
     var tzLine = el("p", "sub");
     tzLine.id = "tz-label";
@@ -3128,22 +3423,19 @@ function boot() {
 
     scroller.appendChild(title);
     scroller.appendChild(lead);
-    scroller.appendChild(diagBox);
+    scroller.appendChild(rowMain);
     scroller.appendChild(row1);
-    scroller.appendChild(row2);
-    scroller.appendChild(row3);
-    scroller.appendChild(drop);
-    scroller.appendChild(importTable);
-    scroller.appendChild(keepBox);
-    scroller.appendChild(file);
-    scroller.appendChild(importFile);
+    scroller.appendChild(autoBox);
     scroller.appendChild(tzLine);
     scroller.appendChild(warnings);
     scroller.appendChild(coverage);
     scroller.appendChild(status);
     scroller.appendChild(results);
+    scroller.appendChild(more);
+    scroller.appendChild(file);
+    scroller.appendChild(importFile);
     scroller.appendChild(footer);
-    ui = {owner: owner, tz: tz, maskBtn: maskBtn, shadow: shadow, scroller: scroller, results: results, warnings: warnings, coverage: coverage, status: status, tzLine: tzLine, launcher: launcher, badge: badge, panel: panel, diagLine: diagLine, widenBtn: widenBtn, importTable: importTable, keepList: keepList, keepInput: keepInput, _backItems: [], _keepItems: []};
+    ui = {owner: owner, tz: tz, maskBtn: maskBtn, shadow: shadow, scroller: scroller, results: results, warnings: warnings, coverage: coverage, status: status, tzLine: tzLine, launcher: launcher, badge: badge, panel: panel, diagLine: diagLine, widenBtn: widenBtn, importTable: importTable, keepList: keepList, keepInput: keepInput, more: more, _backItems: [], _keepItems: []};
     var wide = false;
     function setWide(next) {
       wide = !!next;
@@ -3151,6 +3443,148 @@ function boot() {
       widenBtn.textContent = wide ? "退出全屏" : "全屏";
       widenBtn.setAttribute("aria-pressed", wide ? "true" : "false");
     }
+    function clearAutoTimer() {
+      if (!autoTimer) return;
+      clearTimeout(autoTimer);
+      autoTimer = 0;
+    }
+    renderAutoRead = function () {
+      var phase = autoReader.phase();
+      autoOpen.hidden = phase === "running";
+      autoRisk.hidden = phase !== "confirm";
+      autoStop.hidden = phase !== "running";
+      autoFloat.hidden = phase !== "running";
+      if (phase === "confirm" && autoShown !== "confirm") {
+        autoAck.checked = false;
+        autoReader.setAcknowledged(false);
+        autoStart.disabled = true;
+      }
+      autoShown = phase;
+      var reason = autoReader.stopReason();
+      if (phase === "running") autoStatus.textContent = "正在读取你自己的名单。已滚 " + autoReader.screens() + " 屏。可以随时停止。刷新页面后会回到关闭。";
+      else if (phase === "confirm") autoStatus.textContent = "先看完上面的提示，勾选后才能开始。现在还没有滚动。";
+      else if (reason) autoStatus.textContent = reason + " 自动读取已关闭。";
+      else autoStatus.textContent = "默认关闭。不点开始就不会滚动。";
+    }
+    function haltAuto(reason) {
+      clearAutoTimer();
+      autoReader.stop(reason);
+      renderAutoRead();
+    }
+    function findPageScroller() {
+      var doc = document;
+      var view = window;
+      try {
+        var page = pageWindow();
+        if (page && page.document) { doc = page.document; view = page; }
+      } catch (err) {}
+      var root = doc.querySelector('[data-testid="primaryColumn"]');
+      if (!root) return null;
+      var node = root;
+      while (node && node !== doc.body && node !== doc.documentElement) {
+        try {
+          var style = view.getComputedStyle(node);
+          var oy = style && style.overflowY;
+          if ((oy === "auto" || oy === "scroll") && node.scrollHeight > node.clientHeight + 80) return {node: node, view: view};
+        } catch (err) {}
+        node = node.parentElement;
+      }
+      return {node: doc.scrollingElement || doc.documentElement, view: view, windowScroll: true};
+    }
+    function nudgeOwnList() {
+      var found = findPageScroller();
+      if (!found || !found.node) return false;
+      var scrollerNode = found.node;
+      var view = found.view;
+      var before = found.windowScroll ? (view.scrollY || view.pageYOffset || 0) : (scrollerNode.scrollTop || 0);
+      var cells = [];
+      try {
+        var column = (view.document || document).querySelector('[data-testid="primaryColumn"]');
+        if (column) cells = column.querySelectorAll('[data-testid="UserCell"]');
+      } catch (err) {}
+      if (cells.length) {
+        try { cells[cells.length - 1].scrollIntoView({block: "end", inline: "nearest"}); } catch (err) {}
+      }
+      var viewHeight = found.windowScroll ? (view.innerHeight || 700) : (scrollerNode.clientHeight || 700);
+      var delta = Math.max(320, Math.floor(viewHeight * 0.85));
+      if (found.windowScroll) view.scrollTo(0, before + delta);
+      else scrollerNode.scrollTop = before + delta;
+      var after = found.windowScroll ? (view.scrollY || view.pageYOffset || 0) : (scrollerNode.scrollTop || 0);
+      return after > before + 8;
+    }
+    function pageBlockReason() {
+      var doc = document;
+      try {
+        var page = pageWindow();
+        if (page && page.document) doc = page.document;
+      } catch (err) {}
+      var nodes = doc.querySelectorAll('[data-testid="toast"], [role="alert"], [data-testid="error-detail"], [data-testid="empty_state_header_text"], [data-testid="empty_state_body_text"]');
+      for (var i = 0; i < nodes.length; i++) {
+        var reason = autoReadBlockReason(nodes[i].textContent || "");
+        if (reason) return reason;
+      }
+      return "";
+    }
+    function scheduleAuto(delay) {
+      clearAutoTimer();
+      autoTimer = setTimeout(runAutoTick, delay);
+    }
+    function runAutoTick() {
+      autoTimer = 0;
+      if (autoReader.phase() !== "running") return;
+      var ownerName = currentOwner();
+      var kind = autoReadPageKind(location.pathname, ownerName);
+      var decision = autoReader.tick(Date.now(), {
+        pageKind: kind,
+        blocked: pageBlockReason(),
+        count: autoReadCount(store, kind),
+        stuck: !lastMoved,
+        unit: Math.random()
+      });
+      if (decision.action !== "scroll") {
+        if (decision.action === "stop") status.textContent = decision.reason;
+        renderAutoRead();
+        updateBadge();
+        return;
+      }
+      lastMoved = nudgeOwnList();
+      scanCells();
+      scanTotals();
+      scheduleAuto(decision.gapMs);
+      renderAutoRead();
+      updateBadge();
+      if (panelOpen) render();
+    }
+    autoOpen.addEventListener("click", function () {
+      autoReader.openConfirm();
+      renderAutoRead();
+    });
+    autoAck.addEventListener("change", function () {
+      autoReader.setAcknowledged(autoAck.checked);
+      autoStart.disabled = !autoAck.checked;
+    });
+    autoCancel.addEventListener("click", function () {
+      haltAuto("先不读。没有滚动。");
+    });
+    autoStart.addEventListener("click", function () {
+      if (!autoAck.checked) return;
+      autoReader.setAcknowledged(true);
+      var ownerName = currentOwner();
+      var kind = autoReadPageKind(location.pathname, ownerName);
+      var begun = autoReader.start(Date.now(), kind, autoReadCount(store, kind));
+      if (!begun.ok) {
+        status.textContent = begun.reason;
+        renderAutoRead();
+        return;
+      }
+      lastMoved = true;
+      status.textContent = "已开始。只滚动当前这份你自己的名单，由页面自己加载。脚本不另外发请求。";
+      renderAutoRead();
+      scheduleAuto(autoReadGapMs(Math.random()));
+    });
+    autoStop.addEventListener("click", function () { haltAuto("已手动停止"); });
+    autoFloat.addEventListener("click", function () { haltAuto("已手动停止"); });
+    renderAutoRead();
 
     launcher.addEventListener("click", function () {
       panelOpen = !panelOpen;
@@ -3198,7 +3632,7 @@ function boot() {
     owner.addEventListener("change", function () {
       var next = norm(owner.value);
       if (next !== norm(store.prefs.owner)) {
-        store.totals = {followers: 0, following: 0};
+        store.totals = {followers: 0, following: 0, blue: 0};
         store.snapshots = [];
       }
       store.prefs.owner = next;
@@ -3472,7 +3906,10 @@ function boot() {
     setTimeout(function () { currentOwner(); flushPending(); scanCells(); scanTotals(); updateBadge(); if (panelOpen) render(); }, 1000);
     setTimeout(function () { currentOwner(); flushPending(); scanCells(); scanTotals(); updateBadge(); if (panelOpen) render(); }, 5000);
     try {
-      page && page.addEventListener("pagehide", persist);
+      page && page.addEventListener("pagehide", function () {
+        persist();
+        haltAuto("页面关闭，自动读取已复位");
+      });
     } catch (err) {}
     document.addEventListener("keydown", function (event) {
       if (event.key !== "Escape" || !panelOpen) return;
@@ -3517,7 +3954,7 @@ function boot() {
   function captureChecklist(owner, report) {
     var box = el("div");
     box.id = "checklist";
-    box.appendChild(el("p", "sub", "采集清单（点按钮在当前页打开，再手动往下翻。脚本不自己发请求。）"));
+    box.appendChild(el("p", "sub", "采集清单（点链接在当前页打开，再手动往下翻。默认不自动滚动，也不自己发请求。）"));
     function row(label, href, captured, detail) {
       var line = el("p", "check");
       line.appendChild(el("span", captured ? "got" : "miss", captured ? "✓" : "未采集"));
@@ -3538,14 +3975,16 @@ function boot() {
     var inbound = (report.inboundDays || 0) > 0;
     var replies = ((report.srcCount && report.srcCount.replies) || 0) > 0;
     row("别人回我", handle ? "https://x.com/search?q=" + encodeURIComponent("to:" + handle) + "&f=live" : "", inbound, inbound ? (report.inbound + " 条 / " + report.inboundDays + " 天") : "");
-    row("关注列表", home ? home + "/following" : "", !!report.sawFollowing, report.sawFollowing ? (report.following + " 人") : "");
-    row("粉丝列表", home ? home + "/followers" : "", !!report.sawFollowers, report.sawFollowers ? (report.followers + " 人") : "");
-    row("认证粉丝", home ? home + "/verified_followers" : "", !!report.sawBlueFollowers, report.sawBlueFollowers ? "已采集" : "");
+    var totals = report.totals || {};
+    row("关注列表", home ? home + "/following" : "", !!report.sawFollowing, progressText(report.following, totals.following));
+    row("粉丝列表", home ? home + "/followers" : "", !!report.sawFollowers, progressText(report.followers, totals.followers));
+    row("认证粉丝", home ? home + "/verified_followers" : "", !!report.sawBlueFollowers, progressText(report.blueFollowers, totals.blue));
     row("主页回复", home ? home + "/with_replies" : "", replies, replies ? (report.srcCount.replies + " 条 / " + report.srcDays.replies + " 天") : "");
     var noted = ((report.srcCount && report.srcCount.notifications) || 0) > 0;
     var sawNotes = !!report.sawNotifications;
     row("通知", "https://x.com/notifications/mentions", noted || sawNotes, noted ? (report.srcCount.notifications + " 条 / " + report.srcDays.notifications + " 天") : (sawNotes ? "已打开，回复 0 条" : ""));
-    box.appendChild(el("p", "warn", "别人回我是搜索页，别一次翻太久。X 会限流，被限了就停下来等一等再翻。脚本不会替你滚动，也不会自己发请求。"));
+    box.appendChild(el("p", "muted", "「差不多了」表示已记人数达到页头或资料里的公开人数：20 人及以下要正好对上，再多至少约 95%。没读到人数就写「总数待核实」，不会猜一个数字。"));
+    box.appendChild(el("p", "warn", "别人回我是搜索页，别一次翻太久。X 会限流，被限了就停下来等一等再翻。这一项没有自动读取，请自己滑动。"));
     return box;
   }
 
@@ -3647,6 +4086,7 @@ function boot() {
     card.appendChild(table);
     if (importParts.some(function (part) { return part.kind === "ask-users"; })) {
       card.appendChild(el("div", "warn", "部分文件无法确认是「正在关注」还是「关注者」，请在下拉框中选择。旧名单请选「旧·关注者」或「旧·正在关注」，需持续关注的账号请选「保留名单」。未选择的文件暂不计入。"));
+      if (ui.more) ui.more.open = true;
     }
     ui.importTable.appendChild(card);
   }
@@ -3735,6 +4175,7 @@ function boot() {
 
   function render() {
     if (!ui.results) return;
+    renderAutoRead();
     renderImportTable();
     renderKeep([]);
     if (ui.diagLine) {
@@ -3786,14 +4227,15 @@ function boot() {
       ui.coverage.appendChild(el("p", "sub", "数据完整度（按当前时区算天数）"));
       ui.coverage.appendChild(el("p", "muted", "别人回我：" + report.inbound + " 条，覆盖 " + report.inboundDays + " 天。搜索记下 " + report.srcCount.search + " 条（" + report.srcDays.search + " 天），帖子详情 " + report.srcCount.detail + " 条（" + report.srcDays.detail + " 天），通知 " + report.srcCount.notifications + " 条（" + report.srcDays.notifications + " 天）。"));
       ui.coverage.appendChild(el("p", "muted", "我发出的回复：" + report.outbound + " 条，覆盖 " + report.outboundDays + " 天。主页回复页 " + report.srcCount.replies + " 条（" + report.srcDays.replies + " 天），主页帖子页 " + report.srcCount.originals + " 条（" + report.srcDays.originals + " 天）。"));
-      ui.coverage.appendChild(el("p", "muted", "正在关注：" + report.following + " 人" + (report.sawFollowing ? "（已打开过列表）" : "（还没打开过列表）") + "。关注者：" + report.followers + " 人" + (report.sawFollowers ? "（已打开过普通粉丝列表）" : "（还没打开过普通粉丝列表）") + (report.sawBlueFollowers ? "，另看到过认证粉丝。" : "。")));
+      var totals = report.totals || {};
+      ui.coverage.appendChild(el("p", "muted", "正在关注：" + progressText(report.following, totals.following) + (report.sawFollowing ? "（已打开过列表）" : "（还没打开过列表）") + "。关注者：" + progressText(report.followers, totals.followers) + (report.sawFollowers ? "（已打开过普通粉丝列表）" : "（还没打开过普通粉丝列表）") + "。认证粉丝：" + progressText(report.blueFollowers, totals.blue) + (report.sawBlueFollowers ? "（已打开过）" : "（还没打开过）") + "。"));
       if (report.sawBlueFollowers && !report.sawFollowers) {
         ui.coverage.appendChild(el("p", "warn", "关注者目前只来自认证粉丝列表，普通粉丝还没记到，没回关会偏多。请再打开普通粉丝页往下翻。"));
       }
       if (!report.inboundDays) {
         ui.coverage.appendChild(el("p", "warn", "还没记到「别人回我」。金银牌会偏少。可以自己打开搜索 to:你的用户名（选最新）往下翻，或点开自己的帖子。"));
       }
-      ui.coverage.appendChild(el("p", "muted", "名单是这段时间翻到的页面累加的，默认保留 " + RETENTION_DAYS + " 天。要重计请先全部删除，再重新往下翻。脚本不会自动滚动。"));
+      ui.coverage.appendChild(el("p", "muted", "名单是这段时间翻到的页面累加的，默认保留 " + RETENTION_DAYS + " 天。要重计请先全部删除，再重新往下翻。没点「开始读取」之前，脚本不会自己滚动。"));
       var completeFollowers = (store.snapshots || []).filter(function (snap) { return snap.kind === "followers" && snap.complete; }).length;
       var completeFollowing = (store.snapshots || []).filter(function (snap) { return snap.kind === "following" && snap.complete; }).length;
       var partial = (store.snapshots || []).some(function (snap) { return !snap.complete; });

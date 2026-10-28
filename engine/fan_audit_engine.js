@@ -621,6 +621,34 @@
     var href = "https:" + "//x.com/" + handle;
     return '<a href="' + escHtml(href) + '" target="_blank" rel="noopener noreferrer">' + escHtml(text) + "</a>";
   }
+  // 回访率只用于名单展示，不进入 score()，也不改变星级门槛。
+  // 分子 I_raw：对方回复我的条数，含问候。score() 里是 count(talk, "in")。
+  // 分母 O_raw：我发给对方的条数，含问候。score() 里是 count(talk, "out")。
+  // 百分比 = round(100 * I_raw / O_raw)。O_raw 不是正数时没有分母，显示「—」，不用 0% 充数。
+  // I_raw 缺失而分母有效时，分子按 0，可以显示 0%。对方回得更多时可以超过 100%，不封顶。
+  function revisitText(row) {
+    if (!row || row.O_raw == null || row.O_raw === "") return "—";
+    var denom = Number(row.O_raw);
+    if (!isFinite(denom) || denom <= 0) return "—";
+    var numer = row.I_raw == null || row.I_raw === "" ? 0 : Number(row.I_raw);
+    if (!isFinite(numer) || numer < 0) return "—";
+    return Math.round((100 * numer) / denom) + "%";
+  }
+  function countText(value) {
+    if (value == null || value === "") return "—";
+    var n = Number(value);
+    if (!isFinite(n) || n < 0) return "—";
+    return String(Math.round(n));
+  }
+  // 互动用 raw（这段时间的说话条数，不含点赞）。往返用已确认的 rounds；另有未确认的父帖时把条数写出来，不算建议。
+  function listFacts(row) {
+    var rounds = countText(row && row.rounds);
+    var extra = "";
+    if (row && row.unconfirmed != null && row.unconfirmed !== "" && Number(row.unconfirmed) > 0) {
+      extra = "，未确认 " + Math.round(Number(row.unconfirmed));
+    }
+    return "回访 " + revisitText(row) + " · 互动 " + countText(row && row.raw) + " · 往返 " + rounds + extra;
+  }
   function boardHtml(rows, options) {
     options = options || {};
     var open = options.open || {};
@@ -682,16 +710,17 @@
       var shown = options.showAll || open[t] ? xs : xs.slice(0, 20);
       var body = '<p class="muted">这一层暂时没有人</p>';
       if (xs.length) {
-        body = "<table><tr><th>账号</th><th>星级</th><th>分数</th><th>建议动作</th></tr>";
+        body = "<table><tr><th>账号</th><th>星级</th><th>分数</th><th>数据</th></tr>";
         shown.forEach(function (x) {
-          body += "<tr><td>" + nameCell(x.account) + "</td><td>" + starsText(x) + "</td><td>" + (x.score == null ? "—" : escHtml(x.score)) + "</td><td>" + escHtml(x.action || "") + "</td></tr>";
+          body += "<tr><td>" + nameCell(x.account) + "</td><td>" + starsText(x) + "</td><td>" + (x.score == null ? "—" : escHtml(x.score)) + "</td><td>" + escHtml(listFacts(x)) + "</td></tr>";
         });
         body += "</table>";
         if (!options.showAll && xs.length > 20 && !open[t]) body += '<button type="button" data-expand="' + escHtml(t) + '">展开全部</button>';
       }
       return '<section class="card tier-block" id="tier-' + t + '" data-total="' + xs.length + '" data-shown="' + shown.length + '"><div class="block-head"><h2>' + escHtml(t) + "（" + xs.length + '）</h2><a class="back-top" href="#top">回到顶部</a></div>' + body + "</section>";
     }).join("");
-    return cards + panels + blocks;
+    var factNote = '<p class="muted">回访率 = 对方回复我的条数 ÷ 我发出的条数（都含问候）。我没有发出过就写 —，不写 0%。互动是这段时间的说话条数，往返是确认对上的轮数。这些只是展示，不改分数。</p>';
+    return cards + panels + factNote + blocks;
   }
   function indexAccounts(records) {
     var items = [], byId = {}, byHandle = {};
@@ -946,5 +975,5 @@
     if (diff) html += followDiffHtml(diff, {masked: !!options.masked, rows: rows});
     return {html: html, rows: rows, meta: result.meta, back: back, diff: diff};
   }
-  root.FanAudit = {CONFIG: CONFIG, TIERS: TIERS, defaultTimeZone: defaultTimeZone, analyze: analyze, loadTexts: loadTexts, parseCsv: parseCsv, fileKind: fileKind, nameKind: nameKind, inferOwner: inferOwner, repliesFromTweets: repliesFromTweets, boardHtml: boardHtml, jumpPlan: jumpPlan, followDiff: followDiff, followDiffHtml: followDiffHtml, notFollowedBack: notFollowedBack, notFollowedBackHtml: notFollowedBackHtml, renderReport: renderReport};
+  root.FanAudit = {CONFIG: CONFIG, TIERS: TIERS, defaultTimeZone: defaultTimeZone, analyze: analyze, loadTexts: loadTexts, parseCsv: parseCsv, fileKind: fileKind, nameKind: nameKind, inferOwner: inferOwner, repliesFromTweets: repliesFromTweets, boardHtml: boardHtml, revisitText: revisitText, listFacts: listFacts, jumpPlan: jumpPlan, followDiff: followDiff, followDiffHtml: followDiffHtml, notFollowedBack: notFollowedBack, notFollowedBackHtml: notFollowedBackHtml, renderReport: renderReport};
 })(typeof globalThis !== "undefined" ? globalThis : this);

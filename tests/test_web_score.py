@@ -268,7 +268,21 @@ class TestWebScore(unittest.TestCase):
         self.assertIn('data-shown="20"', quiet)
         self.assertIn("展开全部", quiet)
         self.assertEqual(quiet.count("<tr>"), 21)
-        self.assertIn("建议动作", quiet)
+        self.assertIn("回访", quiet)
+        self.assertNotIn("建议动作", quiet)
+        self.assertNotIn("重点维护", html)
+        self.assertNotIn("先看看", html)
+        rated = self.board([{"account": "acct_rate", "tier": "银牌", "status": "ok", "score": 50, "stars": 3,
+                             "O_raw": 2, "I_raw": 1, "raw": 3, "rounds": 1, "mutual": False}], {})["html"]
+        self.assertIn("回访 50% · 互动 3 · 往返 1", rated)
+        self.assertNotIn("acct_rate", self.board([{"account": "acct_rate", "tier": "银牌", "status": "ok", "score": 50, "stars": 3,
+                             "O_raw": 4, "I_raw": 0, "raw": 4, "rounds": 0, "mutual": False}], {"masked": True})["html"])
+        zero = self.board([{"account": "acct_zero", "tier": "单向·我常去他没回", "status": "ok", "score": 10, "stars": 1,
+                            "O_raw": 4, "I_raw": 0, "raw": 4, "rounds": 0}], {})["html"]
+        self.assertIn("回访 0%", zero)
+        missing = self.board([{"account": "acct_none", "tier": "零互动", "status": "零互动", "score": None, "I_raw": 3}], {})["html"]
+        self.assertIn("回访 —", missing)
+        self.assertNotIn("回访 0%", missing)
         bars = html.split("<h2>分层人数</h2>")[1].split("</div></div>")[0]
         self.assertEqual(re.findall(r'data-jump="([^"]+)"', bars), tiers)
         opened = self.board(rows, {"open": {"零互动": True}})["html"]

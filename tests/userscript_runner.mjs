@@ -7,7 +7,9 @@ import {
   emptyStore, coverageReport, toEngineData, prune, exportBackup, importBackup, contextProblems,
   installHooks, pageHookProgram, norm, operationName, listKindFromPath, timelineKindFromPath, userFromVisible, diagnosticsCopy,
   pageContext, badgeText, listIsComplete, exportTimeFromName, recordSnapshot, snapshotDiffInput,
-  addKeep, removeKeep, applyImported, headerListCount, SNAPSHOT_WAITING, looksLikeBackup
+  addKeep, removeKeep, applyImported, headerListCount, headerVerifiedCount, SNAPSHOT_WAITING, looksLikeBackup,
+  progressText, AUTO_READ_MAX_SCREENS, AUTO_READ_GAP_MIN_MS, AUTO_READ_GAP_MAX_MS,
+  autoReadGapMs, autoReadBlockReason, createAutoReader
 } from "../userscript/src/logic.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -45,10 +47,15 @@ check(classifyUrl("https://x.com/i/api/graphql/abc/DirectMessages") === "", "私
 check(built.includes("GM_xmlhttpRequest") === false, "不使用 GM_xmlhttpRequest");
 check(!new RegExp("(^|\\n)\\s*//\\s*" + "@" + "connect\\b").test(built), "没有 connect 授权");
 check(built.includes("document.cookie") === false, "不读 cookie");
-check(built.includes("scrollBy") === false, "不自动滚动");
+check(built.includes("nudgeOwnList"), "自动读取靠滚动页面本身");
+check(built.includes("createAutoReader"), "自动读取有独立开关");
+check(built.includes("这个功能会让脚本代替你自动连续翻页读取名单") && built.includes("不想冒险就用默认的手动滑动") && built.includes("也不会读取别人的名单"), "风险提示原文在安装文件里");
+check(built.includes("不封号") === false, "不写不封号");
+check(built.split("不能保证安全").length === 2, "只写明不能保证安全，没有别的安全保证");
+check(!/Bearer [A-Za-z0-9_\-.]{20,}/.test(built), "没有硬编码 Bearer 令牌");
 check(built.includes(EMPTY_GUIDE), "空状态文案在安装文件里");
 const meta = "// " + "@";
-check(built.includes(meta + "version      0.2.0"), "版本号");
+check(built.includes(meta + "version      0.3.0"), "版本号");
 check(built.includes(meta + "sandbox      raw"), "要求页面环境");
 check(built.includes(meta + "grant        GM_addElement"), "可以用元素注入把钩子送进页面");
 check(built.includes(meta + "run-at       document-start"), "document-start");
@@ -96,6 +103,15 @@ check(store.posts["1001001"].handle === "user_04", "留下对方用户名");
 check(store.posts["1005001"].text.indexOf("补") >= 0, "夹具里的长文按短字段保存");
 check(store.meta.sawFollowing && store.meta.sawFollowers && store.meta.sawBlueFollowers, "三类名单都见到了");
 check(Object.keys(store.following).length === 3, "正在关注只有自己的三个人");
+check(store.totals.followers === 20 && store.totals.following === 1, "自己的公开人数来自页面已经带回的字段");
+check((store.totals.blue || 0) === 0, "没有认证粉丝公开总数时不编造");
+const sampleReport = coverageReport(store, sample.owner, "UTC");
+check(sampleReport.blueFollowers === 1, "认证粉丝按从那一页记下的人单独计数");
+check(progressText(sampleReport.followers, sampleReport.totals.followers).indexOf("共约 20") >= 0, "粉丝进度用公开人数做分母");
+check(progressText(1, 0) === "已记 1 / 总数待核实", "没有总数就不编造");
+check(progressText(19, 20) === "已记 19 / 共约 20", "差一点不说差不多了");
+check(progressText(20, 20).indexOf("差不多了") >= 0, "采齐了提示差不多了");
+check(progressText(95, 100).indexOf("差不多了") >= 0 && progressText(94, 100).indexOf("差不多了") < 0, "超过 20 人沿用 95% 那条完整线");
 check(!JSON.stringify(store).includes("user_11"), "没有混进别人的关注");
 
 const data = toEngineData(store, sample.owner, fan.repliesFromTweets);
@@ -528,6 +544,9 @@ check(exportTimeFromName("twitter-正在关注-1792582202463.json", 5) === 17925
 check(exportTimeFromName("twitter-关注者-1792582202.json", 5) === 1792582202000, "文件名里的 10 位秒会换成毫秒");
 check(exportTimeFromName("notes.json", 5) === 5 && exportTimeFromName("x-123.json", 5) === 5, "对不上的数字不用");
 check(headerListCount("/demo_owner/verified_followers", "12", "demo_owner") == null, "认证粉丝页头不算全部粉丝");
+check(headerVerifiedCount("/demo_owner/verified_followers", "12 Verified", "demo_owner") === 12, "认证粉丝页头的精确人数单独记下");
+check(headerVerifiedCount("/demo_owner/verified_followers", "1.2K", "demo_owner") === 0, "认证粉丝缩写人数不用");
+check(headerVerifiedCount("/user_02/verified_followers", "12", "demo_owner") === 0, "别人的认证粉丝人数不采用");
 check(headerListCount("/demo_owner/followers", "1.2K Followers", "demo_owner") == null, "缩写人数不用来判断采全没有");
 check(headerListCount("/user_02/followers", "10", "demo_owner") == null, "别人主页上的人数不采用");
 const headerCount = headerListCount("/demo_owner/following", "1,234 Following", "demo_owner");
@@ -543,6 +562,14 @@ applyCapture(countStore, countCap, Date.parse("2026-10-22T00:00:00Z"));
 const otherCounts = parseCapture("https://x.com/i/api/graphql/hash/UserByScreenName", JSON.stringify({data: {user: {result: {legacy: {screen_name: "user_09", followers_count: 99, friends_count: 88}}}}}), {owner: "demo_owner"});
 applyCapture(countStore, otherCounts, Date.parse("2026-10-22T00:00:00Z"));
 check(countStore.totals.followers === 3 && countStore.totals.following === 2, "只有自己的资料会改人数");
+const metricBody = JSON.stringify({data: {user: {result: {core: {screen_name: "demo_owner"}, public_metrics: {followers_count: 40, following_count: 15, verified_followers_count: 7}}}}});
+const metricCap = parseCapture("https://x.com/i/api/graphql/hash/UserByScreenName", metricBody, {owner: "demo_owner"});
+check(metricCap.counts && metricCap.counts.followers === 40 && metricCap.counts.following === 15 && metricCap.counts.blue === 7, "public_metrics 里的粉丝、关注和认证粉丝人数能用");
+applyCapture(countStore, metricCap, Date.parse("2026-10-22T00:00:00Z"));
+check(countStore.totals.followers === 40 && countStore.totals.following === 15 && countStore.totals.blue === 7, "自己的 public_metrics 会改人数");
+const otherMetric = parseCapture("https://x.com/i/api/graphql/hash/UserByScreenName", JSON.stringify({data: {user: {result: {core: {screen_name: "user_09"}, public_metrics: {followers_count: 9, following_count: 8, verified_followers_count: 6}}}}}), {owner: "demo_owner"});
+applyCapture(countStore, otherMetric, Date.parse("2026-10-22T00:00:00Z"));
+check(countStore.totals.blue === 7, "别人的 public_metrics 不改人数");
 
 function snapPerson(id, handle) { return {id: id, handle: handle, name: handle}; }
 const snapStore = emptyStore();
@@ -622,6 +649,75 @@ check(datedRound.snapshots.filter(function (snap) { return snap.complete; }).len
 check(built.indexOf("导入导出文件") >= 0 && built.indexOf("☆ 保留") >= 0 && built.indexOf(SNAPSHOT_WAITING) >= 0, "安装文件里有导入、保留和对比提示");
 check(built.indexOf("批量取关") < 0 && built.indexOf("取关选中") < 0, "安装文件里没有取关按钮");
 check(built.indexOf('["keep", "保留名单"]') >= 0, "导入可以把文件认成保留名单");
+
+const blueStore = emptyStore();
+blueStore.prefs.owner = "demo_owner";
+applyCapture(blueStore, {kind: "blue-followers", skip: "", users: [{id: "1", handle: "user_01"}]}, 1);
+applyCapture(blueStore, {kind: "followers", skip: "", users: [{id: "2", handle: "user_02"}]}, 2);
+const blueReport = coverageReport(blueStore, "demo_owner", "UTC");
+check(blueReport.blueFollowers === 1 && blueReport.followers === 2, "认证粉丝单独计数，普通粉丝仍在总数里");
+check(progressText(blueReport.blueFollowers, 0) === "已记 1 / 总数待核实", "认证粉丝没有公开总数");
+const blueRound = importBackup(exportBackup(blueStore, 1));
+check(coverageReport(blueRound, "demo_owner", "UTC").blueFollowers === 1, "备份保留认证粉丝标记");
+check(!("autoRead" in emptyStore().prefs), "自动读取不写入本地偏好");
+
+check(autoReadGapMs(0) === AUTO_READ_GAP_MIN_MS && autoReadGapMs(1) === AUTO_READ_GAP_MAX_MS, "滚动间隔在 2 到 5 秒");
+check(autoReadGapMs(0.5) >= AUTO_READ_GAP_MIN_MS && autoReadGapMs(0.5) <= AUTO_READ_GAP_MAX_MS, "中间的随机数也落在间隔里");
+check(autoReadBlockReason("超出速率限制。请稍等片刻") === "看到限流提示，已停止，不会自动重试", "限流文案会让自动读取停下");
+check(autoReadBlockReason("Something went wrong. Try reloading.") === "看到页面报错，已停止，不会自动重试", "页面报错会让自动读取停下");
+check(autoReadBlockReason("普通一条帖子，没有速率这两个字连在接口外") === "", "普通正文不当成报错");
+const idleReader = createAutoReader();
+check(idleReader.phase() === "off" && idleReader.tick(1000, {pageKind: "followers", count: 1, unit: 0}).action === "idle", "没点启动时不会滚动");
+idleReader.openConfirm();
+check(idleReader.start(1000, "followers", 0).ok === false, "没勾选不能开始");
+check(idleReader.tick(1000, {pageKind: "followers", count: 0, unit: 0}).action === "idle", "只打开提示时也不滚动");
+idleReader.setAcknowledged(true);
+check(idleReader.start(1000, "", 0).ok === false, "不在自己的名单页不能开始");
+check(idleReader.start(1000, "followers", 0).ok === true, "勾选后可以开始");
+const blocked = idleReader.tick(1000, {pageKind: "followers", count: 0, blocked: "看到限流提示，已停止，不会自动重试", unit: 0});
+check(blocked.action === "stop" && idleReader.phase() === "off", "限流立刻停下");
+check(idleReader.tick(5000, {pageKind: "followers", count: 9, unit: 0}).action === "idle", "停下后不自动重试");
+const stallReader = createAutoReader();
+stallReader.openConfirm();
+stallReader.setAcknowledged(true);
+stallReader.start(0, "following", 0);
+let stallStopped = "";
+let stallNow = 0;
+for (let i = 0; i < 20; i++) {
+  const step = stallReader.tick(stallNow, {pageKind: "following", count: 0, unit: 0, stuck: false});
+  if (step.action === "stop") { stallStopped = step.reason; break; }
+  stallNow += step.gapMs;
+}
+check(stallStopped.indexOf("没有新数据") >= 0 && stallReader.phase() === "off", "一段时间没有新数据就停");
+const capReader = createAutoReader();
+capReader.openConfirm();
+capReader.setAcknowledged(true);
+capReader.start(0, "followers", 0);
+let scrolls = 0;
+let capNow = 0;
+let capCount = 0;
+for (let i = 0; i < 80; i++) {
+  capCount += 1;
+  const step = capReader.tick(capNow, {pageKind: "followers", count: capCount, unit: 0, stuck: false});
+  if (step.action !== "scroll") break;
+  scrolls += 1;
+  capNow += 1000;
+}
+check(scrolls === AUTO_READ_MAX_SCREENS && capReader.phase() === "off", "单次最多 60 屏");
+const switched = createAutoReader();
+switched.openConfirm();
+switched.setAcknowledged(true);
+switched.start(0, "followers", 1);
+const left = switched.tick(1000, {pageKind: "following", count: 2, unit: 0});
+check(left.action === "stop" && left.reason.indexOf("不在刚才") >= 0, "离开刚才那份自己的名单就停");
+check(fan.revisitText({O_raw: 2, I_raw: 1}) === "50%", "回访率是对方回复除以我发出的");
+check(fan.revisitText({O_raw: 0, I_raw: 3}) === "—", "没有我发出的次数时不写 0%");
+check(fan.revisitText({I_raw: 3}) === "—", "缺分母时不写 0%");
+check(fan.revisitText({O_raw: 4, I_raw: 0}) === "0%", "我发过、对方没回，是 0%");
+const maskedFacts = fan.boardHtml([{account: "user_01", tier: "银牌", status: "ok", score: 40, stars: 3, O_raw: 2, I_raw: 1, raw: 3, rounds: 1}], {masked: true});
+check(maskedFacts.indexOf("user_01") < 0 && maskedFacts.indexOf("回访 50%") >= 0, "打码后账号名隐藏，数据仍显示");
+check(maskedFacts.indexOf("重点维护") < 0 && maskedFacts.indexOf("建议动作") < 0, "名单不写建议");
+check(built.includes("更多") && built.includes("一键打码") && built.includes("全屏") && built.includes("查看风险并决定是否开启"), "主界面留打码和全屏，其余收进更多");
 
 if (failed) {
   console.error(failed + " checks failed");

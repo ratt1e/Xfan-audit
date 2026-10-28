@@ -13,9 +13,19 @@
 
 export var RETENTION_DAYS = 90;
 export var RETENTION_MS = RETENTION_DAYS * 24 * 60 * 60 * 1000;
-export var EMPTY_GUIDE = "刚安装还没有数据？依次打开你的关注列表、粉丝列表和主页回复页，手动往下滑几屏，脚本会自动记录。";
+export var EMPTY_GUIDE = "刚安装还没有数据？依次打开你的关注列表、粉丝列表和主页回复页，手动往下滑几屏，脚本会记下。";
 export var TEXT_LIMIT = 30;
 export var SNAPSHOT_WAITING = "下次完整采集后自动对比";
+// 自动读取默认关闭，刷新后也不恢复。这些数只约束「用户勾选并点了开始」之后的那一次。
+export var AUTO_READ_GAP_MIN_MS = 2000;
+export var AUTO_READ_GAP_MAX_MS = 5000;
+export var AUTO_READ_MAX_SCREENS = 60;
+export var AUTO_READ_MAX_MS = 8 * 60 * 1000;
+export var AUTO_READ_STALL_MS = 45000;
+export var AUTO_READ_STALL_SCREENS = 4;
+export var AUTO_READ_STALL_FLOOR_MS = 12000;
+export var AUTO_READ_RISK = "这个功能会让脚本代替你自动连续翻页读取名单，不属于「只读你浏览过的内容」。X 的条款不允许未经许可的自动化抓取，可能导致限流、临时限制甚至封号。X 没有公布具体阈值，不能保证安全，后果自负。不想冒险就用默认的手动滑动。\n\n脚本只滚动你自己的关注页、粉丝页或认证粉丝页，好让页面自己加载下一屏。不会关注、取关、点赞、转发、回复、私信或拉黑，也不会读取别人的名单。";
+export var AUTO_READ_ACK = "我已阅读上面的提示。我知道这会自动翻页，可能被限流、临时限制甚至封号，后果自己承担。";
 
 var OPS = {
   UserRepliesTimeline: "replies",
@@ -42,7 +52,7 @@ export function emptyStore() {
     posts: {},
     following: {},
     followers: {},
-    totals: {followers: 0, following: 0},
+    totals: {followers: 0, following: 0, blue: 0},
     snapshots: [],
     keepEntries: [],
     keepIds: {},
@@ -657,6 +667,11 @@ export function parseCapture(url, text, options) {
   if (kind === "counts") return finish({kind: kind, skip: "", posts: [], users: [], counts: readOwnerCounts(json)});
   var owner = norm(options.owner);
   var profile = readProfile(json);
+  function attachCounts(result) {
+    var counts = readOwnerCounts(json);
+    if (counts && owner && counts.handle === owner) result.counts = counts;
+    return finish(result);
+  }
   var instructions = readInstructions(json, kind);
   var collected = collect(instructions);
   if (kind === "following" || kind === "followers" || kind === "blue-followers") {
@@ -669,14 +684,14 @@ export function parseCapture(url, text, options) {
       return finish({kind: kind, skip: "不是你的关注或粉丝列表", posts: [], users: [], profile: profile});
     }
     var users = collected.users.filter(function (user) { return norm(user.handle) !== owner; });
-    return finish({kind: kind, skip: "", posts: [], users: users, profile: profile});
+    return attachCounts({kind: kind, skip: "", posts: [], users: users, profile: profile});
   }
   if (kind === "replies" || kind === "originals") {
     if (!owner) return finish({kind: kind, skip: "还不知道你的用户名", posts: [], users: [], profile: profile});
     if (!timelineOwned(profile, owner, options.pagePath, url, options.body)) {
       return finish({kind: kind, skip: "不是你的主页时间线", posts: [], users: [], profile: profile});
     }
-    return finish({kind: kind, skip: "", posts: stamp(collected.tweets, kind), users: [], profile: profile});
+    return attachCounts({kind: kind, skip: "", posts: stamp(collected.tweets, kind), users: [], profile: profile});
   }
   if (!owner) return finish({kind: kind, skip: "还不知道你的用户名", posts: [], users: [], profile: profile});
   if (kind === "search") {
@@ -741,26 +756,14 @@ export function applyCapture(store, captured, now) {
   if (!store || !captured || captured.skip || !captured.kind) return false;
   ensureStore(store);
   now = now || Date.now();
+  var countsChanged = applyOwnerCounts(store, captured.counts);
   if (captured.kind === "counts") {
-    var counts = captured.counts;
-    var me = norm(store.prefs && store.prefs.owner);
-    var counted = false;
-    if (counts && me && counts.handle === me) {
-      if (counts.followers > 0 && store.totals.followers !== counts.followers) {
-        store.totals.followers = counts.followers;
-        counted = true;
-      }
-      if (counts.following > 0 && store.totals.following !== counts.following) {
-        store.totals.following = counts.following;
-        counted = true;
-      }
-      if (maybeSnapshot(store, "followers", now)) counted = true;
-      if (maybeSnapshot(store, "following", now)) counted = true;
-    }
+    if (maybeSnapshot(store, "followers", now)) countsChanged = true;
+    if (maybeSnapshot(store, "following", now)) countsChanged = true;
     prune(store, now);
-    return counted;
+    return countsChanged;
   }
-  var changed = false;
+  var changed = countsChanged;
   (captured.posts || []).forEach(function (post) {
     if (!post.id) return;
     var next = compactPost(post, now);
@@ -792,6 +795,7 @@ export function applyCapture(store, captured, now) {
       if (!id && !handle) return;
       var key = id ? "id:" + id : "h:" + handle;
       var existingKey = "";
+      var carriedBlue = false;
       if (handle) {
         var keys = Object.keys(store[bucket]);
         for (var i = 0; i < keys.length; i++) {
@@ -800,6 +804,7 @@ export function applyCapture(store, captured, now) {
       }
       if (existingKey && existingKey !== key) {
         var previous = store[bucket][existingKey];
+        if (previous && previous.fromBlue) carriedBlue = true;
         if (id && existingKey.indexOf("id:") !== 0) {
           delete store[bucket][existingKey];
           if (!user.name) user.name = previous.name;
@@ -823,7 +828,8 @@ export function applyCapture(store, captured, now) {
         seen: now
       };
       if (prev && prev.src === "export") next.src = "export";
-      if (!prev || prev.handle !== next.handle || prev.name !== next.name || prev.verified !== next.verified || prev.followers !== next.followers || prev.id !== next.id) {
+      if (bucket === "followers" && (captured.kind === "blue-followers" || (prev && prev.fromBlue) || carriedBlue)) next.fromBlue = true;
+      if (!prev || prev.handle !== next.handle || prev.name !== next.name || prev.verified !== next.verified || prev.followers !== next.followers || prev.id !== next.id || !!prev.fromBlue !== !!next.fromBlue) {
         store[bucket][key] = next;
         changed = true;
       } else prev.seen = now;
@@ -898,8 +904,22 @@ export function coverageReport(store, owner, tz) {
     sawFollowers: !!meta.sawFollowers,
     sawBlueFollowers: !!meta.sawBlueFollowers,
     sawNotifications: !!meta.sawNotifications,
-    sawExport: !!meta.sawExport
+    sawExport: !!meta.sawExport,
+    blueFollowers: blueFollowerCount(store),
+    totals: {
+      followers: (store.totals && store.totals.followers) || 0,
+      following: (store.totals && store.totals.following) || 0,
+      blue: (store.totals && store.totals.blue) || 0
+    }
   };
+}
+
+function blueFollowerCount(store) {
+  var n = 0;
+  Object.keys((store && store.followers) || {}).forEach(function (key) {
+    if (store.followers[key] && store.followers[key].fromBlue) n += 1;
+  });
+  return n;
 }
 
 function countNum(value) {
@@ -919,16 +939,56 @@ function readOwnerCounts(json) {
   if (node.result && typeof node.result === "object" && !node.rest_id && !node.restId && !node.core && !node.legacy) node = node.result;
   var legacy = (node && node.legacy) || {};
   var rel = (node && (node.relationship_counts || node.relationshipCounts)) || {};
+  var metrics = {};
+  function takeMetrics(bag) {
+    if (!bag || typeof bag !== "object") return;
+    ["followers_count", "following_count", "friends_count", "verified_followers_count"].forEach(function (key) {
+      if (metrics[key] == null && bag[key] != null) metrics[key] = bag[key];
+    });
+    if (bag.verifiedFollowersCount != null && metrics.verified_followers_count == null) metrics.verified_followers_count = bag.verifiedFollowersCount;
+  }
+  takeMetrics(node.public_metrics);
+  takeMetrics(node.publicMetrics);
+  takeMetrics(legacy.public_metrics);
+  takeMetrics(legacy.publicMetrics);
   var followers = countNum(legacy.followers_count);
   if (!followers) followers = countNum(rel.followers != null ? rel.followers : rel.followers_count);
+  if (!followers) followers = countNum(metrics.followers_count);
   if (!followers) followers = profile.followers || 0;
   var following = countNum(legacy.friends_count);
   if (!following) following = countNum(rel.following != null ? rel.following : (rel.friends != null ? rel.friends : rel.following_count));
-  return {handle: profile.handle, followers: followers, following: following};
+  if (!following) following = countNum(metrics.following_count != null ? metrics.following_count : metrics.friends_count);
+  var blue = countNum(metrics.verified_followers_count);
+  if (!blue) blue = countNum(legacy.verified_followers_count);
+  if (!blue) blue = countNum(node.verified_followers_count);
+  if (!blue) blue = countNum(rel.verified_followers != null ? rel.verified_followers : rel.verified_followers_count);
+  return {handle: profile.handle, followers: followers, following: following, blue: blue};
+}
+
+function applyOwnerCounts(store, counts) {
+  if (!counts) return false;
+  ensureStore(store);
+  var me = norm(store.prefs && store.prefs.owner);
+  if (!me || counts.handle !== me) return false;
+  var changed = false;
+  if (counts.followers > 0 && store.totals.followers !== counts.followers) {
+    store.totals.followers = counts.followers;
+    changed = true;
+  }
+  if (counts.following > 0 && store.totals.following !== counts.following) {
+    store.totals.following = counts.following;
+    changed = true;
+  }
+  if (counts.blue > 0 && store.totals.blue !== counts.blue) {
+    store.totals.blue = counts.blue;
+    changed = true;
+  }
+  return changed;
 }
 
 function ensureStore(store) {
-  if (!store.totals) store.totals = {followers: 0, following: 0};
+  if (!store.totals) store.totals = {followers: 0, following: 0, blue: 0};
+  if (store.totals.blue == null) store.totals.blue = 0;
   if (!store.snapshots) store.snapshots = [];
   if (!store.keepEntries) store.keepEntries = [];
   if (!store.keepIds) store.keepIds = {};
@@ -959,17 +1019,146 @@ export function exportTimeFromName(name, fallback) {
   return n;
 }
 
+function plainCount(text) {
+  var raw = String(text || "");
+  if (/[kKmM万亿]/.test(raw)) return 0;
+  var digits = raw.replace(/,/g, "").match(/\d+/);
+  if (!digits) return 0;
+  var count = parseInt(digits[0], 10);
+  return count > 0 ? count : 0;
+}
+
 export function headerListCount(href, text, owner) {
   var match = String(href || "").match(/^\/([A-Za-z0-9_]{1,15})\/(followers|following|verified_followers)\/?$/);
   if (!match || norm(match[1]) !== norm(owner)) return null;
   if (match[2] === "verified_followers") return null;
-  var raw = String(text || "");
-  if (/[kKmM万亿]/.test(raw)) return null;
-  var digits = raw.replace(/,/g, "").match(/\d+/);
-  if (!digits) return null;
-  var count = parseInt(digits[0], 10);
+  var count = plainCount(text);
   if (!count) return null;
   return {kind: match[2] === "following" ? "following" : "followers", count: count};
+}
+
+export function headerVerifiedCount(href, text, owner) {
+  var match = String(href || "").match(/^\/([A-Za-z0-9_]{1,15})\/verified_followers\/?$/);
+  if (!match || norm(match[1]) !== norm(owner)) return 0;
+  return plainCount(text);
+}
+
+// 已记 N / 共约 M。M 只用已经读到的公开人数；没有就写总数待核实。接近的口径和名单快照的完整线相同。
+export function progressText(captured, expected) {
+  var n = countNum(captured);
+  var total = countNum(expected);
+  var text = "已记 " + n + " / " + (total > 0 ? "共约 " + total : "总数待核实");
+  if (total > 0 && (n >= total || listIsComplete(n, total))) text += "，差不多了";
+  return text;
+}
+
+export function autoReadGapMs(unit) {
+  var u = Number(unit);
+  if (!isFinite(u) || u < 0) u = 0;
+  if (u >= 1) return AUTO_READ_GAP_MAX_MS;
+  return AUTO_READ_GAP_MIN_MS + Math.floor(u * (AUTO_READ_GAP_MAX_MS - AUTO_READ_GAP_MIN_MS + 1));
+}
+
+export function autoReadPageKind(pathname, owner) {
+  var kind = listKindFromPath(pathname, owner);
+  if (kind === "following" || kind === "followers" || kind === "blue-followers") return kind;
+  return "";
+}
+
+export function autoReadCount(store, kind) {
+  ensureStore(store);
+  if (kind === "following") return Object.keys(store.following).length;
+  if (kind === "blue-followers") return blueFollowerCount(store);
+  if (kind === "followers") return Object.keys(store.followers).length;
+  return 0;
+}
+
+export function autoReadBlockReason(text) {
+  var raw = String(text || "").replace(/\s+/g, " ").trim();
+  if (!raw || raw.length > 400) return "";
+  if (/速率限制|超出速率|rate limit|too many requests/i.test(raw)) return "看到限流提示，已停止，不会自动重试";
+  if (/something went wrong|出错了|请稍后再试|try again later|请尝试重新加载/i.test(raw)) return "看到页面报错，已停止，不会自动重试";
+  return "";
+}
+
+// 内存里的开关。不写入油猴存储，所以刷新页面后一定是关闭。没勾选、没点开始时 tick 不会要求滚动。
+export function createAutoReader() {
+  var phase = "off";
+  var acked = false;
+  var startedAt = 0;
+  var startedKind = "";
+  var screens = 0;
+  var lastCount = 0;
+  var lastNewAt = 0;
+  var stallScreens = 0;
+  var stopReason = "";
+  function resetRun() {
+    phase = "off";
+    acked = false;
+    startedAt = 0;
+    startedKind = "";
+    screens = 0;
+    lastCount = 0;
+    lastNewAt = 0;
+    stallScreens = 0;
+  }
+  function finish(reason) {
+    stopReason = reason;
+    resetRun();
+    return {action: "stop", reason: reason};
+  }
+  return {
+    phase: function () { return phase; },
+    screens: function () { return screens; },
+    stopReason: function () { return stopReason; },
+    openConfirm: function () {
+      if (phase === "running") return "running";
+      phase = "confirm";
+      acked = false;
+      stopReason = "";
+      return "confirm";
+    },
+    setAcknowledged: function (checked) { acked = !!checked; },
+    start: function (now, pageKind, count) {
+      if (phase === "running") return {ok: false, reason: "已经在读"};
+      if (!acked) return {ok: false, reason: "需要先勾选确认"};
+      if (!pageKind) return {ok: false, reason: "请先打开你自己的关注或粉丝页"};
+      phase = "running";
+      startedAt = now;
+      startedKind = pageKind;
+      lastNewAt = now;
+      lastCount = count | 0;
+      screens = 0;
+      stallScreens = 0;
+      stopReason = "";
+      return {ok: true};
+    },
+    stop: function (reason) {
+      stopReason = reason || "已停止";
+      resetRun();
+    },
+    tick: function (now, info) {
+      if (phase !== "running") return {action: "idle"};
+      info = info || {};
+      var count = info.count | 0;
+      if (count > lastCount) {
+        lastCount = count;
+        lastNewAt = now;
+        stallScreens = 0;
+      }
+      var quiet = now - lastNewAt;
+      if (!info.pageKind || info.pageKind !== startedKind) return finish("不在刚才那份自己的名单页了，已停止");
+      if (info.blocked) return finish(info.blocked);
+      if (now - startedAt >= AUTO_READ_MAX_MS) return finish("已到单次 " + (AUTO_READ_MAX_MS / 60000) + " 分钟上限，已停止");
+      if (screens >= AUTO_READ_MAX_SCREENS) return finish("已到单次 " + AUTO_READ_MAX_SCREENS + " 屏上限，已停止");
+      if (quiet >= AUTO_READ_STALL_MS) return finish("有 " + (AUTO_READ_STALL_MS / 1000) + " 秒没有新数据，已停止");
+      if (info.stuck && stallScreens >= 2 && quiet >= AUTO_READ_STALL_FLOOR_MS) return finish("页面滑不动且没有新数据，已停止");
+      if (stallScreens >= AUTO_READ_STALL_SCREENS && quiet >= AUTO_READ_STALL_FLOOR_MS) return finish("连续几屏没有新数据，已停止");
+      screens += 1;
+      stallScreens += 1;
+      return {action: "scroll", gapMs: autoReadGapMs(info.unit), screens: screens};
+    }
+  };
 }
 
 function compactPeople(list) {
@@ -1385,6 +1574,7 @@ export function normalizeStore(input) {
   store.meta.sawExport = !!meta.sawExport;
   store.totals.followers = countNum(input.totals && input.totals.followers);
   store.totals.following = countNum(input.totals && input.totals.following);
+  store.totals.blue = countNum(input.totals && input.totals.blue);
   Object.keys(input.posts || {}).forEach(function (id) {
     var post = input.posts[id];
     if (!post || typeof post !== "object") return;
@@ -1410,6 +1600,7 @@ export function normalizeStore(input) {
         seen: user.seen || 0
       };
       if (user.src === "export") store[bucket][storedKey].src = "export";
+      if (bucket === "followers" && user.fromBlue) store[bucket][storedKey].fromBlue = true;
     });
   });
   var kept = [];
