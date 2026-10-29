@@ -29,6 +29,8 @@ export var AUTO_READ_DRY_LIMIT = 5;
 // 已记人数完全不增加时，满 30 屏或满 1 分钟就停。画面还在换也不再无限滚。
 export var AUTO_READ_FLAT_SCREENS = 30;
 export var AUTO_READ_FLAT_MS = 60 * 1000;
+// 连续这么久滚动位置完全没变，就认为没找到名单自己的滚动容器。
+export var AUTO_READ_NO_MOVE_MS = 6000;
 export var FAST_READ_PAGE_SIZE = 100;
 export var FAST_READ_MAX_PAGES = 120;
 export var FAST_READ_REMAINING_FLOOR = 2;
@@ -1060,6 +1062,55 @@ export function progressText(captured, expected) {
   return text;
 }
 
+export function overflowCanScroll(overflowY) {
+  var oy = String(overflowY || "");
+  return oy === "auto" || oy === "scroll" || oy === "overlay";
+}
+
+// 从格子往上找真正在滚的那一层。主栏外面的窗口只有自己确实更高时才用。
+export function chooseScrollNode(chain) {
+  var list = chain || [];
+  for (var i = 0; i < list.length; i++) {
+    var item = list[i];
+    if (!item || item.isDocument) continue;
+    if (overflowCanScroll(item.overflowY) && item.scrollHeight > item.clientHeight + 40) return i;
+  }
+  for (var j = 0; j < list.length; j++) {
+    var doc = list[j];
+    if (doc && doc.isDocument && doc.scrollHeight > doc.clientHeight + 80) return j;
+  }
+  return -1;
+}
+
+// 从当前滚动位置往下推大约一屏，不先跳到已加载内容的末尾。
+export function nudgeScroller(scroller, viewHeight) {
+  if (!scroller || typeof scroller.scrollTop !== "number") return {moved: false, atBottom: false, pos: 0};
+  var before = scroller.scrollTop || 0;
+  var client = scroller.clientHeight || viewHeight || 700;
+  var total = scroller.scrollHeight || 0;
+  var delta = Math.max(480, Math.floor((viewHeight || client || 700) * 0.9));
+  var max = total > client ? total - client : before;
+  var target = before + delta;
+  if (target > max) target = max;
+  try { scroller.scrollTop = target; } catch (err) {}
+  var after = scroller.scrollTop || 0;
+  if (after <= before + 8 && typeof scroller.scrollBy === "function") {
+    try { scroller.scrollBy(0, delta); } catch (err) {}
+    after = scroller.scrollTop || 0;
+  }
+  return {moved: after > before + 8, atBottom: total > 0 && after + client >= total - 48, pos: after};
+}
+
+export function scrollStartPlan(input) {
+  input = input || {};
+  if (!input.acked) return {ok: false, action: "", reason: "请先勾选确认"};
+  if (input.mode !== "scroll" && input.mode !== "fast") return {ok: false, action: "", reason: "请先选择滚动或快速"};
+  if (input.mode === "fast") return {ok: true, action: "fast", reason: ""};
+  if (!input.pageKind) return {ok: false, action: "", reason: "没找到可滚动的列表，请先打开关注、粉丝或认证粉丝页"};
+  if (!input.hasScroller) return {ok: false, action: "", reason: "没有找到可滚动的列表，请先打开关注、粉丝或认证粉丝页"};
+  return {ok: true, action: "scroll", reason: ""};
+}
+
 export function autoReadGapMs(unit) {
   var u = Number(unit);
   if (!isFinite(u) || u < 0) u = 0;
@@ -1348,6 +1399,7 @@ export function createAutoReader() {
       if (info.blocked) return finish(info.blocked);
       if (now - startedAt >= AUTO_READ_MAX_MS) return finish("已到单次 " + (AUTO_READ_MAX_MS / 60000) + " 分钟上限，已停止");
       if (screens >= AUTO_READ_MAX_SCREENS) return finish("已到单次 " + AUTO_READ_MAX_SCREENS + " 屏上限，已停止");
+      if (!moved && !atBottom && (info.sinceMoveMs | 0) >= AUTO_READ_NO_MOVE_MS) return finish("没有找到可滚动的列表，已停止");
       if (expected > 0 && (count >= expected || listIsComplete(count, expected))) return finish("已记人数接近总数，差不多了，已停止");
       if (flatScreens >= AUTO_READ_FLAT_SCREENS || now - lastGainAt >= AUTO_READ_FLAT_MS) return finish("已记数长时间没有增加，可能已读完或页面不再提供新名单");
       if (atBottom && dry >= AUTO_READ_DRY_LIMIT) return finish("已到列表底，没有继续加载，已停止");

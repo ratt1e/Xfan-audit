@@ -1,4 +1,4 @@
-import { EMPTY_GUIDE, RETENTION_DAYS, SNAPSHOT_WAITING, BOARD_CSS, emptyStore, normalizeStore, prune, parseCapture, applyCapture, coverageReport, toEngineData, snapshotDiffInput, recordSnapshot, exportTimeFromName, maybeSnapshot, addKeep, removeKeep, looksLikeBackup, headerListCount, headerVerifiedCount, applyImported, contextProblems, installHooks, pageHookProgram, exportBackup, importBackup, standaloneHtml, norm, operationName, classifyUrl, listKindFromPath, userFromVisible, diagnosticsCopy, sameRealm, pageContext, badgeText, progressText, AUTO_READ_RISK, AUTO_READ_ACK, AUTO_READ_MAX_SCREENS, FAST_READ_MAX_PAGES, autoReadGapMs, autoReadPageKind, autoReadCount, autoReadBlockReason, createAutoReader, buildListPageRequest, bottomCursor, fastReadStopReason, fastPageStopReason, createFastReader } from "./logic.mjs";
+import { EMPTY_GUIDE, RETENTION_DAYS, SNAPSHOT_WAITING, BOARD_CSS, emptyStore, normalizeStore, prune, parseCapture, applyCapture, coverageReport, toEngineData, snapshotDiffInput, recordSnapshot, exportTimeFromName, maybeSnapshot, addKeep, removeKeep, looksLikeBackup, headerListCount, headerVerifiedCount, applyImported, contextProblems, installHooks, pageHookProgram, exportBackup, importBackup, standaloneHtml, norm, operationName, classifyUrl, listKindFromPath, userFromVisible, diagnosticsCopy, sameRealm, pageContext, badgeText, progressText, AUTO_READ_RISK, AUTO_READ_ACK, AUTO_READ_MAX_SCREENS, FAST_READ_MAX_PAGES, autoReadGapMs, autoReadPageKind, autoReadCount, autoReadBlockReason, createAutoReader, buildListPageRequest, bottomCursor, fastReadStopReason, fastPageStopReason, createFastReader, chooseScrollNode, nudgeScroller, scrollStartPlan } from "./logic.mjs";
 
 var STORE_KEY = "fan-audit-v1";
 
@@ -321,11 +321,14 @@ function boot() {
       "#keep-box{margin:8px 0 12px}",
       "#more{margin:8px 0 12px;background:#fff;border:1px solid #E5E7EB;border-radius:12px;padding:8px 12px}",
       "#more summary{cursor:pointer;font-weight:650;color:#374151}",
-      "#auto-read{border:1px solid #FDE68A;background:#FFFBEB;border-radius:12px;padding:10px 12px;margin:8px 0}",
+      "#panel,#auto-read{color-scheme:light}",
+      "#auto-read{border:1px solid #FDE68A;background:#FFFBEB;border-radius:12px;padding:10px 12px;margin:8px 0;color-scheme:light}",
       "#auto-read p{margin:6px 0}",
       "#auto-read .risk{white-space:pre-wrap;color:#92400E;font-size:13px;line-height:1.5}",
-      "#auto-read label{display:flex;gap:8px;align-items:flex-start;font-size:13px}",
-      "button.ctrl:disabled{opacity:.45;cursor:not-allowed}",
+      "#auto-read label{display:flex;gap:8px;align-items:flex-start;font-size:13px;color:#1F2937}",
+      "#auto-read input[type=checkbox],#auto-read input[type=radio]{accent-color:#1D4ED8;width:18px;height:18px;margin:2px 0 0;flex:none;color-scheme:light}",
+      "#auto-need{color:#92400E;font-weight:650}",
+      "button.ctrl[aria-disabled=true]{opacity:.45}",
       "#auto-stop{position:fixed;right:132px;bottom:16px;z-index:2147483646;border:1px solid #B91C1C;background:#fff;color:#B91C1C;border-radius:999px;padding:8px 14px;font:600 14px -apple-system,'PingFang SC','Noto Sans CJK SC','Microsoft YaHei',sans-serif;cursor:pointer}",
       "#results table{display:block;overflow-x:auto}"
     ].join("\n");
@@ -483,7 +486,9 @@ function boot() {
     var fastReader = createFastReader();
     var autoShown = "off";
     var autoTimer = 0;
-    var lastScroll = {moved: true, atBottom: false};
+    var lastScroll = {moved: false, atBottom: false};
+    var lastMoveAt = 0;
+    var didMoveOnce = false;
     var autoBox = el("section");
     autoBox.id = "auto-read";
     autoBox.appendChild(el("p", "", "自动读取我自己的关注 / 粉丝名单"));
@@ -523,7 +528,9 @@ function boot() {
     var autoStart = el("button", "ctrl", "开始读取");
     autoStart.type = "button";
     autoStart.id = "auto-read-start";
-    autoStart.disabled = true;
+    autoStart.setAttribute("aria-disabled", "true");
+    var autoNeed = el("p", "", "开始读取还不能点：没勾确认。");
+    autoNeed.id = "auto-need";
     var autoCancel = el("button", "ctrl", "先用手动滑动");
     autoCancel.type = "button";
     autoCancel.id = "auto-read-cancel";
@@ -532,6 +539,7 @@ function boot() {
     autoRiskRow.appendChild(autoCancel);
     autoRisk.appendChild(autoAckLabel);
     autoRisk.appendChild(autoRiskRow);
+    autoRisk.appendChild(autoNeed);
     var autoStatus = el("p", "muted", "默认关闭。不点开始就不会滚动。");
     autoStatus.id = "auto-read-status";
     var autoStop = el("button", "ctrl danger", "停止");
@@ -601,17 +609,30 @@ function boot() {
       if (phase === "confirm" && autoShown !== "confirm") {
         autoAck.checked = false;
         autoReader.setAcknowledged(false);
-        autoStart.disabled = true;
         autoScrollMode.checked = true;
         autoFastMode.checked = false;
+        refreshStartGate();
       }
       autoShown = phase;
-      var reason = autoReader.stopReason();
+      var reason = fastReader.stopReason() || autoReader.stopReason();
       if (phase === "running" && fastReader.running()) autoStatus.textContent = "正在快速读取。已请求 " + fastReader.pages() + " 页。这一页没有新账号就会停。可以随时停止。";
-      else if (phase === "running") autoStatus.textContent = "正在滚动。已滚 " + autoReader.screens() + " 屏，距离上次新增 " + autoReader.screensSinceGain() + " 屏。可以随时停止。";
+      else if (phase === "running") autoStatus.textContent = "正在滚动。已滚 " + autoReader.screens() + " 屏，距离上次新增 " + autoReader.screensSinceGain() + " 屏。" + moveAgeText() + "。可以随时停止。";
       else if (phase === "confirm") autoStatus.textContent = "先看完上面的提示，选一种方式并勾选后才能开始。现在还没有滚动，也没有发请求。";
       else if (reason) autoStatus.textContent = reason + " 自动读取已关闭。";
       else autoStatus.textContent = "默认关闭。不点开始就不会滚动。";
+    }
+    function refreshStartGate() {
+      var missing = [];
+      if (!autoScrollMode.checked && !autoFastMode.checked) missing.push("没选方式");
+      if (!autoAck.checked) missing.push("没勾确认");
+      var blocked = missing.length > 0;
+      autoStart.setAttribute("aria-disabled", blocked ? "true" : "false");
+      autoNeed.textContent = blocked ? "开始读取还不能点：" + missing.join("，") + "。" : "可以点开始读取。";
+    }
+    function moveAgeText() {
+      if (!didMoveOnce || !lastMoveAt) return "最近一次滚动：还没有";
+      var sec = Math.max(0, Math.round((Date.now() - lastMoveAt) / 1000));
+      return "最近一次滚动：" + (sec <= 1 ? "刚刚" : sec + " 秒前");
     }
     function haltAuto(reason) {
       clearAutoTimer();
@@ -627,18 +648,32 @@ function boot() {
         var page = pageWindow();
         if (page && page.document) { doc = page.document; view = page; }
       } catch (err) {}
-      var root = doc.querySelector('[data-testid="primaryColumn"]');
-      if (!root) return null;
-      var node = root;
-      while (node && node !== doc.body && node !== doc.documentElement) {
-        try {
-          var style = view.getComputedStyle(node);
-          var oy = style && style.overflowY;
-          if ((oy === "auto" || oy === "scroll") && node.scrollHeight > node.clientHeight + 80) return {node: node, view: view};
-        } catch (err) {}
+      var column = doc.querySelector('[data-testid="primaryColumn"]');
+      var cell = column && column.querySelector('[data-testid="UserCell"]');
+      var start = cell || column;
+      if (!start) return null;
+      var chain = [];
+      var nodes = [];
+      var node = start;
+      while (node) {
+        var overflowY = "";
+        try { overflowY = view.getComputedStyle(node).overflowY || ""; } catch (err) {}
+        var isDocument = node === doc.body || node === doc.documentElement || node === doc.scrollingElement;
+        chain.push({
+          overflowY: overflowY,
+          scrollHeight: node.scrollHeight || 0,
+          clientHeight: node === doc.documentElement || node === doc.body ? (view.innerHeight || node.clientHeight || 0) : (node.clientHeight || 0),
+          isDocument: isDocument
+        });
+        nodes.push(node);
+        if (node === doc.documentElement || node === doc.body) break;
         node = node.parentElement;
       }
-      return {node: doc.scrollingElement || doc.documentElement, view: view, windowScroll: true};
+      var index = chooseScrollNode(chain);
+      if (index < 0) return null;
+      var picked = nodes[index];
+      var windowScroll = picked === doc.scrollingElement || picked === doc.documentElement || picked === doc.body;
+      return {node: picked, view: view, windowScroll: windowScroll};
     }
     function scrollMetrics(found) {
       var view = found.view;
@@ -680,24 +715,19 @@ function boot() {
     function nudgeOwnList() {
       var found = findPageScroller();
       if (!found || !found.node) return {moved: false, atBottom: false};
-      var scrollerNode = found.node;
       var view = found.view;
-      var before = scrollMetrics(found).pos;
-      var cells = [];
-      try {
-        var column = (view.document || document).querySelector('[data-testid="primaryColumn"]');
-        if (column) cells = column.querySelectorAll('[data-testid="UserCell"]');
-      } catch (err) {}
-      if (cells.length) {
-        try { cells[cells.length - 1].scrollIntoView({block: "end", inline: "nearest"}); } catch (err) {}
+      var viewHeight = found.windowScroll ? (view.innerHeight || 700) : (found.node.clientHeight || 700);
+      if (found.windowScroll) {
+        var y = view.scrollY || view.pageYOffset || 0;
+        var delta = Math.max(480, Math.floor(viewHeight * 0.9));
+        try { view.scrollTo(0, y + delta); } catch (err) {}
+        var afterY = view.scrollY || view.pageYOffset || 0;
+        var doc = view.document || document;
+        var full = 0;
+        try { full = (doc.scrollingElement || doc.documentElement).scrollHeight || 0; } catch (err) {}
+        return {moved: afterY > y + 8, atBottom: full > 0 && afterY + viewHeight >= full - 48};
       }
-      var mid = scrollMetrics(found).pos;
-      var viewHeight = found.windowScroll ? (view.innerHeight || 700) : (scrollerNode.clientHeight || 700);
-      var delta = Math.max(480, Math.floor(viewHeight * 0.95));
-      if (found.windowScroll) view.scrollTo(0, mid + delta);
-      else scrollerNode.scrollTop = mid + delta;
-      var afterMetrics = scrollMetrics(found);
-      return {moved: afterMetrics.pos > before + 8, atBottom: afterMetrics.atBottom};
+      return nudgeScroller(found.node, viewHeight);
     }
     function pageBlockReason() {
       var doc = document;
@@ -729,6 +759,7 @@ function boot() {
         visibleKey: visibleListKey(),
         moved: lastScroll.moved,
         atBottom: lastScroll.atBottom,
+        sinceMoveMs: lastMoveAt ? Date.now() - lastMoveAt : 0,
         unit: Math.random()
       });
       if (decision.action !== "scroll") {
@@ -738,6 +769,10 @@ function boot() {
         return;
       }
       lastScroll = nudgeOwnList();
+      if (lastScroll.moved) {
+        lastMoveAt = Date.now();
+        didMoveOnce = true;
+      }
       scanCells();
       scanTotals();
       scheduleAuto(decision.gapMs);
@@ -749,10 +784,13 @@ function boot() {
       autoReader.openConfirm();
       renderAutoRead();
     });
-    autoAck.addEventListener("change", function () {
-      autoReader.setAcknowledged(autoAck.checked);
-      autoStart.disabled = !autoAck.checked;
-    });
+    function syncStartGate() {
+      autoReader.setAcknowledged(!!autoAck.checked);
+      refreshStartGate();
+    }
+    autoAck.addEventListener("change", syncStartGate);
+    autoScrollMode.addEventListener("change", refreshStartGate);
+    autoFastMode.addEventListener("change", refreshStartGate);
     autoCancel.addEventListener("click", function () {
       haltAuto("先不读。没有滚动。");
     });
@@ -854,29 +892,48 @@ function boot() {
       nextOp(0);
     }
     autoStart.addEventListener("click", function () {
-      if (!autoAck.checked) return;
-      if (autoReader.phase() === "running" || fastReader.running()) return;
+      if (autoReader.phase() === "running" || fastReader.running()) {
+        autoStatus.textContent = "已经在读。可以点停止。";
+        return;
+      }
+      var ownerName = currentOwner();
+      var plan = scrollStartPlan({
+        acked: !!autoAck.checked,
+        mode: chosenAutoMode(),
+        pageKind: autoReadPageKind(location.pathname, ownerName),
+        hasScroller: !!findPageScroller()
+      });
+      if (!plan.ok) {
+        autoStatus.textContent = plan.reason;
+        status.textContent = plan.reason;
+        refreshStartGate();
+        return;
+      }
       autoReader.setAcknowledged(true);
-      if (chosenAutoMode() === "fast") {
+      if (plan.action === "fast") {
         startFastRead();
         renderAutoRead();
         return;
       }
-      var ownerName = currentOwner();
       var kind = autoReadPageKind(location.pathname, ownerName);
       var begun = autoReader.start(Date.now(), kind, autoReadCount(store, kind));
       if (!begun.ok) {
+        autoStatus.textContent = begun.reason;
         status.textContent = begun.reason;
         renderAutoRead();
         return;
       }
-      lastScroll = {moved: true, atBottom: false};
-      status.textContent = "已开始滚动。只滚动当前这份你自己的名单，由页面自己加载。已经记过的人也会算作页面还在加载。";
+      lastScroll = {moved: false, atBottom: false};
+      lastMoveAt = Date.now();
+      didMoveOnce = false;
+      autoStatus.textContent = "已开始滚动。已滚 0 屏，距离上次新增 0 屏。最近一次滚动：还没有。";
+      status.textContent = "已开始滚动。若几秒后最近一次滚动仍是「还没有」，就是没找到名单自己的滚动容器。";
       renderAutoRead();
       scheduleAuto(autoReadGapMs(Math.random()));
     });
     autoStop.addEventListener("click", function () { haltAuto("已手动停止"); });
     autoFloat.addEventListener("click", function () { haltAuto("已手动停止"); });
+    refreshStartGate();
     renderAutoRead();
 
     launcher.addEventListener("click", function () {

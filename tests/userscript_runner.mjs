@@ -9,7 +9,8 @@ import {
   pageContext, badgeText, listIsComplete, exportTimeFromName, recordSnapshot, snapshotDiffInput,
   addKeep, removeKeep, applyImported, headerListCount, headerVerifiedCount, SNAPSHOT_WAITING, looksLikeBackup,
   progressText, AUTO_READ_MAX_SCREENS, AUTO_READ_GAP_MIN_MS, AUTO_READ_GAP_MAX_MS, AUTO_READ_DRY_LIMIT,
-  AUTO_READ_FLAT_SCREENS, AUTO_READ_FLAT_MS, fastPageStopReason,
+  AUTO_READ_FLAT_SCREENS, AUTO_READ_FLAT_MS, AUTO_READ_NO_MOVE_MS, fastPageStopReason,
+  chooseScrollNode, nudgeScroller, scrollStartPlan,
   autoReadGapMs, autoReadBlockReason, createAutoReader, FAST_READ_PAGE_SIZE, FAST_READ_MAX_PAGES,
   FAST_READ_REMAINING_FLOOR, buildListPageRequest, bottomCursor, fastReadStopReason, createFastReader,
   isOwnListApiUrl
@@ -58,7 +59,7 @@ check(built.split("不能保证安全").length === 2, "只写明不能保证安�
 check(!/Bearer [A-Za-z0-9_\-.]{20,}/.test(built), "没有硬编码 Bearer 令牌");
 check(built.includes(EMPTY_GUIDE), "空状态文案在安装文件里");
 const meta = "// " + "@";
-check(built.includes(meta + "version      0.3.1"), "版本号");
+check(built.includes(meta + "version      0.3.2"), "版本号");
 check(built.includes(meta + "sandbox      raw"), "要求页面环境");
 check(built.includes(meta + "grant        GM_addElement"), "可以用元素注入把钩子送进页面");
 check(built.includes(meta + "run-at       document-start"), "document-start");
@@ -771,6 +772,29 @@ for (let i = 0; i < AUTO_READ_DRY_LIMIT + 2; i++) {
   if (step.action === "stop") { stuckReason = step.reason; break; }
 }
 check(stuckReason.indexOf("页面没有继续加载") >= 0, "滚不动且画面不变就说明没有继续加载");
+check(scrollStartPlan({acked: false, mode: "scroll", pageKind: "followers", hasScroller: true}).reason === "请先勾选确认", "没勾确认不能开始滚动");
+check(scrollStartPlan({acked: true, mode: "scroll", pageKind: "followers", hasScroller: false}).reason === "没有找到可滚动的列表，请先打开关注、粉丝或认证粉丝页", "找不到滚动容器就说明原因");
+const scrollOk = scrollStartPlan({acked: true, mode: "scroll", pageKind: "blue-followers", hasScroller: true});
+check(scrollOk.ok === true && scrollOk.action === "scroll", "勾选并且找到容器时滚动模式可以启动");
+check(scrollStartPlan({acked: true, mode: "fast", pageKind: "", hasScroller: false}).action === "fast", "快速模式不依赖滚动容器");
+const inner = chooseScrollNode([
+  {overflowY: "visible", scrollHeight: 400, clientHeight: 800, isDocument: false},
+  {overflowY: "auto", scrollHeight: 9000, clientHeight: 700, isDocument: false},
+  {overflowY: "visible", scrollHeight: 800, clientHeight: 800, isDocument: true}
+]);
+check(inner === 1, "优先用名单格子外面真正在滚的那一层");
+check(chooseScrollNode([{overflowY: "visible", scrollHeight: 800, clientHeight: 800, isDocument: true}]) === -1, "窗口本身不更高时不当成可滚动列表");
+const fakeList = {scrollTop: 120, clientHeight: 700, scrollHeight: 8000};
+const nudged = nudgeScroller(fakeList, 700);
+check(nudged.moved === true && fakeList.scrollTop > 120 && fakeList.scrollTop < 120 + 700, "滚动从当前位置往下推一屏，不跳到末尾");
+check(nudgeScroller(null, 700).moved === false, "没有容器时滚动不生效");
+const noMove = createAutoReader();
+noMove.openConfirm();
+noMove.setAcknowledged(true);
+noMove.start(0, "followers", 4);
+noMove.tick(1000, {pageKind: "followers", count: 4, visibleKey: "a", moved: false, atBottom: false, sinceMoveMs: 1000, unit: 0});
+const missed = noMove.tick(1000 + AUTO_READ_NO_MOVE_MS, {pageKind: "followers", count: 4, visibleKey: "b", moved: false, atBottom: false, sinceMoveMs: AUTO_READ_NO_MOVE_MS, unit: 0});
+check(missed.action === "stop" && missed.reason.indexOf("没有找到可滚动的列表") >= 0 && noMove.phase() === "off", "好几秒都没滚到就停并写明原因");
 const capReader = createAutoReader();
 capReader.openConfirm();
 capReader.setAcknowledged(true);
