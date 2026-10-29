@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         fan-audit 粉丝体检
 // @namespace    https://github.com/ratt1e/Xfan-audit
-// @version      0.3.2
-// @description  在 X 上边逛边记下公开回复和关注名单，也能导入导出的 JSON。默认只读你浏览过的内容。可选自动读取名单默认关闭，可选滚动或快速请求。
+// @version      0.4.0
+// @description  在 X 上边逛边记下公开回复和关注名单，也能导入导出的 JSON。默认只读你浏览过的内容。可选自动读取名单默认关闭，可选滚动或快速请求。本地排除只隐藏，不在 X 上操作。
 // @author       ranger_escape
 // @match        *://x.com/*
 // @match        *://twitter.com/*
@@ -358,6 +358,42 @@ var root = {};
     }
     return parts.join("；");
   }
+  function rowUid(row) {
+    if (!row) return "";
+    var uid = row["user" + "_id"] || row.id || row.rest_id || "";
+    return String(uid);
+  }
+  function excludeLookups(data) {
+    var look = {handles: {}, ids: {}};
+    var bagH = data && data.excludeHandles;
+    var bagI = data && data.excludeIds;
+    if (bagH) Object.keys(bagH).forEach(function (key) {
+      var name = norm(key);
+      if (name) look.handles[name] = 1;
+    });
+    if (bagI) Object.keys(bagI).forEach(function (key) {
+      if (/^\d+$/.test(String(key))) look.ids[String(key)] = 1;
+    });
+    ["following", "followers", "profiles"].forEach(function (key) {
+      var bag = (data && data[key]) || {};
+      Object.keys(bag).forEach(function (name) {
+        var row = bag[name] || {};
+        var uid = rowUid(row);
+        var handle = norm(name);
+        if ((handle && look.handles[handle]) || (uid && look.ids[uid])) {
+          if (handle) look.handles[handle] = 1;
+          if (/^\d+$/.test(uid)) look.ids[uid] = 1;
+        }
+      });
+    });
+    return look;
+  }
+  function hiddenAccount(look, account, row) {
+    if (!look) return false;
+    if (look.handles[norm(account)]) return true;
+    var uid = rowUid(row);
+    return !!(uid && look.ids[uid]);
+  }
   function analyze(data, options) {
     options = options || {};
     var tz = resolveZone(options);
@@ -366,6 +402,7 @@ var root = {};
     var excl = {"grok": 1};
     CONFIG.exclude_accounts.forEach(function (a) { if (norm(a)) excl[norm(a)] = 1; });
     if (me) excl[me] = 1;
+    var look = excludeLookups(data);
     var rows = (data.rows || []).filter(function (r) { return !excl[norm(r.account)]; });
     rows.forEach(function (r) { r.account = norm(r.account); });
     var prep = prepare(rows, tz, words, maxLen);
@@ -391,9 +428,15 @@ var root = {};
     var by = {};
     prep.forEach(function (r) { (by[r.account] = by[r.account] || []).push(r); });
     var accounts = {};
-    Object.keys(by).forEach(function (a) { accounts[a] = 1; });
-    Object.keys(data.following || {}).forEach(function (a) { if (!excl[a]) accounts[a] = 1; });
-    Object.keys(data.followers || {}).forEach(function (a) { if (!excl[a]) accounts[a] = 1; });
+    Object.keys(by).forEach(function (a) {
+      if (!look.handles[a]) accounts[a] = 1;
+    });
+    function listed(name, row) {
+      if (excl[name] || hiddenAccount(look, name, row)) return;
+      accounts[name] = 1;
+    }
+    Object.keys(data.following || {}).forEach(function (a) { listed(a, data.following[a]); });
+    Object.keys(data.followers || {}).forEach(function (a) { listed(a, data.followers[a]); });
     var pb = CONFIG.tiers.priority_bonus;
     var talk = interactionCoverage(prep, start, end);
     var res = Object.keys(accounts).sort().map(function (a) {
@@ -767,7 +810,7 @@ var root = {};
       if (xs.length) {
         body = "<table><tr><th>账号</th><th>星级</th><th>分数</th><th>数据</th></tr>";
         shown.forEach(function (x) {
-          body += "<tr><td>" + nameCell(x.account) + "</td><td>" + starsText(x) + "</td><td>" + (x.score == null ? "—" : escHtml(x.score)) + "</td><td>" + escHtml(listFacts(x)) + "</td></tr>";
+          body += "<tr><td data-row=\"" + rows.indexOf(x) + "\">" + nameCell(x.account) + "</td><td>" + starsText(x) + "</td><td>" + (x.score == null ? "—" : escHtml(x.score)) + "</td><td>" + escHtml(listFacts(x)) + "</td></tr>";
         });
         body += "</table>";
         if (!options.showAll && xs.length > 20 && !open[t]) body += '<button type="button" data-expand="' + escHtml(t) + '">展开全部</button>';
@@ -851,6 +894,15 @@ var root = {};
       added = onlyIn(newFol, oldFol);
     } else notes.push("没有同时找到旧的和新的正在关注，我取关的和我新关注的先不算");
     if (data.followAuto && data.followAuto.note) notes.unshift(data.followAuto.note);
+    var look = excludeLookups(data);
+    function dropHidden(items) {
+      if (!items) return items;
+      return items.filter(function (item) { return !hiddenAccount(look, item.handle, item); });
+    }
+    unfollowed = dropHidden(unfollowed);
+    fresh = dropHidden(fresh);
+    dropped = dropHidden(dropped);
+    added = dropHidden(added);
     return {
       unfollowed_me: unfollowed, new_followers: fresh, i_unfollowed: dropped, i_followed: added,
       notes: notes, collisions: collisionMap([unfollowed, fresh, dropped, added]),
@@ -920,9 +972,11 @@ var root = {};
     (rows || []).forEach(function (row) { if (row && row.account) byHandle[row.account] = row; });
     var keepIds = data.keepIds || {};
     var keepHandles = data.keepHandles || {};
+    var look = excludeLookups(data);
     var items = onlyIn(indexAccounts(data.followingAccounts), indexAccounts(data.followerAccounts)).filter(function (person) {
       if (person.id && keepIds[person.id]) return false;
       if (person.handle && keepHandles[person.handle]) return false;
+      if (hiddenAccount(look, person.handle, person)) return false;
       return true;
     }).map(function (person) {
       var row = byHandle[person.handle];
@@ -1103,6 +1157,9 @@ function emptyStore() {
     keepEntries: [],
     keepIds: {},
     keepHandles: {},
+    excludeEntries: [],
+    excludeIds: {},
+    excludeHandles: {},
     extraRows: [],
     meta: {sawFollowing: false, sawFollowers: false, sawBlueFollowers: false, sawNotifications: false, sawExport: false}
   };
@@ -2039,6 +2096,9 @@ function ensureStore(store) {
   if (!store.keepEntries) store.keepEntries = [];
   if (!store.keepIds) store.keepIds = {};
   if (!store.keepHandles) store.keepHandles = {};
+  if (!store.excludeEntries) store.excludeEntries = [];
+  if (!store.excludeIds) store.excludeIds = {};
+  if (!store.excludeHandles) store.excludeHandles = {};
   if (!store.extraRows) store.extraRows = [];
   if (!store.meta) store.meta = {};
   return store;
@@ -2580,15 +2640,21 @@ function snapshotDiffInput(store) {
   }
   var fer = pair(followers);
   var fol = pair(following);
+  var look = excludeLook(store);
+  function shown(list) {
+    return (list || []).filter(function (person) { return !personExcluded(look, person); });
+  }
   return {
     sawFollowers: fer.ready,
     sawPrevFollowers: fer.ready,
     sawFollowing: fol.ready,
     sawPrevFollowing: fol.ready,
-    followerAccounts: fer.cur,
-    prevFollowerAccounts: fer.prev,
-    followingAccounts: fol.cur,
-    prevFollowingAccounts: fol.prev,
+    followerAccounts: shown(fer.cur),
+    prevFollowerAccounts: shown(fer.prev),
+    followingAccounts: shown(fol.cur),
+    prevFollowingAccounts: shown(fol.prev),
+    excludeHandles: look.handles,
+    excludeIds: look.ids,
     followAuto: (fer.ready && fol.ready) ? null : {note: SNAPSHOT_WAITING}
   };
 }
@@ -2652,6 +2718,146 @@ function removeKeep(store, person) {
   });
   rebuildKeepMaps(store);
   return store.keepEntries.length !== before;
+}
+
+var EXCLUDE_HANDLE = /^[a-z0-9_]{1,15}$/;
+
+function rebuildExcludeMaps(store) {
+  store.excludeIds = {};
+  store.excludeHandles = {};
+  (store.excludeEntries || []).forEach(function (entry) {
+    if (entry.id && /^\d+$/.test(entry.id)) store.excludeIds[entry.id] = 1;
+    var handle = norm(entry.handle);
+    if (handle) store.excludeHandles[handle] = 1;
+  });
+}
+
+function excludePerson(person) {
+  var id = "";
+  var handle = "";
+  if (typeof person === "string" || typeof person === "number") {
+    var text = String(person || "").trim().replace(/^@+/, "");
+    if (/^\d+$/.test(text)) id = text;
+    else handle = norm(text);
+  } else if (person && typeof person === "object") {
+    id = String(person.id || "");
+    if (!/^\d+$/.test(id)) id = "";
+    handle = norm(person.handle || person.account);
+  }
+  if (handle && !EXCLUDE_HANDLE.test(handle)) handle = "";
+  return {id: id, handle: handle};
+}
+
+function parseExcludeText(text) {
+  var found = [];
+  var seen = {};
+  String(text || "").split(/\r?\n/).forEach(function (line) {
+    var raw = line.trim();
+    if (!raw || raw.charAt(0) === "#") return;
+    var hash = raw.search(/\s+#/);
+    var body = hash >= 0 ? raw.slice(0, hash) : raw;
+    body.split(/[\s,，;；]+/).forEach(function (token) {
+      token = String(token || "").trim().replace(/^@+/, "").replace(/^["']|["']$/g, "");
+      if (!token || token.charAt(0) === "#") return;
+      var person = excludePerson(token);
+      if (!person.id && !person.handle) return;
+      var key = person.id ? "id:" + person.id : "h:" + person.handle;
+      if (seen[key]) return;
+      seen[key] = 1;
+      found.push(person);
+    });
+  });
+  return found;
+}
+
+function addExclude(store, person) {
+  ensureStore(store);
+  var next = excludePerson(person);
+  if (!next.id && !next.handle) return false;
+  var entries = store.excludeEntries;
+  for (var i = 0; i < entries.length; i++) {
+    var entry = entries[i];
+    if (!((next.id && entry.id === next.id) || (next.handle && entry.handle === next.handle))) continue;
+    if (next.id) entry.id = next.id;
+    if (next.handle) entry.handle = next.handle;
+    rebuildExcludeMaps(store);
+    return true;
+  }
+  entries.push({id: next.id, handle: next.handle});
+  rebuildExcludeMaps(store);
+  return true;
+}
+
+function addExcludeMany(store, text) {
+  var items = parseExcludeText(text);
+  items.forEach(function (item) { addExclude(store, item); });
+  ensureStore(store);
+  return {parsed: items.length, total: store.excludeEntries.length};
+}
+
+function removeExclude(store, person) {
+  ensureStore(store);
+  var next = excludePerson(person);
+  var before = store.excludeEntries.length;
+  store.excludeEntries = store.excludeEntries.filter(function (entry) {
+    if (next.id && entry.id === next.id) return false;
+    if (next.handle && entry.handle === next.handle) return false;
+    return true;
+  });
+  rebuildExcludeMaps(store);
+  return store.excludeEntries.length !== before;
+}
+
+function clearExclude(store) {
+  ensureStore(store);
+  var had = store.excludeEntries.length > 0;
+  store.excludeEntries = [];
+  rebuildExcludeMaps(store);
+  return had;
+}
+
+function excludeText(store) {
+  ensureStore(store);
+  var lines = store.excludeEntries.map(function (entry) {
+    return entry.handle || entry.id || "";
+  }).filter(Boolean);
+  return lines.length ? lines.join("\n") + "\n" : "";
+}
+
+function excludeLook(store) {
+  ensureStore(store);
+  rebuildExcludeMaps(store);
+  var handles = {};
+  var ids = {};
+  Object.keys(store.excludeHandles).forEach(function (handle) { handles[handle] = 1; });
+  Object.keys(store.excludeIds).forEach(function (id) { ids[id] = 1; });
+  function absorb(id, handle) {
+    id = String(id || "");
+    handle = norm(handle);
+    if ((id && ids[id]) || (handle && handles[handle])) {
+      if (handle) handles[handle] = 1;
+      if (/^\d+$/.test(id)) ids[id] = 1;
+    }
+  }
+  ["following", "followers"].forEach(function (bucket) {
+    Object.keys(store[bucket] || {}).forEach(function (key) {
+      var user = store[bucket][key];
+      if (user) absorb(user.id, user.handle);
+    });
+  });
+  Object.keys(store.posts || {}).forEach(function (key) {
+    var post = store.posts[key];
+    if (post) absorb(post.uid, post.handle);
+  });
+  return {handles: handles, ids: ids};
+}
+
+function personExcluded(look, person) {
+  var id = String((person && person.id) || "");
+  var handle = norm(person && (person.handle || person.account));
+  if (id && look.ids[id]) return true;
+  if (handle && look.handles[handle]) return true;
+  return false;
 }
 
 function looksLikeBackup(text) {
@@ -2759,6 +2965,7 @@ function applyImported(store, data, owner, now) {
 }
 
 function toEngineData(store, owner, repliesFromTweets) {
+  var look = excludeLook(store);
   var records = [];
   var profiles = {};
   Object.keys(store.posts || {}).sort().forEach(function (id) {
@@ -2776,13 +2983,14 @@ function toEngineData(store, owner, repliesFromTweets) {
       conversation_id: post.conv || ""
     });
     var handle = norm(post.handle);
-    if (handle && post.verified && !profiles[handle]) profiles[handle] = {handle: handle, verified: "true", is_blue_verified: "true"};
+    if (handle && !look.handles[handle] && post.verified && !profiles[handle]) profiles[handle] = {handle: handle, verified: "true", is_blue_verified: "true"};
   });
   function usersOf(bucket) {
     var map = {};
     var list = [];
     Object.keys(bucket || {}).sort().forEach(function (key) {
       var user = bucket[key];
+      if (personExcluded(look, user)) return;
       var handle = norm(user.handle);
       list.push({id: user.id || "", handle: handle, name: user.name || ""});
       if (!handle || map[handle]) return;
@@ -2811,6 +3019,8 @@ function toEngineData(store, owner, repliesFromTweets) {
     sawPrevFollowing: false,
     keepIds: store.keepIds || {},
     keepHandles: store.keepHandles || {},
+    excludeHandles: look.handles,
+    excludeIds: look.ids,
     warnings: []
   };
   var rows = typeof repliesFromTweets === "function" ? repliesFromTweets(records, owner || "") : [];
@@ -2908,6 +3118,27 @@ function normalizeStore(input) {
   Object.keys(input.keepHandles || {}).forEach(function (handle) { rememberKeep({id: "", handle: handle}); });
   store.keepEntries = kept;
   rebuildKeepMaps(store);
+  var excluded = [];
+  function rememberExclude(entry) {
+    var id = String(entry.id || "");
+    if (id && !/^\d+$/.test(id)) id = "";
+    var handle = norm(entry.handle);
+    if (handle && !EXCLUDE_HANDLE.test(handle)) handle = "";
+    if (!id && !handle) return;
+    for (var i = 0; i < excluded.length; i++) {
+      if ((id && excluded[i].id === id) || (handle && excluded[i].handle === handle)) {
+        if (id) excluded[i].id = id;
+        if (handle) excluded[i].handle = handle;
+        return;
+      }
+    }
+    excluded.push({id: id, handle: handle});
+  }
+  (input.excludeEntries || []).forEach(function (entry) { if (entry) rememberExclude(entry); });
+  Object.keys(input.excludeIds || {}).forEach(function (id) { rememberExclude({id: id, handle: ""}); });
+  Object.keys(input.excludeHandles || {}).forEach(function (handle) { rememberExclude({id: "", handle: handle}); });
+  store.excludeEntries = excluded;
+  rebuildExcludeMaps(store);
   var seenExtra = {};
   (input.extraRows || []).forEach(function (row) {
     if (!row || typeof row !== "object") return;
@@ -3561,7 +3792,9 @@ function boot() {
       "#diag-box summary{cursor:pointer;color:#374151;font-weight:650}",
       ".row{display:flex;flex-wrap:wrap;gap:8px;align-items:end;margin:8px 0}",
       "label.field{font-size:12px;color:#374151;display:flex;flex-direction:column;gap:4px}",
-      "input[type=text]{border:1px solid #D1D5DB;border-radius:8px;padding:6px 8px;background:#fff;color:#1F2937}",
+      "input[type=text],textarea{border:1px solid #D1D5DB;border-radius:8px;padding:6px 8px;background:#fff;color:#1F2937;font:13px -apple-system,'PingFang SC','Noto Sans CJK SC','Microsoft YaHei',sans-serif}",
+      "textarea{width:100%;box-sizing:border-box;min-height:72px;resize:vertical}",
+      "button.ctrl.mini{padding:2px 6px;font-size:12px}",
       "button.ctrl,a.ctrl{border:1px solid #D1D5DB;background:#fff;border-radius:8px;padding:6px 10px;cursor:pointer;color:#1F2937;text-decoration:none;display:inline-block}",
       "button.ctrl.on{background:#1D4ED8;color:#fff;border-color:#1D4ED8}",
       "button.danger{border-color:#FECACA;color:#B91C1C}",
@@ -3664,6 +3897,11 @@ function boot() {
     modeButton("7", "最近 7 天");
     modeButton("30", "最近 30 天");
     modeButton("all", "全部");
+    var excludeOpen = el("button", "ctrl", "已排除 0 人");
+    excludeOpen.type = "button";
+    excludeOpen.id = "exclude-count";
+    rowMain.appendChild(excludeOpen);
+    var excludeHint = el("p", "muted", "排除只在本地隐藏，不会在 X 上操作。");
 
     var row3 = el("div", "row");
     var delBtn = el("button", "ctrl danger", "全部删除");
@@ -3726,15 +3964,56 @@ function boot() {
     keepList.id = "keep-list";
     keepBox.appendChild(keepRow);
     keepBox.appendChild(keepList);
+    var excludeBox = el("section", "card");
+    excludeBox.id = "exclude-box";
+    excludeBox.appendChild(el("h2", "", "排除名单"));
+    excludeBox.appendChild(el("p", "muted", "只在本地隐藏，不会在 X 上操作。不会 mute、屏蔽或取关，也不会发任何请求。"));
+    excludeBox.appendChild(el("p", "muted", "名单存在本机脚本存储里，不会上传。不要把真实账号写进仓库。取消排除后，这个人会回到名单里；原始采集不删除。"));
+    excludeBox.appendChild(el("p", "muted", "打码打开后，这里只显示编号。自动读取的「已记 N / 共约 M」仍把这些人算进已经读到的人数，避免误判没读完。排除不改变打分公式和星级门槛。"));
+    var excludeCountLine = el("p", "", "当前 0 人");
+    excludeCountLine.id = "exclude-count-line";
+    excludeBox.appendChild(excludeCountLine);
+    var excludeInput = el("textarea");
+    excludeInput.id = "exclude-input";
+    excludeInput.placeholder = "粘贴用户名。逗号、换行或 @ 都可以，一行一个也行";
+    var excludeRow = el("div", "row");
+    var excludeAdd = el("button", "ctrl", "批量添加");
+    excludeAdd.type = "button";
+    excludeAdd.id = "exclude-add";
+    var excludeClear = el("button", "ctrl", "清空");
+    excludeClear.type = "button";
+    excludeClear.id = "exclude-clear";
+    var excludeExport = el("button", "ctrl", "导出纯文本");
+    excludeExport.type = "button";
+    excludeExport.id = "exclude-export";
+    var excludeImport = el("button", "ctrl", "导入纯文本");
+    excludeImport.type = "button";
+    excludeImport.id = "exclude-import";
+    excludeRow.appendChild(excludeAdd);
+    excludeRow.appendChild(excludeClear);
+    excludeRow.appendChild(excludeExport);
+    excludeRow.appendChild(excludeImport);
+    var excludeFile = el("input");
+    excludeFile.type = "file";
+    excludeFile.accept = "text/plain,.txt";
+    excludeFile.hidden = true;
+    excludeFile.id = "exclude-file";
+    var excludeList = el("div");
+    excludeList.id = "exclude-list";
+    excludeBox.appendChild(excludeInput);
+    excludeBox.appendChild(excludeRow);
+    excludeBox.appendChild(excludeFile);
+    excludeBox.appendChild(excludeList);
     var more = el("details");
     more.id = "more";
     more.appendChild(el("summary", "", "更多"));
-    more.appendChild(el("p", "muted", "导出、导入、删除和诊断收在这里。平时用上面的打码、全屏和日期就够。"));
+    more.appendChild(el("p", "muted", "导出、导入、删除、排除名单和诊断收在这里。平时用上面的打码、全屏和日期就够。"));
     more.appendChild(diagBox);
     more.appendChild(row3);
     more.appendChild(drop);
     more.appendChild(importTable);
     more.appendChild(keepBox);
+    more.appendChild(excludeBox);
 
     var autoReader = createAutoReader();
     var fastReader = createFastReader();
@@ -3830,6 +4109,7 @@ function boot() {
     scroller.appendChild(title);
     scroller.appendChild(lead);
     scroller.appendChild(rowMain);
+    scroller.appendChild(excludeHint);
     scroller.appendChild(row1);
     scroller.appendChild(autoBox);
     scroller.appendChild(tzLine);
@@ -3841,7 +4121,7 @@ function boot() {
     scroller.appendChild(file);
     scroller.appendChild(importFile);
     scroller.appendChild(footer);
-    ui = {owner: owner, tz: tz, maskBtn: maskBtn, shadow: shadow, scroller: scroller, results: results, warnings: warnings, coverage: coverage, status: status, tzLine: tzLine, launcher: launcher, badge: badge, panel: panel, diagLine: diagLine, widenBtn: widenBtn, importTable: importTable, keepList: keepList, keepInput: keepInput, more: more, _backItems: [], _keepItems: []};
+    ui = {owner: owner, tz: tz, maskBtn: maskBtn, shadow: shadow, scroller: scroller, results: results, warnings: warnings, coverage: coverage, status: status, tzLine: tzLine, launcher: launcher, badge: badge, panel: panel, diagLine: diagLine, widenBtn: widenBtn, importTable: importTable, keepList: keepList, keepInput: keepInput, more: more, excludeOpen: excludeOpen, excludeCountLine: excludeCountLine, excludeList: excludeList, excludeInput: excludeInput, _backItems: [], _keepItems: [], _boardRows: [], _excludeItems: []};
     var wide = false;
     function setWide(next) {
       wide = !!next;
@@ -4252,14 +4532,18 @@ function boot() {
     });
     delBtn.addEventListener("click", function () {
       var total = Object.keys(store.posts).length + Object.keys(store.following).length + Object.keys(store.followers).length;
-      if (!confirm("删除本机保存的全部采集数据（" + total + " 条）和关注快照？删掉之后不能恢复。打码、时区和保留名单会留下。")) return;
+      if (!confirm("删除本机保存的全部采集数据（" + total + " 条）和关注快照？删掉之后不能恢复。打码、时区、保留名单和排除名单会留下。")) return;
       var prefs = store.prefs;
       var kept = {entries: store.keepEntries, ids: store.keepIds, handles: store.keepHandles};
+      var excluded = {entries: store.excludeEntries, ids: store.excludeIds, handles: store.excludeHandles};
       store = emptyStore();
       store.prefs = prefs;
       store.keepEntries = kept.entries || [];
       store.keepIds = kept.ids || {};
       store.keepHandles = kept.handles || {};
+      store.excludeEntries = excluded.entries || [];
+      store.excludeIds = excluded.ids || {};
+      store.excludeHandles = excluded.handles || {};
       openTiers = {};
       persist();
       status.textContent = "采集数据已删除。";
@@ -4414,6 +4698,72 @@ function boot() {
       status.textContent = "已从保留名单拿掉。不会去取关。";
       render();
     });
+    excludeOpen.addEventListener("click", function () {
+      more.open = true;
+      if (excludeBox.scrollIntoView) excludeBox.scrollIntoView({block: "nearest"});
+    });
+    excludeAdd.addEventListener("click", function () {
+      var items = parseExcludeText(excludeInput.value);
+      if (!items.length) {
+        status.textContent = "没有识别到账号。可以用逗号、换行或 @。";
+        return;
+      }
+      addExcludeMany(store, excludeInput.value);
+      excludeInput.value = "";
+      scheduleSave();
+      status.textContent = "已加入本地排除名单。只在本地隐藏，不会在 X 上操作。";
+      render();
+    });
+    excludeClear.addEventListener("click", function () {
+      if (!store.excludeEntries.length) {
+        status.textContent = "排除名单是空的。";
+        return;
+      }
+      if (!confirm("清空本地排除名单？采集数据还在，这些人会重新出现。不会在 X 上操作。")) return;
+      clearExclude(store);
+      scheduleSave();
+      status.textContent = "已清空本地排除名单。不会在 X 上操作。";
+      render();
+    });
+    excludeExport.addEventListener("click", function () {
+      try {
+        downloadText("排除名单.txt", excludeText(store), "text/plain");
+        status.textContent = "已开始下载排除名单。这是纯文本，只在本机，不要提交到仓库。";
+      } catch (err) {
+        status.textContent = "导出没能开始。";
+      }
+    });
+    excludeImport.addEventListener("click", function () { excludeFile.click(); });
+    excludeFile.addEventListener("change", function () {
+      var picked = excludeFile.files && excludeFile.files[0];
+      excludeFile.value = "";
+      if (!picked) return;
+      var reader = new FileReader();
+      reader.onload = function () {
+        var items = parseExcludeText(String(reader.result || ""));
+        if (!items.length) {
+          status.textContent = "没有识别到账号。可以用逗号、换行或 @。";
+          return;
+        }
+        addExcludeMany(store, String(reader.result || ""));
+        scheduleSave();
+        status.textContent = "已从文本加入排除名单。只在本地隐藏，不会在 X 上操作。";
+        render();
+      };
+      reader.readAsText(picked);
+    });
+    excludeBox.addEventListener("click", function (event) {
+      var node = event.target;
+      if (!node || !node.closest) return;
+      var edit = node.closest("[data-exclude-edit]");
+      if (!edit) return;
+      var item = (ui._excludeItems || [])[+edit.getAttribute("data-exclude-edit")];
+      if (!item) return;
+      removeExclude(store, item);
+      scheduleSave();
+      status.textContent = "已从排除名单拿掉。只在本地，不会在 X 上操作。";
+      render();
+    });
     file.addEventListener("change", function () {
       var picked = file.files && file.files[0];
       file.value = "";
@@ -4469,6 +4819,34 @@ function boot() {
     results.addEventListener("click", function (event) {
       var node = event.target;
       if (!node || !node.closest) return;
+      var excludeBtn = node.closest("[data-exclude-row],[data-exclude-back]");
+      if (excludeBtn) {
+        var person = null;
+        if (excludeBtn.hasAttribute("data-exclude-row")) {
+          var row = (ui._boardRows || [])[+excludeBtn.getAttribute("data-exclude-row")];
+          if (row) person = {handle: row.account || "", id: ""};
+        } else {
+          person = (ui._backItems || [])[+excludeBtn.getAttribute("data-exclude-back")];
+        }
+        if (person) {
+          var handle = norm(person.handle || person.account);
+          var id = String(person.id || "");
+          if (!/^\d+$/.test(id)) id = "";
+          if (handle && !id) {
+            ["following", "followers"].forEach(function (bucket) {
+              Object.keys(store[bucket] || {}).forEach(function (key) {
+                var user = store[bucket][key];
+                if (user && norm(user.handle) === handle && /^\d+$/.test(String(user.id || ""))) id = String(user.id);
+              });
+            });
+          }
+          addExclude(store, {id: id, handle: handle});
+          scheduleSave();
+          status.textContent = "已在本地排除。只在本地隐藏，不会在 X 上 mute、屏蔽或取关。";
+          render();
+        }
+        return;
+      }
       var keepBtn = node.closest("[data-keep-index]");
       if (keepBtn) {
         var item = (ui._backItems || [])[+keepBtn.getAttribute("data-keep-index")];
@@ -4755,6 +5133,95 @@ function boot() {
     });
   }
 
+  function aliasFor(rows, handle, nextBox) {
+    var known = "";
+    (rows || []).forEach(function (row, i) {
+      if (row.account === handle) {
+        var s = String(i + 1);
+        known = "账号#" + (s.length < 2 ? "0" + s : s);
+      }
+    });
+    if (known) return known;
+    var s = String(nextBox.n);
+    nextBox.n += 1;
+    return "账号#" + (s.length < 2 ? "0" + s : s);
+  }
+
+  function renderExclude(rows) {
+    if (!ui.excludeList || !ui.excludeCountLine || !ui.excludeOpen) return;
+    var total = (store.excludeEntries || []).length;
+    ui.excludeOpen.textContent = "已排除 " + total + " 人";
+    ui.excludeCountLine.textContent = "当前 " + total + " 人";
+    var masked = !!store.prefs.masked;
+    var ordered = (store.excludeEntries || []).slice().sort(function (a, b) {
+      var left = a.handle || a.id || "";
+      var right = b.handle || b.id || "";
+      return left < right ? -1 : left > right ? 1 : 0;
+    });
+    ui._excludeItems = ordered;
+    ui.excludeList.textContent = "";
+    if (!ordered.length) {
+      ui.excludeList.appendChild(el("p", "muted", "还没有排除的人。名单每一行可以点「排除」。"));
+      return;
+    }
+    var nextBox = {n: (rows || []).length + 1};
+    ordered.forEach(function (entry, i) {
+      var line = el("p", "check");
+      var label = "";
+      if (masked) label = aliasFor(rows, entry.handle, nextBox);
+      else label = entry.handle ? "@" + entry.handle : entry.id;
+      line.appendChild(el("span", "", label));
+      var btn = el("button", "ctrl", "移除");
+      btn.type = "button";
+      btn.setAttribute("data-exclude-edit", String(i));
+      line.appendChild(btn);
+      ui.excludeList.appendChild(line);
+    });
+  }
+
+  function attachExcludeButtons(rows) {
+    ui._boardRows = rows || [];
+    var blocks = ui.results.querySelectorAll("section.tier-block table");
+    for (var t = 0; t < blocks.length; t++) {
+      var trs = blocks[t].querySelectorAll("tr");
+      if (!trs.length) continue;
+      var th = document.createElement("th");
+      th.textContent = "";
+      trs[0].appendChild(th);
+      for (var i = 1; i < trs.length; i++) {
+        var marked = trs[i].querySelector("[data-row]");
+        var idx = marked ? marked.getAttribute("data-row") : null;
+        if (idx == null || !ui._boardRows[+idx]) continue;
+        var cell = document.createElement("td");
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "ctrl mini";
+        btn.textContent = "排除";
+        btn.setAttribute("data-exclude-row", idx);
+        cell.appendChild(btn);
+        trs[i].appendChild(cell);
+      }
+    }
+    var section = ui.shadow.getElementById("not-followed-back");
+    if (!section) return;
+    var backRows = section.querySelectorAll("table tr");
+    if (!backRows.length) return;
+    var head = document.createElement("th");
+    head.textContent = "";
+    backRows[0].appendChild(head);
+    for (var j = 1; j < backRows.length; j++) {
+      if (!ui._backItems[j - 1]) continue;
+      var backCell = document.createElement("td");
+      var backBtn = document.createElement("button");
+      backBtn.type = "button";
+      backBtn.className = "ctrl mini";
+      backBtn.textContent = "排除";
+      backBtn.setAttribute("data-exclude-back", String(j - 1));
+      backCell.appendChild(backBtn);
+      backRows[j].appendChild(backCell);
+    }
+  }
+
   function attachKeepButtons(items) {
     ui._backItems = items || [];
     var section = ui.shadow.getElementById("not-followed-back");
@@ -4782,6 +5249,7 @@ function boot() {
     renderAutoRead();
     renderImportTable();
     renderKeep([]);
+    renderExclude([]);
     if (ui.diagLine) {
       var matched = Object.keys(diag.matched).sort().map(function (key) { return key + " " + diag.matched[key]; }).join("、") || "无";
       var notable = [];
@@ -4851,6 +5319,7 @@ function boot() {
     if (!norm(ui.owner.value)) {
       ui.results.innerHTML = "";
       renderKeep([]);
+      renderExclude([]);
       ui.tzLine.textContent = "先填写你的用户名，或打开自己的主页让脚本从左侧个人主页按钮识别。";
       updateBadge();
       return;
@@ -4858,6 +5327,7 @@ function boot() {
     var view = buildView();
     if (view.error) {
       ui.results.innerHTML = "";
+      renderExclude([]);
       ui.tzLine.textContent = view.error;
       updateBadge();
       return;
@@ -4868,7 +5338,9 @@ function boot() {
     ui.tzLine.textContent = cover + " · " + view.result.rows.length + " 个账号";
     ui.results.innerHTML = view.fragment;
     renderKeep(view.result.rows);
+    renderExclude(view.result.rows);
     attachKeepButtons(view.back && view.back.items);
+    attachExcludeButtons(view.result.rows);
     updateBadge();
   }
 

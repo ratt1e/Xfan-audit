@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.join(HERE, "scripts"))
 import follow_diff  # noqa: E402
 import not_followed_back as nfb  # noqa: E402
 import relationship_stars as rs  # noqa: E402
-from daily_root import load_daily_root, check_output, clear_own_outputs, coverage_lines, list_facts, write_roster  # noqa: E402
+from daily_root import load_daily_root, check_output, clear_own_outputs, coverage_lines, list_facts, write_roster, find_exclude, apply_exclude, filter_follow_diff, filter_not_back, filter_people  # noqa: E402
 
 TIERS = ["金牌", "银牌", "单向·他常来我少回", "单向·我常去他没回", "沉睡互关", "样本不足", "其他有分", "零互动"]
 TIER_NOTE = {
@@ -167,12 +167,13 @@ def action(x):
     return "；".join(parts)
 
 
-def analyze(data, conf, cfg, end=None, days=None, all_days=False):
+def analyze(data, conf, cfg, end=None, days=None, all_days=False, hide=()):
     win = conf.get("window", {})
     tz_name = rs.resolve_timezone_name(configured=win.get("timezone"))
     tz = rs.zone(tz_name)
     g = conf.get("greetings", {})
     excl = {norm(a) for a in conf.get("exclude_accounts", []) + [conf.get("me") or ""] if norm(a)}
+    hide = {norm(a) for a in (hide or ()) if norm(a)}
     rows = [r for r in data["rows"] if r["account"] not in excl]
     prep = rs.prepare(rows, tz, g.get("words", []), g.get("max_core_len", 15))
     dts = [r["dt"].date() for r in prep if r.get("dt")]
@@ -203,6 +204,7 @@ def analyze(data, conf, cfg, end=None, days=None, all_days=False):
     fol, fer, prof = data["following"], data["followers"], data["profiles"]
     accounts = set(by) | set(fol) | set(fer)
     accounts -= excl
+    accounts -= hide
     tcfg = conf.get("tiers") or json.load(open(rs.CONFIG_PATH, encoding="utf-8"))["tiers"]
     pb = tcfg.get("priority_bonus", {})
     res = []
@@ -584,7 +586,7 @@ def _strip_notes(value):
     return value
 
 
-def dashboard_payload(data, conf, meta, public, lists_dir, prev_dir, keep_path, bundle=None):
+def dashboard_payload(data, conf, meta, public, lists_dir, prev_dir, keep_path, bundle=None, exclude_ids=(), exclude_handles=()):
     """嵌进看板的原始行和关系名单。打码版只留代号，不留用户名、用户 ID 和正文。"""
     mask = _OrderMask() if public else None
     if bundle is None:
@@ -597,9 +599,17 @@ def dashboard_payload(data, conf, meta, public, lists_dir, prev_dir, keep_path, 
         follower_items = bundle.get("followers")
         prev_following = bundle.get("prev_following")
         prev_followers = bundle.get("prev_followers")
+    following_items = filter_people(following_items, exclude_ids, exclude_handles)
+    follower_items = filter_people(follower_items, exclude_ids, exclude_handles)
+    prev_following = filter_people(prev_following, exclude_ids, exclude_handles)
+    prev_followers = filter_people(prev_followers, exclude_ids, exclude_handles)
     keep_ids, keep_handles = nfb.load_keep(keep_path)
+    source_rows = list(data.get("rows") or [])
+    if exclude_handles:
+        blocked = {norm(name) for name in exclude_handles}
+        source_rows = [row for row in source_rows if norm(row.get("account")) not in blocked]
     if mask:
-        for row in data.get("rows") or []:
+        for row in source_rows:
             mask.add_handle(row.get("account"))
             mask.add_token(row.get("id"))
             mask.add_token(row.get("tweet_id"))
@@ -625,12 +635,26 @@ def dashboard_payload(data, conf, meta, public, lists_dir, prev_dir, keep_path, 
     kept_ids = {_map_plain(mask, uid, "id"): 1 for uid in keep_ids if _map_plain(mask, uid, "id")}
     kept_handles = {_map_handle(mask, handle): 1 for handle in keep_handles if _map_handle(mask, handle)}
     coverage = data.get("coverage") or {}
+    read_days = set(coverage.get("read_days") or [])
+    if exclude_handles:
+        blocked = {norm(name) for name in exclude_handles}
+        hidden_rows = [row for row in data.get("rows") or [] if norm(row.get("account")) in blocked]
+        try:
+            tz = rs.zone(meta.get("tz") or rs.resolve_timezone_name())
+        except ValueError:
+            tz = None
+        if tz is not None:
+            for row in hidden_rows:
+                for field in ("ts", "post_created_at", "first_observed_at"):
+                    local = rs.to_local(row.get(field), tz)
+                    if local:
+                        read_days.add(local.date().isoformat())
     body = {
-        "rows": _embed_rows(data.get("rows"), conf, mask),
+        "rows": _embed_rows(source_rows, conf, mask),
         "following": _people_map(data.get("following"), mask),
         "followers": _people_map(data.get("followers"), mask),
         "profiles": _people_map(data.get("profiles"), mask),
-        "coverage": {"read_days": list(coverage.get("read_days") or [])},
+        "coverage": {"read_days": sorted(read_days)},
         "sawFollowing": following_items is not None,
         "sawFollowers": follower_items is not None,
         "followingAccounts": _emit_people(following_items, mask),
@@ -787,7 +811,7 @@ def tier_color(tier):
     return "gray"
 
 
-def render(res, meta, data=None, conf=None, public=False, lists_dir=None, prev_dir=None, keep_path=None, bundle=None):
+def render(res, meta, data=None, conf=None, public=False, lists_dir=None, prev_dir=None, keep_path=None, bundle=None, exclude_ids=(), exclude_handles=()):
     alias = {}
     if public:
         for index, row in enumerate(res, 1):
@@ -853,7 +877,7 @@ def render(res, meta, data=None, conf=None, public=False, lists_dir=None, prev_d
     sections = "".join(tier_section(tier) for tier in TIERS)
     payload = {}
     if data is not None and conf is not None:
-        payload = dashboard_payload(data, conf, meta, public, lists_dir, prev_dir, keep_path, bundle)
+        payload = dashboard_payload(data, conf, meta, public, lists_dir, prev_dir, keep_path, bundle, exclude_ids, exclude_handles)
     engine = dashboard_engine(public)
     controls = (
         '<div class="row">'
@@ -941,6 +965,7 @@ def main(argv=None):
     ap.add_argument("--auto-prev", action="store_true",
                     help="在名单目录里自动找上一份导出并对比。文件没变时沿用上次对比，不把它说成没有变化")
     ap.add_argument("--keep-list", help="故意关注的账号，一行一个用户名或用户 ID，这些人不进没回关名单")
+    ap.add_argument("--exclude", help="本地排除名单。一行一个用户名或数字 ID，也认 @、逗号和 # 注释。不写则读取数据目录里的排除名单.txt；没有这个文件时与现在一样。只从结果里拿掉，不会连接 X")
     ap.add_argument("--out", help="输出目录；每日模式默认在数据根目录的 _分析结果/截止日期/")
     ap.add_argument("--overwrite", action="store_true",
                     help="覆盖 --out 里本工具上次生成的结果；目录里有其他文件则停止，不删除")
@@ -979,6 +1004,10 @@ def main(argv=None):
     window = dict(conf.get("window") or {})
     window["timezone"] = tz_name
     conf["window"] = window
+    try:
+        exclude_ids, exclude_handles, exclude_n, exclude_used = find_exclude(a.exclude, root or (a.data or "data"))
+    except ValueError as exc:
+        ap.error(str(exc))
     list_scan = None
     if root:
         try:
@@ -992,8 +1021,10 @@ def main(argv=None):
             daily_conf = dict(conf, window=dict(conf.get("window", {})))
             if not any(r.get("ts") for r in data["rows"]) and daily_conf["window"].get("end", "auto") == "auto":
                 daily_conf["window"]["end"] = data["coverage"]["read_days"][-1]
+            if exclude_used:
+                exclude_ids, exclude_handles = apply_exclude(data, exclude_ids, exclude_handles)
             try:
-                res, meta = analyze(data, daily_conf, cfg, a.end, a.days, a.all_days)
+                res, meta = analyze(data, daily_conf, cfg, a.end, a.days, a.all_days, hide=exclude_handles)
             except (ValueError, TypeError, KeyError, OverflowError):
                 raise ValueError("每日数据的时间或字段格式无效，请在本机核对；具体值未打印") from None
             from pathlib import Path
@@ -1010,7 +1041,9 @@ def main(argv=None):
                 follow_diff.apply_latest(data, list_scan)
             except ValueError as exc:
                 ap.error(str(exc))
-        res, meta = analyze(data, conf, cfg, a.end, a.days, a.all_days)
+        if exclude_used:
+            exclude_ids, exclude_handles = apply_exclude(data, exclude_ids, exclude_handles)
+        res, meta = analyze(data, conf, cfg, a.end, a.days, a.all_days, hide=exclude_handles)
         a.out = a.out or "output"
     lists_dir = a.lists if root else (a.data or "data")
     if root and not a.lists:
@@ -1038,6 +1071,10 @@ def main(argv=None):
         else:
             meta["not_followed_back"] = nfb.build(lists_dir, res, a.keep_list)
         nfb.ensure_writable(a.out)
+        if exclude_used:
+            if meta.get("follow_diff"):
+                meta["follow_diff"] = filter_follow_diff(meta["follow_diff"], exclude_ids, exclude_handles)
+            meta["not_followed_back"] = filter_not_back(meta["not_followed_back"], exclude_ids, exclude_handles)
     except ValueError as exc:
         ap.error(str(exc))
     if root and a.overwrite:
@@ -1049,9 +1086,11 @@ def main(argv=None):
     write_csv(res, os.path.join(a.out, "accounts.csv"))
     try:
         private_html = render(res, meta, data, conf, public=False, lists_dir=lists_dir,
-                              prev_dir=a.prev_lists, keep_path=a.keep_list, bundle=list_bundle)
+                              prev_dir=a.prev_lists, keep_path=a.keep_list, bundle=list_bundle,
+                              exclude_ids=exclude_ids, exclude_handles=exclude_handles)
         public_html = render(res, meta, data, conf, public=True, lists_dir=lists_dir,
-                             prev_dir=a.prev_lists, keep_path=a.keep_list, bundle=list_bundle)
+                             prev_dir=a.prev_lists, keep_path=a.keep_list, bundle=list_bundle,
+                             exclude_ids=exclude_ids, exclude_handles=exclude_handles)
     except ValueError as exc:
         ap.error(str(exc))
     with open(os.path.join(a.out, "dashboard.html"), "w", encoding="utf-8") as f:
@@ -1066,7 +1105,7 @@ def main(argv=None):
     except ValueError as exc:
         ap.error(str(exc))
     if root:
-        coverage = coverage_lines(data, meta, conf.get("me", ""), conf.get("exclude_accounts", []))
+        coverage = coverage_lines(data, meta, conf.get("me", ""), list(conf.get("exclude_accounts") or []) + list(exclude_handles))
         write_roster(Path(a.out) / "名单.md", res, meta, data, coverage, stars_txt)
         for line in coverage:
             print(line)
@@ -1080,6 +1119,8 @@ def main(argv=None):
     if a.auto_prev or a.prev_lists:
         print(os.path.join(a.out, follow_diff.SUMMARY_NAME))
     print(nfb.summary_line(meta["not_followed_back"]))
+    if exclude_used and exclude_n:
+        print(f"已排除 {exclude_n} 人")
     c = Counter(x["tier"] for x in res)
     extra = ""
     if meta.get("covered_days") is not None:
