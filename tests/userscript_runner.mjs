@@ -8,10 +8,11 @@ import {
   installHooks, pageHookProgram, norm, operationName, listKindFromPath, timelineKindFromPath, userFromVisible, diagnosticsCopy,
   pageContext, badgeText, listIsComplete, exportTimeFromName, recordSnapshot, snapshotDiffInput,
   addKeep, removeKeep, applyImported, headerListCount, headerVerifiedCount, SNAPSHOT_WAITING, looksLikeBackup,
+  parseExcludeText, addExclude, addExcludeMany, removeExclude, clearExclude, excludeText,
   progressText, AUTO_READ_MAX_SCREENS, AUTO_READ_GAP_MIN_MS, AUTO_READ_GAP_MAX_MS, AUTO_READ_DRY_LIMIT,
   AUTO_READ_FLAT_SCREENS, AUTO_READ_FLAT_MS, AUTO_READ_NO_MOVE_MS, fastPageStopReason,
   chooseScrollNode, nudgeScroller, scrollStartPlan,
-  autoReadGapMs, autoReadBlockReason, createAutoReader, FAST_READ_PAGE_SIZE, FAST_READ_MAX_PAGES,
+  autoReadGapMs, autoReadPageKind, autoReadCount, autoReadBlockReason, createAutoReader, FAST_READ_PAGE_SIZE, FAST_READ_MAX_PAGES,
   FAST_READ_REMAINING_FLOOR, buildListPageRequest, bottomCursor, fastReadStopReason, createFastReader,
   isOwnListApiUrl
 } from "../userscript/src/logic.mjs";
@@ -59,7 +60,9 @@ check(built.split("不能保证安全").length === 2, "只写明不能保证安�
 check(!/Bearer [A-Za-z0-9_\-.]{20,}/.test(built), "没有硬编码 Bearer 令牌");
 check(built.includes(EMPTY_GUIDE), "空状态文案在安装文件里");
 const meta = "// " + "@";
-check(built.includes(meta + "version      0.3.2"), "版本号");
+check(built.includes(meta + "version      0.4.0"), "版本号");
+check(built.includes("只在本地隐藏，不会在 X 上操作"), "排除说明写明只在本地隐藏");
+check(built.includes("/mutes") === false && built.includes("friendships/destroy") === false && built.includes("blocks/create") === false, "排除不会调用屏蔽或取关接口");
 check(built.includes(meta + "sandbox      raw"), "要求页面环境");
 check(built.includes(meta + "grant        GM_addElement"), "可以用元素注入把钩子送进页面");
 check(built.includes(meta + "run-at       document-start"), "document-start");
@@ -909,6 +912,56 @@ check(replayInit && replayInit.headers.authorization === "Bearer test-token" && 
 check(replayPage.__fanAuditFetchList("Followers", replayReq.url, "GET", "").then, "别的名单没有捕获到就不会发");
 const wrong = await replayPage.__fanAuditFetchList("FavoriteTweet", "https://x.com/i/api/graphql/x/FavoriteTweet", "POST", "{}");
 check(wrong.status === 0, "写接口直接拒绝");
+
+const parsedExclude = parseExcludeText("# 注释\n\n@User_02, USER_02\nuser_08");
+check(parsedExclude.length === 2 && parsedExclude.some(function (item) { return item.handle === "user_02"; }) && parsedExclude.some(function (item) { return item.handle === "user_08"; }), "逗号、换行、@ 和大小写都认成同一个账号");
+const excludeStore = JSON.parse(JSON.stringify(store));
+const rawFollowing = autoReadCount(excludeStore, "following");
+const rawFollowers = autoReadCount(excludeStore, "followers");
+addExclude(excludeStore, "@USER_02");
+check(autoReadCount(excludeStore, "following") === rawFollowing && autoReadCount(excludeStore, "followers") === rawFollowers, "排除后已记人数仍算页面上读到");
+check(Object.keys(excludeStore.following).some(function (key) { return excludeStore.following[key].handle === "user_02"; }), "原始采集还在");
+const hiddenData = toEngineData(excludeStore, sample.owner, fan.repliesFromTweets);
+check(!Object.keys(hiddenData.following).includes("user_02"), "分析用的关注名单不含被排除的人");
+const hiddenResult = fan.analyze(hiddenData, {me: sample.owner, days: 30, gapsAreEmpty: true, tz: "America/Los_Angeles"});
+check(!hiddenResult.rows.some(function (row) { return row.account === "user_02"; }), "分层名单不含被排除的人");
+const keptBefore = result.rows.filter(function (row) { return row.account === "user_04"; })[0];
+const keptAfter = hiddenResult.rows.filter(function (row) { return row.account === "user_04"; })[0];
+check(keptBefore && keptAfter && keptBefore.score === keptAfter.score && keptBefore.stars === keptAfter.stars && keptBefore.tier === keptAfter.tier, "排除不改变其他人的分数和星级");
+const zeroBefore = result.rows.filter(function (row) { return row.tier === "零互动"; }).length;
+const zeroAfter = hiddenResult.rows.filter(function (row) { return row.tier === "零互动"; }).length;
+check(zeroAfter === zeroBefore - 1, "分层人数少了被排除的人");
+const hiddenBack = fan.notFollowedBack(hiddenData, hiddenResult.rows);
+check(hiddenBack && hiddenBack.items.every(function (item) { return item.handle !== "user_02"; }), "没回关不含被排除的人");
+check(listIsComplete(autoReadCount(excludeStore, "followers"), excludeStore.totals.followers) === listIsComplete(rawFollowers, excludeStore.totals.followers), "差不多了仍按未排除前的已记人数");
+const roundTrip = importBackup(exportBackup(excludeStore, Date.parse("2026-10-22T00:00:00Z")));
+check(roundTrip.excludeHandles.user_02 === 1, "排除名单随本机备份走，不进仓库");
+removeExclude(excludeStore, "user_02");
+const restoredData = toEngineData(excludeStore, sample.owner, fan.repliesFromTweets);
+check(Object.keys(restoredData.following).includes("user_02"), "取消排除后回到名单");
+const engineRaw = toEngineData(store, sample.owner, fan.repliesFromTweets);
+engineRaw.excludeHandles = {user_02: 1};
+const engineHidden = fan.analyze(engineRaw, {me: sample.owner, days: 30, gapsAreEmpty: true, tz: "America/Los_Angeles"});
+check(!engineHidden.rows.some(function (row) { return row.account === "user_02"; }), "网页引擎认排除名单");
+const engineBack = fan.notFollowedBack(engineRaw, engineHidden.rows);
+check(engineBack && engineBack.items.every(function (item) { return item.handle !== "user_02"; }), "网页引擎的没回关也认排除名单");
+const diffRaw = {
+  sawPrevFollowers: true, sawFollowers: true, sawPrevFollowing: false, sawFollowing: false,
+  prevFollowerAccounts: [{id: "2", handle: "user_02"}], followerAccounts: [],
+  excludeHandles: {user_02: 1}
+};
+const hiddenDiff = fan.followDiff(diffRaw);
+check(hiddenDiff && hiddenDiff.unfollowed_me && hiddenDiff.unfollowed_me.length === 0, "关注变化不列出被排除的人");
+excludeStore.snapshots = [
+  {kind: "followers", at: 1, complete: true, people: [{id: "1", handle: "user_01"}, {id: "2", handle: "user_02"}]},
+  {kind: "followers", at: 2, complete: true, people: [{id: "1", handle: "user_01"}]}
+];
+addExclude(excludeStore, "user_02");
+const snapInput = snapshotDiffInput(excludeStore);
+check(snapInput.prevFollowerAccounts.every(function (person) { return person.handle !== "user_02"; }), "快照对比不列出被排除的人");
+check(excludeStore.snapshots[0].people.some(function (person) { return person.handle === "user_02"; }), "原始快照不删");
+clearExclude(excludeStore);
+check(excludeText(excludeStore) === "" && addExcludeMany(excludeStore, "@user_04\nuser_05").total === 2, "清空和批量添加");
 
 if (failed) {
   console.error(failed + " checks failed");

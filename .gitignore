@@ -22,6 +22,7 @@ following.js
 interactions.csv
 !examples/relationship/interactions.csv
 accounts.csv
+排除名单.txt
 dashboard*.html
 lists_snapshot.json
 follow_summary.json

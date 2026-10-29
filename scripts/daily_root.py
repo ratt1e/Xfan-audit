@@ -254,3 +254,133 @@ def write_roster(path, res, meta, data, coverage, stars_txt):
             lines.append("暂无")
         lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")
+
+
+EXCLUDE_FILENAME = "排除名单.txt"
+_EXCLUDE_SPLIT = re.compile(r"[\s,，;；]+")
+_EXCLUDE_HANDLE = re.compile(r"^[a-z0-9_]{1,15}$")
+_DIFF_KEYS = ("unfollowed_me", "new_followers", "i_unfollowed", "i_followed")
+
+
+def parse_exclude_text(text):
+    """本地排除名单。空行和 # 注释忽略；逗号、换行、@ 都能认；大小写不区分。
+
+    纯数字当作用户 ID，其余必须像用户名。不连接 X，也不保存注释后的说明。
+    """
+    ids, handles = set(), set()
+    for line in (text or "").splitlines():
+        raw = line.strip()
+        if not raw or raw.startswith("#"):
+            continue
+        body = re.split(r"\s+#", raw, maxsplit=1)[0]
+        for token in _EXCLUDE_SPLIT.split(body):
+            token = token.strip().strip(",").strip().strip('"').strip("'")
+            if token.startswith("@"):
+                token = token[1:].strip()
+            if not token or token.startswith("#"):
+                continue
+            if token.isdigit():
+                ids.add(token)
+            else:
+                handle = norm(token)
+                if _EXCLUDE_HANDLE.match(handle):
+                    handles.add(handle)
+    return ids, handles
+
+
+def read_exclude_file(path):
+    file = Path(path).expanduser()
+    try:
+        if not file.is_file():
+            raise OSError
+        text = file.read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeError):
+        raise ValueError("排除名单文件不存在，或不是文本文件") from None
+    return parse_exclude_text(text)
+
+
+def find_exclude(explicit, directory):
+    """显式路径必须存在。默认文件不存在时返回空，调用方保持原行为。"""
+    if explicit:
+        ids, handles = read_exclude_file(explicit)
+        return ids, handles, len(ids) + len(handles), True
+    path = Path(directory).expanduser() / EXCLUDE_FILENAME
+    if not path.is_file():
+        return set(), set(), 0, False
+    ids, handles = read_exclude_file(path)
+    return ids, handles, len(ids) + len(handles), True
+
+
+def _row_id(row):
+    if not isinstance(row, dict):
+        return ""
+    for key in ("user_id", "id_str", "rest_id", "id"):
+        value = str(row.get(key) or "")
+        if value.isdigit():
+            return value
+    return ""
+
+
+def expand_exclude(data, ids, handles):
+    ids, handles = set(ids), set(handles)
+    for bucket in ("following", "followers", "profiles"):
+        for handle, row in (data.get(bucket) or {}).items():
+            uid = _row_id(row)
+            name = norm(handle)
+            if (name and name in handles) or (uid and uid in ids):
+                if name:
+                    handles.add(name)
+                if uid:
+                    ids.add(uid)
+    return ids, handles
+
+
+def person_excluded(person, ids, handles):
+    if not isinstance(person, dict):
+        return False
+    uid = str(person.get("id") or person.get("user_id") or "")
+    handle = norm(person.get("handle") or person.get("account") or "")
+    if uid and uid in ids:
+        return True
+    if handle and handle in handles:
+        return True
+    return False
+
+
+def apply_exclude(data, ids, handles):
+    """从本次分析用的副本里拿掉。不改打分公式，也不删磁盘上的原始 CSV。"""
+    ids, handles = expand_exclude(data, ids, handles)
+    if not ids and not handles:
+        return ids, handles
+    for key in ("following", "followers", "profiles"):
+        bucket = data.get(key) or {}
+        data[key] = {
+            handle: row for handle, row in bucket.items()
+            if norm(handle) not in handles and _row_id(row) not in ids
+        }
+    return ids, handles
+
+
+def filter_people(items, ids, handles):
+    if items is None:
+        return None
+    if not ids and not handles:
+        return items
+    return [item for item in items if not person_excluded(item, ids, handles)]
+
+
+def filter_follow_diff(diff, ids, handles):
+    if not diff or (not ids and not handles):
+        return diff
+    out = dict(diff)
+    for key in _DIFF_KEYS:
+        out[key] = filter_people(diff.get(key), ids, handles)
+    return out
+
+
+def filter_not_back(info, ids, handles):
+    if not info or not info.get("items") or (not ids and not handles):
+        return info
+    out = dict(info)
+    out["items"] = filter_people(info["items"], ids, handles)
+    return out

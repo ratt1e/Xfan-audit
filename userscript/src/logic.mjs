@@ -67,6 +67,9 @@ export function emptyStore() {
     keepEntries: [],
     keepIds: {},
     keepHandles: {},
+    excludeEntries: [],
+    excludeIds: {},
+    excludeHandles: {},
     extraRows: [],
     meta: {sawFollowing: false, sawFollowers: false, sawBlueFollowers: false, sawNotifications: false, sawExport: false}
   };
@@ -1003,6 +1006,9 @@ function ensureStore(store) {
   if (!store.keepEntries) store.keepEntries = [];
   if (!store.keepIds) store.keepIds = {};
   if (!store.keepHandles) store.keepHandles = {};
+  if (!store.excludeEntries) store.excludeEntries = [];
+  if (!store.excludeIds) store.excludeIds = {};
+  if (!store.excludeHandles) store.excludeHandles = {};
   if (!store.extraRows) store.extraRows = [];
   if (!store.meta) store.meta = {};
   return store;
@@ -1544,15 +1550,21 @@ export function snapshotDiffInput(store) {
   }
   var fer = pair(followers);
   var fol = pair(following);
+  var look = excludeLook(store);
+  function shown(list) {
+    return (list || []).filter(function (person) { return !personExcluded(look, person); });
+  }
   return {
     sawFollowers: fer.ready,
     sawPrevFollowers: fer.ready,
     sawFollowing: fol.ready,
     sawPrevFollowing: fol.ready,
-    followerAccounts: fer.cur,
-    prevFollowerAccounts: fer.prev,
-    followingAccounts: fol.cur,
-    prevFollowingAccounts: fol.prev,
+    followerAccounts: shown(fer.cur),
+    prevFollowerAccounts: shown(fer.prev),
+    followingAccounts: shown(fol.cur),
+    prevFollowingAccounts: shown(fol.prev),
+    excludeHandles: look.handles,
+    excludeIds: look.ids,
     followAuto: (fer.ready && fol.ready) ? null : {note: SNAPSHOT_WAITING}
   };
 }
@@ -1616,6 +1628,146 @@ export function removeKeep(store, person) {
   });
   rebuildKeepMaps(store);
   return store.keepEntries.length !== before;
+}
+
+var EXCLUDE_HANDLE = /^[a-z0-9_]{1,15}$/;
+
+function rebuildExcludeMaps(store) {
+  store.excludeIds = {};
+  store.excludeHandles = {};
+  (store.excludeEntries || []).forEach(function (entry) {
+    if (entry.id && /^\d+$/.test(entry.id)) store.excludeIds[entry.id] = 1;
+    var handle = norm(entry.handle);
+    if (handle) store.excludeHandles[handle] = 1;
+  });
+}
+
+function excludePerson(person) {
+  var id = "";
+  var handle = "";
+  if (typeof person === "string" || typeof person === "number") {
+    var text = String(person || "").trim().replace(/^@+/, "");
+    if (/^\d+$/.test(text)) id = text;
+    else handle = norm(text);
+  } else if (person && typeof person === "object") {
+    id = String(person.id || "");
+    if (!/^\d+$/.test(id)) id = "";
+    handle = norm(person.handle || person.account);
+  }
+  if (handle && !EXCLUDE_HANDLE.test(handle)) handle = "";
+  return {id: id, handle: handle};
+}
+
+export function parseExcludeText(text) {
+  var found = [];
+  var seen = {};
+  String(text || "").split(/\r?\n/).forEach(function (line) {
+    var raw = line.trim();
+    if (!raw || raw.charAt(0) === "#") return;
+    var hash = raw.search(/\s+#/);
+    var body = hash >= 0 ? raw.slice(0, hash) : raw;
+    body.split(/[\s,，;；]+/).forEach(function (token) {
+      token = String(token || "").trim().replace(/^@+/, "").replace(/^["']|["']$/g, "");
+      if (!token || token.charAt(0) === "#") return;
+      var person = excludePerson(token);
+      if (!person.id && !person.handle) return;
+      var key = person.id ? "id:" + person.id : "h:" + person.handle;
+      if (seen[key]) return;
+      seen[key] = 1;
+      found.push(person);
+    });
+  });
+  return found;
+}
+
+export function addExclude(store, person) {
+  ensureStore(store);
+  var next = excludePerson(person);
+  if (!next.id && !next.handle) return false;
+  var entries = store.excludeEntries;
+  for (var i = 0; i < entries.length; i++) {
+    var entry = entries[i];
+    if (!((next.id && entry.id === next.id) || (next.handle && entry.handle === next.handle))) continue;
+    if (next.id) entry.id = next.id;
+    if (next.handle) entry.handle = next.handle;
+    rebuildExcludeMaps(store);
+    return true;
+  }
+  entries.push({id: next.id, handle: next.handle});
+  rebuildExcludeMaps(store);
+  return true;
+}
+
+export function addExcludeMany(store, text) {
+  var items = parseExcludeText(text);
+  items.forEach(function (item) { addExclude(store, item); });
+  ensureStore(store);
+  return {parsed: items.length, total: store.excludeEntries.length};
+}
+
+export function removeExclude(store, person) {
+  ensureStore(store);
+  var next = excludePerson(person);
+  var before = store.excludeEntries.length;
+  store.excludeEntries = store.excludeEntries.filter(function (entry) {
+    if (next.id && entry.id === next.id) return false;
+    if (next.handle && entry.handle === next.handle) return false;
+    return true;
+  });
+  rebuildExcludeMaps(store);
+  return store.excludeEntries.length !== before;
+}
+
+export function clearExclude(store) {
+  ensureStore(store);
+  var had = store.excludeEntries.length > 0;
+  store.excludeEntries = [];
+  rebuildExcludeMaps(store);
+  return had;
+}
+
+export function excludeText(store) {
+  ensureStore(store);
+  var lines = store.excludeEntries.map(function (entry) {
+    return entry.handle || entry.id || "";
+  }).filter(Boolean);
+  return lines.length ? lines.join("\n") + "\n" : "";
+}
+
+function excludeLook(store) {
+  ensureStore(store);
+  rebuildExcludeMaps(store);
+  var handles = {};
+  var ids = {};
+  Object.keys(store.excludeHandles).forEach(function (handle) { handles[handle] = 1; });
+  Object.keys(store.excludeIds).forEach(function (id) { ids[id] = 1; });
+  function absorb(id, handle) {
+    id = String(id || "");
+    handle = norm(handle);
+    if ((id && ids[id]) || (handle && handles[handle])) {
+      if (handle) handles[handle] = 1;
+      if (/^\d+$/.test(id)) ids[id] = 1;
+    }
+  }
+  ["following", "followers"].forEach(function (bucket) {
+    Object.keys(store[bucket] || {}).forEach(function (key) {
+      var user = store[bucket][key];
+      if (user) absorb(user.id, user.handle);
+    });
+  });
+  Object.keys(store.posts || {}).forEach(function (key) {
+    var post = store.posts[key];
+    if (post) absorb(post.uid, post.handle);
+  });
+  return {handles: handles, ids: ids};
+}
+
+function personExcluded(look, person) {
+  var id = String((person && person.id) || "");
+  var handle = norm(person && (person.handle || person.account));
+  if (id && look.ids[id]) return true;
+  if (handle && look.handles[handle]) return true;
+  return false;
 }
 
 export function looksLikeBackup(text) {
@@ -1723,6 +1875,7 @@ export function applyImported(store, data, owner, now) {
 }
 
 export function toEngineData(store, owner, repliesFromTweets) {
+  var look = excludeLook(store);
   var records = [];
   var profiles = {};
   Object.keys(store.posts || {}).sort().forEach(function (id) {
@@ -1740,13 +1893,14 @@ export function toEngineData(store, owner, repliesFromTweets) {
       conversation_id: post.conv || ""
     });
     var handle = norm(post.handle);
-    if (handle && post.verified && !profiles[handle]) profiles[handle] = {handle: handle, verified: "true", is_blue_verified: "true"};
+    if (handle && !look.handles[handle] && post.verified && !profiles[handle]) profiles[handle] = {handle: handle, verified: "true", is_blue_verified: "true"};
   });
   function usersOf(bucket) {
     var map = {};
     var list = [];
     Object.keys(bucket || {}).sort().forEach(function (key) {
       var user = bucket[key];
+      if (personExcluded(look, user)) return;
       var handle = norm(user.handle);
       list.push({id: user.id || "", handle: handle, name: user.name || ""});
       if (!handle || map[handle]) return;
@@ -1775,6 +1929,8 @@ export function toEngineData(store, owner, repliesFromTweets) {
     sawPrevFollowing: false,
     keepIds: store.keepIds || {},
     keepHandles: store.keepHandles || {},
+    excludeHandles: look.handles,
+    excludeIds: look.ids,
     warnings: []
   };
   var rows = typeof repliesFromTweets === "function" ? repliesFromTweets(records, owner || "") : [];
@@ -1872,6 +2028,27 @@ export function normalizeStore(input) {
   Object.keys(input.keepHandles || {}).forEach(function (handle) { rememberKeep({id: "", handle: handle}); });
   store.keepEntries = kept;
   rebuildKeepMaps(store);
+  var excluded = [];
+  function rememberExclude(entry) {
+    var id = String(entry.id || "");
+    if (id && !/^\d+$/.test(id)) id = "";
+    var handle = norm(entry.handle);
+    if (handle && !EXCLUDE_HANDLE.test(handle)) handle = "";
+    if (!id && !handle) return;
+    for (var i = 0; i < excluded.length; i++) {
+      if ((id && excluded[i].id === id) || (handle && excluded[i].handle === handle)) {
+        if (id) excluded[i].id = id;
+        if (handle) excluded[i].handle = handle;
+        return;
+      }
+    }
+    excluded.push({id: id, handle: handle});
+  }
+  (input.excludeEntries || []).forEach(function (entry) { if (entry) rememberExclude(entry); });
+  Object.keys(input.excludeIds || {}).forEach(function (id) { rememberExclude({id: id, handle: ""}); });
+  Object.keys(input.excludeHandles || {}).forEach(function (handle) { rememberExclude({id: "", handle: handle}); });
+  store.excludeEntries = excluded;
+  rebuildExcludeMaps(store);
   var seenExtra = {};
   (input.extraRows || []).forEach(function (row) {
     if (!row || typeof row !== "object") return;

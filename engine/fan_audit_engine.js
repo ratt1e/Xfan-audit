@@ -303,6 +303,42 @@
     }
     return parts.join("；");
   }
+  function rowUid(row) {
+    if (!row) return "";
+    var uid = row["user" + "_id"] || row.id || row.rest_id || "";
+    return String(uid);
+  }
+  function excludeLookups(data) {
+    var look = {handles: {}, ids: {}};
+    var bagH = data && data.excludeHandles;
+    var bagI = data && data.excludeIds;
+    if (bagH) Object.keys(bagH).forEach(function (key) {
+      var name = norm(key);
+      if (name) look.handles[name] = 1;
+    });
+    if (bagI) Object.keys(bagI).forEach(function (key) {
+      if (/^\d+$/.test(String(key))) look.ids[String(key)] = 1;
+    });
+    ["following", "followers", "profiles"].forEach(function (key) {
+      var bag = (data && data[key]) || {};
+      Object.keys(bag).forEach(function (name) {
+        var row = bag[name] || {};
+        var uid = rowUid(row);
+        var handle = norm(name);
+        if ((handle && look.handles[handle]) || (uid && look.ids[uid])) {
+          if (handle) look.handles[handle] = 1;
+          if (/^\d+$/.test(uid)) look.ids[uid] = 1;
+        }
+      });
+    });
+    return look;
+  }
+  function hiddenAccount(look, account, row) {
+    if (!look) return false;
+    if (look.handles[norm(account)]) return true;
+    var uid = rowUid(row);
+    return !!(uid && look.ids[uid]);
+  }
   function analyze(data, options) {
     options = options || {};
     var tz = resolveZone(options);
@@ -311,6 +347,7 @@
     var excl = {"grok": 1};
     CONFIG.exclude_accounts.forEach(function (a) { if (norm(a)) excl[norm(a)] = 1; });
     if (me) excl[me] = 1;
+    var look = excludeLookups(data);
     var rows = (data.rows || []).filter(function (r) { return !excl[norm(r.account)]; });
     rows.forEach(function (r) { r.account = norm(r.account); });
     var prep = prepare(rows, tz, words, maxLen);
@@ -336,9 +373,15 @@
     var by = {};
     prep.forEach(function (r) { (by[r.account] = by[r.account] || []).push(r); });
     var accounts = {};
-    Object.keys(by).forEach(function (a) { accounts[a] = 1; });
-    Object.keys(data.following || {}).forEach(function (a) { if (!excl[a]) accounts[a] = 1; });
-    Object.keys(data.followers || {}).forEach(function (a) { if (!excl[a]) accounts[a] = 1; });
+    Object.keys(by).forEach(function (a) {
+      if (!look.handles[a]) accounts[a] = 1;
+    });
+    function listed(name, row) {
+      if (excl[name] || hiddenAccount(look, name, row)) return;
+      accounts[name] = 1;
+    }
+    Object.keys(data.following || {}).forEach(function (a) { listed(a, data.following[a]); });
+    Object.keys(data.followers || {}).forEach(function (a) { listed(a, data.followers[a]); });
     var pb = CONFIG.tiers.priority_bonus;
     var talk = interactionCoverage(prep, start, end);
     var res = Object.keys(accounts).sort().map(function (a) {
@@ -712,7 +755,7 @@
       if (xs.length) {
         body = "<table><tr><th>账号</th><th>星级</th><th>分数</th><th>数据</th></tr>";
         shown.forEach(function (x) {
-          body += "<tr><td>" + nameCell(x.account) + "</td><td>" + starsText(x) + "</td><td>" + (x.score == null ? "—" : escHtml(x.score)) + "</td><td>" + escHtml(listFacts(x)) + "</td></tr>";
+          body += "<tr><td data-row=\"" + rows.indexOf(x) + "\">" + nameCell(x.account) + "</td><td>" + starsText(x) + "</td><td>" + (x.score == null ? "—" : escHtml(x.score)) + "</td><td>" + escHtml(listFacts(x)) + "</td></tr>";
         });
         body += "</table>";
         if (!options.showAll && xs.length > 20 && !open[t]) body += '<button type="button" data-expand="' + escHtml(t) + '">展开全部</button>';
@@ -796,6 +839,15 @@
       added = onlyIn(newFol, oldFol);
     } else notes.push("没有同时找到旧的和新的正在关注，我取关的和我新关注的先不算");
     if (data.followAuto && data.followAuto.note) notes.unshift(data.followAuto.note);
+    var look = excludeLookups(data);
+    function dropHidden(items) {
+      if (!items) return items;
+      return items.filter(function (item) { return !hiddenAccount(look, item.handle, item); });
+    }
+    unfollowed = dropHidden(unfollowed);
+    fresh = dropHidden(fresh);
+    dropped = dropHidden(dropped);
+    added = dropHidden(added);
     return {
       unfollowed_me: unfollowed, new_followers: fresh, i_unfollowed: dropped, i_followed: added,
       notes: notes, collisions: collisionMap([unfollowed, fresh, dropped, added]),
@@ -865,9 +917,11 @@
     (rows || []).forEach(function (row) { if (row && row.account) byHandle[row.account] = row; });
     var keepIds = data.keepIds || {};
     var keepHandles = data.keepHandles || {};
+    var look = excludeLookups(data);
     var items = onlyIn(indexAccounts(data.followingAccounts), indexAccounts(data.followerAccounts)).filter(function (person) {
       if (person.id && keepIds[person.id]) return false;
       if (person.handle && keepHandles[person.handle]) return false;
+      if (hiddenAccount(look, person.handle, person)) return false;
       return true;
     }).map(function (person) {
       var row = byHandle[person.handle];

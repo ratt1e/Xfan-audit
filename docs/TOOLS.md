@@ -8,7 +8,9 @@
 
 日期按 IANA 时区切。优先级：`--tz`、`config.json` 的 `window.timezone`、系统本地时区。配置里的时区留空，不再默认洛杉矶。油猴版和生成的看板默认用浏览器时区，页面显示「当前时区：…」，也可以手动改。生成的看板写明本次时区，改日期重算时用同一个时区。`scripts/follow_diff.py` 只对比名单，没有 `--tz`。
 
-常用参数：`--data 目录`、`--out 目录`、`--overwrite`（只覆盖本工具自己的旧结果）、`--days 30`、`--all-days`（全部互动日期）、`--end 2026-10-19`、`--tz Asia/Shanghai`、`--open`（用系统浏览器打开 `dashboard.html`，中文和空格路径可用）、`--me 你的用户名`（排除自己回自己）、`--config config.json`、`--prev-lists 旧名单目录`（增加「关注变化」章节，不指定则看板与此前保持一致）、`--auto-prev`（在名单目录里自动找上一份导出；不与 `--prev-lists` 同用）、`--keep-list 保留名单.txt`（在未回关名单中排除主动关注的人）。
+常用参数：`--data 目录`、`--out 目录`、`--overwrite`（只覆盖本工具自己的旧结果）、`--days 30`、`--all-days`（全部互动日期）、`--end 2026-10-19`、`--tz Asia/Shanghai`、`--open`（用系统浏览器打开 `dashboard.html`，中文和空格路径可用）、`--me 你的用户名`（排除自己回自己）、`--config config.json`、`--prev-lists 旧名单目录`（增加「关注变化」章节，不指定则看板与此前保持一致）、`--auto-prev`（在名单目录里自动找上一份导出；不与 `--prev-lists` 同用）、`--keep-list 保留名单.txt`（在未回关名单中排除主动关注的人）、`--exclude 文件`（本地排除名单，不写则读数据目录里的 `排除名单.txt`；没有这个文件时与现在一样）。
+
+排除名单只在本地把账号从名单、分层人数、没回关、关注变化、看板和统计里拿掉，不改变打分公式和星级门槛，也不会在 X 上 mute 或屏蔽。终端只写「已排除 N 人」，不列名字。名单不会上传，不要把真实账号写进仓库。`.gitignore` 已忽略 `排除名单.txt`。
 
 自己打开看板：macOS 用 `open output/dashboard.html`，Windows 命令提示符用 `start "" "output\dashboard.html"`，PowerShell 用 `Start-Process "output\dashboard.html"`，Linux 用 `xdg-open output/dashboard.html`。路径有空格时加引号。
 
