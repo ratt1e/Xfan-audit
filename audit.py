@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.join(HERE, "scripts"))
 import follow_diff  # noqa: E402
 import not_followed_back as nfb  # noqa: E402
 import relationship_stars as rs  # noqa: E402
-from daily_root import load_daily_root, check_output, clear_own_outputs, coverage_lines, write_roster  # noqa: E402
+from daily_root import load_daily_root, check_output, clear_own_outputs, coverage_lines, list_facts, write_roster  # noqa: E402
 
 TIERS = ["金牌", "银牌", "单向·他常来我少回", "单向·我常去他没回", "沉睡互关", "样本不足", "其他有分", "零互动"]
 TIER_NOTE = {
@@ -827,12 +827,12 @@ def render(res, meta, data=None, conf=None, public=False, lists_dir=None, prev_d
     def tier_section(tier):
         rows = [row for row in res if row["tier"] == tier]
         if rows:
-            body = ["<table><tr><th>账号</th><th>星级</th><th>分数</th><th>建议动作</th></tr>"]
+            body = ["<table><tr><th>账号</th><th>星级</th><th>分数</th><th>数据</th></tr>"]
             for row in rows:
                 score = "—" if row.get("score") is None else html.escape(str(row.get("score")))
                 body.append(
                     f"<tr><td>{name_cell(row)}</td><td>{stars_txt(row)}</td><td>{score}</td>"
-                    f"<td>{html.escape(row.get('action') or '')}</td></tr>"
+                    f"<td>{html.escape(list_facts(row))}</td></tr>"
                 )
             body.append("</table>")
             table = "\n".join(body)
@@ -840,7 +840,7 @@ def render(res, meta, data=None, conf=None, public=False, lists_dir=None, prev_d
             table = '<p class="muted">这一层暂时没有人</p>'
         note = ""
         if tier == "沉睡互关":
-            note = "<p class=\"muted\">零公开互动 ≠ 没看过，别急着取关；要清理也请手动、分批、慢慢来。</p>"
+            note = "<p class=\"muted\">这一层是互关，但这段时间没有公开回复，也没有记到对方的赞。</p>"
         return (
             f'<section class="card tier-block" id="tier-{html.escape(tier)}" data-total="{len(rows)}">'
             f'<div class="block-head"><h2>{html.escape(tier)}（{len(rows)}）</h2>'
@@ -887,11 +887,12 @@ def render(res, meta, data=None, conf=None, public=False, lists_dir=None, prev_d
 <p class="muted">样本不足 = 少于 3 条或只在 1 天里，不打星。</p></div>
 <div class="card"><h2>分层人数</h2>{''.join(tier_rows)}</div>
 </div>
+<p class="muted">回访率 = 对方回复我的条数 ÷ 我发出的条数（都含问候）。我没有发出过就写 —，不写 0%。互动是这段时间的说话条数，往返是确认对上的轮数。这些只是展示，不改分数。</p>
 {sections}
 {not_back_block(info, alias, public)}
 {follow_block(diff, alias, public) if diff else ""}
 </div>
-<footer>fan-audit v0.1 · 试用版 · 权重待验证 · 所有建议都只是建议，工具不会自动取关或屏蔽。改日期只在这份文件里重算，不联网。</footer>
+<footer>fan-audit v0.1 · 试用版 · 权重待验证 · 回访率只是已采集回复的比例，工具不会自动取关或屏蔽。改日期只在这份文件里重算，不联网。</footer>
 <script id="fan-audit-engine">
 {engine}
 </script>

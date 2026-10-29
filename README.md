@@ -8,7 +8,7 @@
 谁互关了却很久没说过话（沉睡互关），
 谁是你一直在回、对方却基本没回过的（单向）。
 
-所有数据只在你自己的浏览器或电脑里处理，不会上传。工具全程只读，不会替你点赞、关注、取关，也不会替你发帖。
+所有数据只在你自己的浏览器或电脑里处理，不会上传。工具不会替你点赞、关注、取关，也不会替你发帖。油猴版默认只记下你自己翻过的内容；自动读取名单是可选项，默认关闭。
 
 ## 最简单：油猴版（3 步）
 
@@ -50,7 +50,7 @@ https://raw.githubusercontent.com/ratt1e/Xfan-audit/main/userscript/fan-audit.us
 
 Tampermonkey 会弹出安装页，点安装。以后脚本更新也走这个链接（文件头里的更新地址指向仓库 `main` 分支上的这份文件）。
 
-然后打开 x.com 并登录。右下角出现「粉丝体检」。刚装好是空的，按下面的清单自己往下翻。脚本不自己发请求，也不自动滚动。
+然后打开 x.com 并登录。右下角出现「粉丝体检」。刚装好是空的，按下面的清单自己往下翻。默认只记录你浏览过的内容，不自己发请求，也不自动滚动。面板里另有「自动读取名单」，默认关闭，只针对你自己的关注和粉丝。开启前要勾选风险提示，并在「滚动」和「快速」里选一种。打码和全屏在主界面；导出、导入、全部删除和诊断在「更多」里。
 
 ### 采集清单
 
@@ -67,7 +67,9 @@ Tampermonkey 会弹出安装页，点安装。以后脚本更新也走这个链�
 5. **主页回复。** 打开自己主页的「回复」页，记下你发出的回复。
 6. **通知。** 打开通知的「全部」和「提及」。清单上的按钮指向 `https://x.com/notifications/mentions`。这里只收别人回复你的帖子，和上面的搜索按帖子编号去重。赞、关注、转发那些汇总不记。打开过、但没有回复你的帖子时，写成「已打开，回复 0 条」。
 
-别人回我是搜索页，别一次翻太久。X 会限流，被限了就停下来等一等再翻。脚本不会替你滚动，也不会自己发请求。
+别人回我是搜索页，别一次翻太久。X 会限流，被限了就停下来等一等再翻。这一项请自己滑动。自动读取只覆盖你自己的关注和粉丝名单，默认关闭。滚动大约 1 到 2 秒一屏，单次最多 220 屏或 12 分钟。快速模式由脚本自己按游标请求列表，每页大约 100 人，页与页之间不再故意等待，单次最多 120 页；遇到限流、错误状态码，或剩余额度接近 0，会马上停，不自动重试。快速模式要用到页面自己刚才发出的列表请求，捕获不到时会请你先手动往下滑一点。
+
+关注、粉丝、认证粉丝旁边会写「已记 N / 共约 M」。分母是页面里已经出现的公开人数；没读到就写「总数待核实」。记到和公开人数接近时，会提示「差不多了」。分层名单里每个账号旁边是回访率、互动条数和确认往返，不写建议。回访率 = 对方回复我的条数 ÷ 我发出的条数（都含问候）。我没有发出过就显示「—」，不显示 0%。打码只换账号名，这些数字仍显示。
 
 ### 互动要够才分层
 
@@ -77,8 +79,10 @@ Tampermonkey 会弹出安装页，点安装。以后脚本更新也走这个链�
 
 ### 全屏、打码、备份
 
+主界面留打码、全屏和日期范围。导出、导入、下载看板、新标签打开、全部删除、保留名单和诊断都在「更多」里，点开才出现。功能还在。
+
 - 点「全屏」把面板铺满窗口，再点「退出全屏」或按 Esc 收回。
-- 截图前点「一键打码」。账号名会换成「账号#01」，主页链接也会去掉。这个开关会记住。
+- 截图前点「一键打码」。账号名会换成「账号#01」，主页链接也会去掉。这个开关会记住。数字和分层仍显示。
 - 「导出 JSON 备份」和「导入 JSON 备份」只含打分用的短字段，没有 cookie。换电脑时用这两项。里面也包括保留名单和关注快照。默认保留 90 天，要重计可以先「全部删除」，再重新往下翻。全部删除会清掉采集和快照，保留名单会留下。
 - 「下载看板 HTML」若被 X 页面拦住，先用 JSON 备份。这一步还要在你自己的浏览器里看一次（待核实）。
 
@@ -111,9 +115,14 @@ Tampermonkey 会弹出安装页，点安装。以后脚本更新也走这个链�
 
 ### 只读、隐私、平台规则
 
-脚本只读你正在浏览时，页面自己已经收到的内容。它不另外向 X 发请求，不自动滚动，不点赞、不关注、不取关、不发帖，也不读 cookie 或 token。数据留在脚本管理器里。
+默认只读你正在浏览时页面自己已经收到的内容。它不另外向 X 发请求，不自动滚动，不点赞、不关注、不取关、不发帖，也不读 cookie。数据留在脚本管理器里。令牌不会写进备份或诊断。
 
-X 的服务条款禁止未经授权的自动化抓取。所以这里没有自动翻页，也没有批量操作。只被动记下你翻过的内容，记不全是正常的，尤其是「别人回我」。这不能保证账号不受平台规则影响。
+另有可选的「自动读取名单」，默认关闭。开启前要勾选风险提示，并选择方式。刷新页面后回到关闭。它不做关注、取关、点赞、转发、回复、私信或拉黑，也不读别人的名单。
+
+- **滚动。** 脚本代替你在当前这份你自己的关注页、粉丝页或认证粉丝页往下翻，让页面自己加载。大约 1 到 2 秒一屏，单次最多 220 屏或 12 分钟。屏幕上换了一批人说明页面还在动，但已记人数要是连续大约 30 屏或大约 1 分钟完全不增加，会停并写「已记数长时间没有增加，可能已读完或页面不再提供新名单」。接近公开总数（差不多了）也会停。滑到底且连续几次不再加载、页面滚不动、限流、报错、220 屏和 12 分钟这些上限仍然保留。停下后回到关闭，不会自己再开。滚动时面板会写「已滚 X 屏，距离上次新增 Y 屏」。
+- **快速。** 脚本自己连续请求 X 的「正在关注」和「关注者」接口，用游标翻页，每页大约 100 人，中间不再故意等待。接口编号、参数和登录状态都从页面自己已经发出的同类请求里拿，拿不到就请你先手动滑一点。不读 cookie，也不把令牌写下来。这是自动化抓取，风险比滚动更高。单次最多 120 页。遇到 429、其他错误状态码，或剩余额度接近 0，马上停，不自动重试。
+
+X 的服务条款不允许未经许可的自动化抓取，可能导致限流、临时限制甚至封号。X 没有公布具体阈值，不能保证安全，后果自负。不想冒险就用默认的手动滑动。记不全是正常的，尤其是「别人回我」。这不能保证账号不受平台规则影响。
 
 ### 面板是 0？
 
@@ -166,7 +175,7 @@ X 的服务条款禁止未经授权的自动化抓取。所以这里没有自动
 
 ## English (brief)
 
-**fan-audit** scores two-way public conversations on X (Twitter). The easiest try is the Tampermonkey script: install Tampermonkey 5.3+, turn on Chrome’s “Allow User Scripts” (Chrome 138+: `chrome://extensions` → Tampermonkey details; earlier Chrome: Developer Mode; see [Tampermonkey FAQ Q209](https://www.tampermonkey.net/faq.php?locale=en&q=Q209)), then open `https://raw.githubusercontent.com/ratt1e/Xfan-audit/main/userscript/fan-audit.user.js`. On x.com, scroll your following, followers, replies, a `to:username` search, and notifications. The script only reads responses the page already loaded, keeps replies to you, skips like, follow, and repost bundles, stores short fields for 90 days, and does not send its own requests or scroll. Mask names before a screenshot. A local whitelist hides accounts you mean to keep following from the not-followed-back list. Follow and follower changes are diffed only between complete snapshots (the captured count matches a small list exactly, or reaches 95% of the profile count on a larger one); a partial snapshot is stored and not diffed. Imported twitter-web-exporter follower and following files count as snapshots dated by the export time in the filename. X's terms prohibit unauthorized automated scraping, so none is included, and this does not promise the account will be unaffected. The other path is the [Grok Bot template](https://x.ai/bot/AYInVUfN_IOql2b7QpzDB) for a nightly read-only collect. A 「用户推文」 export is only the posts you sent; gold, silver, and round-trip scores stay low until replies to you are included. Drop those JSON files into the userscript panel; nothing is uploaded. Share `dashboard_public.html` when a file still contains real names. The Python command line remains for daily files: `python3 audit.py --data sample_data --tz America/Los_Angeles`. `--tz` overrides `config.json`, which overrides the computer's local timezone. Standard library only, Python 3.9+. Weights are initial values, not yet validated. No automatic likes, follows, or posts. MIT License.
+**fan-audit** scores two-way public conversations on X (Twitter). The easiest try is the Tampermonkey script: install Tampermonkey 5.3+, turn on Chrome’s “Allow User Scripts” (Chrome 138+: `chrome://extensions` → Tampermonkey details; earlier Chrome: Developer Mode; see [Tampermonkey FAQ Q209](https://www.tampermonkey.net/faq.php?locale=en&q=Q209)), then open `https://raw.githubusercontent.com/ratt1e/Xfan-audit/main/userscript/fan-audit.user.js`. On x.com, scroll your following, followers, replies, a `to:username` search, and notifications. By default the script only reads responses the page already loaded while you scroll, keeps replies to you, skips like, follow, and repost bundles, stores short fields for 90 days, and does not send its own requests or scroll. An optional list reader is off by default and asks you to confirm the risk first. You can choose slow scrolling (about 1–2 seconds per screen, up to 220 screens) or a faster mode that pages your own following and followers with the list request the page already made. The faster mode sends those list requests itself, which is automated scraping and riskier than scrolling. It does not promise the account will be unaffected. Mask names before a screenshot. Lists show a return rate (their replies divided by yours, or an em dash when you sent none), not advice. A local whitelist hides accounts you mean to keep following from the not-followed-back list. Follow and follower changes are diffed only between complete snapshots (the captured count matches a small list exactly, or reaches 95% of the profile count on a larger one); a partial snapshot is stored and not diffed. Imported follower and following files count as snapshots dated by the export time in the filename. X's terms prohibit unauthorized automated scraping. The optional reader stays off unless you turn it on, and this does not promise the account will be unaffected. The other path is the [Grok Bot template](https://x.ai/bot/AYInVUfN_IOql2b7QpzDB) for a nightly read-only collect. A 「用户推文」 export is only the posts you sent; gold, silver, and round-trip scores stay low until replies to you are included. Drop those JSON files into the userscript panel; nothing is uploaded. Share `dashboard_public.html` when a file still contains real names. The Python command line remains for daily files: `python3 audit.py --data sample_data --tz America/Los_Angeles`. `--tz` overrides `config.json`, which overrides the computer's local timezone. Standard library only, Python 3.9+. Weights are initial values, not yet validated. No automatic likes, follows, or posts. MIT License.
 
 ---
 

@@ -7,7 +7,13 @@ import {
   emptyStore, coverageReport, toEngineData, prune, exportBackup, importBackup, contextProblems,
   installHooks, pageHookProgram, norm, operationName, listKindFromPath, timelineKindFromPath, userFromVisible, diagnosticsCopy,
   pageContext, badgeText, listIsComplete, exportTimeFromName, recordSnapshot, snapshotDiffInput,
-  addKeep, removeKeep, applyImported, headerListCount, SNAPSHOT_WAITING, looksLikeBackup
+  addKeep, removeKeep, applyImported, headerListCount, headerVerifiedCount, SNAPSHOT_WAITING, looksLikeBackup,
+  progressText, AUTO_READ_MAX_SCREENS, AUTO_READ_GAP_MIN_MS, AUTO_READ_GAP_MAX_MS, AUTO_READ_DRY_LIMIT,
+  AUTO_READ_FLAT_SCREENS, AUTO_READ_FLAT_MS, AUTO_READ_NO_MOVE_MS, fastPageStopReason,
+  chooseScrollNode, nudgeScroller, scrollStartPlan,
+  autoReadGapMs, autoReadBlockReason, createAutoReader, FAST_READ_PAGE_SIZE, FAST_READ_MAX_PAGES,
+  FAST_READ_REMAINING_FLOOR, buildListPageRequest, bottomCursor, fastReadStopReason, createFastReader,
+  isOwnListApiUrl
 } from "../userscript/src/logic.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -45,10 +51,15 @@ check(classifyUrl("https://x.com/i/api/graphql/abc/DirectMessages") === "", "私
 check(built.includes("GM_xmlhttpRequest") === false, "不使用 GM_xmlhttpRequest");
 check(!new RegExp("(^|\\n)\\s*//\\s*" + "@" + "connect\\b").test(built), "没有 connect 授权");
 check(built.includes("document.cookie") === false, "不读 cookie");
-check(built.includes("scrollBy") === false, "不自动滚动");
+check(built.includes("nudgeOwnList"), "自动读取靠滚动页面本身");
+check(built.includes("createAutoReader"), "自动读取有独立开关");
+check(built.includes("脚本自己连续请求 X 的关注和粉丝列表接口") && built.includes("不想冒险就关掉，继续用手动滑动") && built.includes("也不会读别人的名单"), "风险提示原文在安装文件里");
+check(built.includes("不封号") === false, "不写不封号");
+check(built.split("不能保证安全").length === 2, "只写明不能保证安全，没有别的安全保证");
+check(!/Bearer [A-Za-z0-9_\-.]{20,}/.test(built), "没有硬编码 Bearer 令牌");
 check(built.includes(EMPTY_GUIDE), "空状态文案在安装文件里");
 const meta = "// " + "@";
-check(built.includes(meta + "version      0.2.0"), "版本号");
+check(built.includes(meta + "version      0.3.2"), "版本号");
 check(built.includes(meta + "sandbox      raw"), "要求页面环境");
 check(built.includes(meta + "grant        GM_addElement"), "可以用元素注入把钩子送进页面");
 check(built.includes(meta + "run-at       document-start"), "document-start");
@@ -96,6 +107,15 @@ check(store.posts["1001001"].handle === "user_04", "留下对方用户名");
 check(store.posts["1005001"].text.indexOf("补") >= 0, "夹具里的长文按短字段保存");
 check(store.meta.sawFollowing && store.meta.sawFollowers && store.meta.sawBlueFollowers, "三类名单都见到了");
 check(Object.keys(store.following).length === 3, "正在关注只有自己的三个人");
+check(store.totals.followers === 20 && store.totals.following === 1, "自己的公开人数来自页面已经带回的字段");
+check((store.totals.blue || 0) === 0, "没有认证粉丝公开总数时不编造");
+const sampleReport = coverageReport(store, sample.owner, "UTC");
+check(sampleReport.blueFollowers === 1, "认证粉丝按从那一页记下的人单独计数");
+check(progressText(sampleReport.followers, sampleReport.totals.followers).indexOf("共约 20") >= 0, "粉丝进度用公开人数做分母");
+check(progressText(1, 0) === "已记 1 / 总数待核实", "没有总数就不编造");
+check(progressText(19, 20) === "已记 19 / 共约 20", "差一点不说差不多了");
+check(progressText(20, 20).indexOf("差不多了") >= 0, "采齐了提示差不多了");
+check(progressText(95, 100).indexOf("差不多了") >= 0 && progressText(94, 100).indexOf("差不多了") < 0, "超过 20 人沿用 95% 那条完整线");
 check(!JSON.stringify(store).includes("user_11"), "没有混进别人的关注");
 
 const data = toEngineData(store, sample.owner, fan.repliesFromTweets);
@@ -342,7 +362,7 @@ check(built.indexOf(".num{font-size:32px;font-weight:700;color:#1F2937}") >= 0, 
 check(built.indexOf("别人回我") >= 0 && built.indexOf("f=live") >= 0 && built.indexOf("别一次翻太久") >= 0, "采集清单和限流说明在安装文件里");
 check(built.indexOf("诊断信息") >= 0 && built.indexOf("全屏") >= 0 && built.indexOf("退出全屏") >= 0, "诊断可折叠，面板可全屏");
 check(built.indexOf("https://x.com/notifications/mentions") >= 0, "通知清单指向提及页");
-check(built.indexOf("GM_openInTab") < 0 && built.indexOf("GM_xmlhttpRequest") < 0, "清单只是普通链接，脚本不自己打开也不自己请求");
+check(built.indexOf("GM_openInTab") < 0 && built.indexOf("GM_xmlhttpRequest") < 0, "不用 GM_openInTab 或 GM_xmlhttpRequest");
 
 check(timelineKindFromPath("/demo_owner/with_replies", "demo_owner") === "replies", "主页回复页路径");
 check(timelineKindFromPath("/demo_owner", "demo_owner") === "originals", "自己的主页路径");
@@ -528,6 +548,9 @@ check(exportTimeFromName("twitter-正在关注-1792582202463.json", 5) === 17925
 check(exportTimeFromName("twitter-关注者-1792582202.json", 5) === 1792582202000, "文件名里的 10 位秒会换成毫秒");
 check(exportTimeFromName("notes.json", 5) === 5 && exportTimeFromName("x-123.json", 5) === 5, "对不上的数字不用");
 check(headerListCount("/demo_owner/verified_followers", "12", "demo_owner") == null, "认证粉丝页头不算全部粉丝");
+check(headerVerifiedCount("/demo_owner/verified_followers", "12 Verified", "demo_owner") === 12, "认证粉丝页头的精确人数单独记下");
+check(headerVerifiedCount("/demo_owner/verified_followers", "1.2K", "demo_owner") === 0, "认证粉丝缩写人数不用");
+check(headerVerifiedCount("/user_02/verified_followers", "12", "demo_owner") === 0, "别人的认证粉丝人数不采用");
 check(headerListCount("/demo_owner/followers", "1.2K Followers", "demo_owner") == null, "缩写人数不用来判断采全没有");
 check(headerListCount("/user_02/followers", "10", "demo_owner") == null, "别人主页上的人数不采用");
 const headerCount = headerListCount("/demo_owner/following", "1,234 Following", "demo_owner");
@@ -543,6 +566,14 @@ applyCapture(countStore, countCap, Date.parse("2026-10-22T00:00:00Z"));
 const otherCounts = parseCapture("https://x.com/i/api/graphql/hash/UserByScreenName", JSON.stringify({data: {user: {result: {legacy: {screen_name: "user_09", followers_count: 99, friends_count: 88}}}}}), {owner: "demo_owner"});
 applyCapture(countStore, otherCounts, Date.parse("2026-10-22T00:00:00Z"));
 check(countStore.totals.followers === 3 && countStore.totals.following === 2, "只有自己的资料会改人数");
+const metricBody = JSON.stringify({data: {user: {result: {core: {screen_name: "demo_owner"}, public_metrics: {followers_count: 40, following_count: 15, verified_followers_count: 7}}}}});
+const metricCap = parseCapture("https://x.com/i/api/graphql/hash/UserByScreenName", metricBody, {owner: "demo_owner"});
+check(metricCap.counts && metricCap.counts.followers === 40 && metricCap.counts.following === 15 && metricCap.counts.blue === 7, "public_metrics 里的粉丝、关注和认证粉丝人数能用");
+applyCapture(countStore, metricCap, Date.parse("2026-10-22T00:00:00Z"));
+check(countStore.totals.followers === 40 && countStore.totals.following === 15 && countStore.totals.blue === 7, "自己的 public_metrics 会改人数");
+const otherMetric = parseCapture("https://x.com/i/api/graphql/hash/UserByScreenName", JSON.stringify({data: {user: {result: {core: {screen_name: "user_09"}, public_metrics: {followers_count: 9, following_count: 8, verified_followers_count: 6}}}}}), {owner: "demo_owner"});
+applyCapture(countStore, otherMetric, Date.parse("2026-10-22T00:00:00Z"));
+check(countStore.totals.blue === 7, "别人的 public_metrics 不改人数");
 
 function snapPerson(id, handle) { return {id: id, handle: handle, name: handle}; }
 const snapStore = emptyStore();
@@ -622,6 +653,262 @@ check(datedRound.snapshots.filter(function (snap) { return snap.complete; }).len
 check(built.indexOf("导入导出文件") >= 0 && built.indexOf("☆ 保留") >= 0 && built.indexOf(SNAPSHOT_WAITING) >= 0, "安装文件里有导入、保留和对比提示");
 check(built.indexOf("批量取关") < 0 && built.indexOf("取关选中") < 0, "安装文件里没有取关按钮");
 check(built.indexOf('["keep", "保留名单"]') >= 0, "导入可以把文件认成保留名单");
+
+const blueStore = emptyStore();
+blueStore.prefs.owner = "demo_owner";
+applyCapture(blueStore, {kind: "blue-followers", skip: "", users: [{id: "1", handle: "user_01"}]}, 1);
+applyCapture(blueStore, {kind: "followers", skip: "", users: [{id: "2", handle: "user_02"}]}, 2);
+const blueReport = coverageReport(blueStore, "demo_owner", "UTC");
+check(blueReport.blueFollowers === 1 && blueReport.followers === 2, "认证粉丝单独计数，普通粉丝仍在总数里");
+check(progressText(blueReport.blueFollowers, 0) === "已记 1 / 总数待核实", "认证粉丝没有公开总数");
+const blueRound = importBackup(exportBackup(blueStore, 1));
+check(coverageReport(blueRound, "demo_owner", "UTC").blueFollowers === 1, "备份保留认证粉丝标记");
+check(!("autoRead" in emptyStore().prefs), "自动读取不写入本地偏好");
+
+check(autoReadGapMs(0) === AUTO_READ_GAP_MIN_MS && autoReadGapMs(1) === AUTO_READ_GAP_MAX_MS, "滚动间隔在 1 到 2 秒");
+check(AUTO_READ_GAP_MIN_MS === 1000 && AUTO_READ_GAP_MAX_MS === 2000 && AUTO_READ_MAX_SCREENS >= 200, "滚动单次上限够读大约 2000 人");
+check(autoReadGapMs(0.5) >= AUTO_READ_GAP_MIN_MS && autoReadGapMs(0.5) <= AUTO_READ_GAP_MAX_MS, "中间的随机数也落在间隔里");
+check(autoReadBlockReason("超出速率限制。请稍等片刻") === "看到限流提示，已停止，不会自动重试", "限流文案会让自动读取停下");
+check(autoReadBlockReason("Something went wrong. Try reloading.") === "看到页面报错，已停止，不会自动重试", "页面报错会让自动读取停下");
+check(autoReadBlockReason("普通一条帖子，没有速率这两个字连在接口外") === "", "普通正文不当成报错");
+const idleReader = createAutoReader();
+check(idleReader.phase() === "off" && idleReader.tick(1000, {pageKind: "followers", count: 1, unit: 0}).action === "idle", "没点启动时不会滚动");
+idleReader.openConfirm();
+check(idleReader.start(1000, "followers", 0).ok === false, "没勾选不能开始");
+check(idleReader.tick(1000, {pageKind: "followers", count: 0, unit: 0}).action === "idle", "只打开提示时也不滚动");
+idleReader.setAcknowledged(true);
+check(idleReader.start(1000, "", 0).ok === false, "不在自己的名单页不能开始");
+check(idleReader.start(1000, "followers", 0).ok === true, "勾选后可以开始");
+const blocked = idleReader.tick(1000, {pageKind: "followers", count: 0, blocked: "看到限流提示，已停止，不会自动重试", unit: 0});
+check(blocked.action === "stop" && idleReader.phase() === "off", "限流立刻停下");
+check(idleReader.tick(5000, {pageKind: "followers", count: 9, unit: 0}).action === "idle", "停下后不自动重试");
+const knownReader = createAutoReader();
+knownReader.openConfirm();
+knownReader.setAcknowledged(true);
+knownReader.start(0, "blue-followers", 100);
+let knownScrolls = 0;
+let knownStopped = "";
+for (let i = 0; i < 12; i++) {
+  const step = knownReader.tick(i * 1500, {
+    pageKind: "blue-followers",
+    count: 100,
+    visibleKey: "user_" + i + "\nuser_" + (i + 1),
+    moved: true,
+    atBottom: false,
+    unit: 0
+  });
+  if (step.action === "stop") { knownStopped = step.reason; break; }
+  knownScrolls += 1;
+}
+check(knownScrolls === 12 && knownStopped === "" && knownReader.phase() === "running", "刚开始的十几屏，已记过的人换到屏幕上仍继续滚");
+const flatReader = createAutoReader();
+flatReader.openConfirm();
+flatReader.setAcknowledged(true);
+flatReader.start(0, "blue-followers", 1005);
+let flatScrolls = 0;
+let flatReason = "";
+for (let i = 0; i < 40; i++) {
+  const step = flatReader.tick(i * 1000, {
+    pageKind: "blue-followers",
+    count: 1005,
+    expected: 0,
+    visibleKey: "seen_" + i,
+    moved: true,
+    atBottom: false,
+    unit: 0
+  });
+  if (step.action === "stop") { flatReason = step.reason; break; }
+  flatScrolls += 1;
+}
+check(flatReason.indexOf("已记数长时间没有增加") >= 0 && flatScrolls === AUTO_READ_FLAT_SCREENS - 1 && flatReader.phase() === "off", "已记数不涨、画面一直在换，大约 30 屏后停");
+check(flatReader.tick(999999, {pageKind: "blue-followers", count: 1006, visibleKey: "seen_x", moved: true, atBottom: false, unit: 0}).action === "idle", "已记数不涨停下后保持关闭");
+const flatTime = createAutoReader();
+flatTime.openConfirm();
+flatTime.setAcknowledged(true);
+flatTime.start(0, "followers", 100);
+flatTime.tick(0, {pageKind: "followers", count: 100, visibleKey: "a", moved: true, atBottom: false, unit: 0});
+const timed = flatTime.tick(AUTO_READ_FLAT_MS, {pageKind: "followers", count: 100, visibleKey: "b", moved: true, atBottom: false, unit: 0});
+check(timed.action === "stop" && timed.reason.indexOf("已记数长时间没有增加") >= 0, "已记数约 1 分钟不增加就停");
+const nearDone = createAutoReader();
+nearDone.openConfirm();
+nearDone.setAcknowledged(true);
+nearDone.start(0, "following", 95);
+const nearly = nearDone.tick(1000, {pageKind: "following", count: 95, expected: 100, visibleKey: "c", moved: true, atBottom: false, unit: 0});
+check(nearly.action === "stop" && nearly.reason.indexOf("差不多了") >= 0, "已记人数接近总数就停");
+const bottomReader = createAutoReader();
+bottomReader.openConfirm();
+bottomReader.setAcknowledged(true);
+bottomReader.start(0, "followers", 100);
+bottomReader.tick(0, {pageKind: "followers", count: 100, visibleKey: "user_a", moved: true, atBottom: false, unit: 0});
+let bottomReason = "";
+for (let i = 0; i < 8; i++) {
+  const step = bottomReader.tick(1000 + i * 1000, {
+    pageKind: "followers",
+    count: 100,
+    visibleKey: "user_a",
+    moved: false,
+    atBottom: true,
+    unit: 0
+  });
+  if (step.action === "stop") { bottomReason = step.reason; break; }
+}
+check(bottomReason.indexOf("已到列表底") >= 0 && bottomReader.phase() === "off", "到底且不再加载才停");
+check(bottomReader.tick(20000, {pageKind: "followers", count: 100, visibleKey: "user_b", moved: true, atBottom: false, unit: 0}).action === "idle", "停下后保持关闭");
+const stuckReader = createAutoReader();
+stuckReader.openConfirm();
+stuckReader.setAcknowledged(true);
+stuckReader.start(0, "following", 3);
+stuckReader.tick(0, {pageKind: "following", count: 3, visibleKey: "user_a", moved: true, atBottom: false, unit: 0});
+let stuckReason = "";
+for (let i = 0; i < AUTO_READ_DRY_LIMIT + 2; i++) {
+  const step = stuckReader.tick(1000 + i * 1000, {
+    pageKind: "following",
+    count: 3,
+    visibleKey: "user_a",
+    moved: false,
+    atBottom: false,
+    unit: 0
+  });
+  if (step.action === "stop") { stuckReason = step.reason; break; }
+}
+check(stuckReason.indexOf("页面没有继续加载") >= 0, "滚不动且画面不变就说明没有继续加载");
+check(scrollStartPlan({acked: false, mode: "scroll", pageKind: "followers", hasScroller: true}).reason === "请先勾选确认", "没勾确认不能开始滚动");
+check(scrollStartPlan({acked: true, mode: "scroll", pageKind: "followers", hasScroller: false}).reason === "没有找到可滚动的列表，请先打开关注、粉丝或认证粉丝页", "找不到滚动容器就说明原因");
+const scrollOk = scrollStartPlan({acked: true, mode: "scroll", pageKind: "blue-followers", hasScroller: true});
+check(scrollOk.ok === true && scrollOk.action === "scroll", "勾选并且找到容器时滚动模式可以启动");
+check(scrollStartPlan({acked: true, mode: "fast", pageKind: "", hasScroller: false}).action === "fast", "快速模式不依赖滚动容器");
+const inner = chooseScrollNode([
+  {overflowY: "visible", scrollHeight: 400, clientHeight: 800, isDocument: false},
+  {overflowY: "auto", scrollHeight: 9000, clientHeight: 700, isDocument: false},
+  {overflowY: "visible", scrollHeight: 800, clientHeight: 800, isDocument: true}
+]);
+check(inner === 1, "优先用名单格子外面真正在滚的那一层");
+check(chooseScrollNode([{overflowY: "visible", scrollHeight: 800, clientHeight: 800, isDocument: true}]) === -1, "窗口本身不更高时不当成可滚动列表");
+const fakeList = {scrollTop: 120, clientHeight: 700, scrollHeight: 8000};
+const nudged = nudgeScroller(fakeList, 700);
+check(nudged.moved === true && fakeList.scrollTop > 120 && fakeList.scrollTop < 120 + 700, "滚动从当前位置往下推一屏，不跳到末尾");
+check(nudgeScroller(null, 700).moved === false, "没有容器时滚动不生效");
+const noMove = createAutoReader();
+noMove.openConfirm();
+noMove.setAcknowledged(true);
+noMove.start(0, "followers", 4);
+noMove.tick(1000, {pageKind: "followers", count: 4, visibleKey: "a", moved: false, atBottom: false, sinceMoveMs: 1000, unit: 0});
+const missed = noMove.tick(1000 + AUTO_READ_NO_MOVE_MS, {pageKind: "followers", count: 4, visibleKey: "b", moved: false, atBottom: false, sinceMoveMs: AUTO_READ_NO_MOVE_MS, unit: 0});
+check(missed.action === "stop" && missed.reason.indexOf("没有找到可滚动的列表") >= 0 && noMove.phase() === "off", "好几秒都没滚到就停并写明原因");
+const capReader = createAutoReader();
+capReader.openConfirm();
+capReader.setAcknowledged(true);
+capReader.start(0, "followers", 0);
+let scrolls = 0;
+let capNow = 0;
+let capCount = 0;
+for (let i = 0; i < 300; i++) {
+  capCount += 1;
+  const step = capReader.tick(capNow, {pageKind: "followers", count: capCount, unit: 0, stuck: false});
+  if (step.action !== "scroll") break;
+  scrolls += 1;
+  capNow += 1000;
+}
+check(scrolls === AUTO_READ_MAX_SCREENS && capReader.phase() === "off", "单次最多 220 屏");
+const switched = createAutoReader();
+switched.openConfirm();
+switched.setAcknowledged(true);
+switched.start(0, "followers", 1);
+const left = switched.tick(1000, {pageKind: "following", count: 2, unit: 0});
+check(left.action === "stop" && left.reason.indexOf("不在刚才") >= 0, "离开刚才那份自己的名单就停");
+check(fan.revisitText({O_raw: 2, I_raw: 1}) === "50%", "回访率是对方回复除以我发出的");
+check(fan.revisitText({O_raw: 0, I_raw: 3}) === "—", "没有我发出的次数时不写 0%");
+check(fan.revisitText({I_raw: 3}) === "—", "缺分母时不写 0%");
+check(fan.revisitText({O_raw: 4, I_raw: 0}) === "0%", "我发过、对方没回，是 0%");
+const maskedFacts = fan.boardHtml([{account: "user_01", tier: "银牌", status: "ok", score: 40, stars: 3, O_raw: 2, I_raw: 1, raw: 3, rounds: 1}], {masked: true});
+check(maskedFacts.indexOf("user_01") < 0 && maskedFacts.indexOf("回访 50%") >= 0, "打码后账号名隐藏，数据仍显示");
+check(maskedFacts.indexOf("重点维护") < 0 && maskedFacts.indexOf("建议动作") < 0, "名单不写建议");
+check(built.includes("更多") && built.includes("一键打码") && built.includes("全屏") && built.includes("查看风险并决定是否开启"), "主界面留打码和全屏，其余收进更多");
+check(built.includes("脚本自己连续请求") && built.includes("风险比滚动更高"), "风险提示写明快速模式是自己请求列表");
+const listUrl = "https://x.com/i/api/graphql/capturedHash/Following?variables=" + encodeURIComponent(JSON.stringify({userId: "1", count: 20, cursor: "old"})) + "&features=" + encodeURIComponent(JSON.stringify({responsive: true}));
+check(isOwnListApiUrl(listUrl, "Following") && !isOwnListApiUrl(listUrl, "Followers"), "只认自己捕获到的关注或粉丝接口");
+const blueUrl = "https://x.com/i/api/graphql/capturedHash/BlueVerifiedFollowers?variables=" + encodeURIComponent(JSON.stringify({userId: "1", count: 20}));
+check(isOwnListApiUrl(blueUrl, "BlueVerifiedFollowers"), "认证粉丝页的列表请求也能捕获");
+const bluePage = buildListPageRequest({op: "BlueVerifiedFollowers", url: blueUrl, method: "GET", body: ""}, "next-blue");
+check(bluePage && bluePage.url.indexOf("BlueVerifiedFollowers") >= 0 && JSON.parse(decodeURIComponent(bluePage.url.split("variables=")[1].split("&")[0])).cursor === "next-blue", "认证粉丝沿用捕获到的请求翻页");
+const blueHookPage = makePage();
+const blueIds = [];
+installHooks(blueHookPage, function (url, text, body, listId) { if (listId) blueIds.push(String(listId)); });
+const blueXhr = new blueHookPage.XMLHttpRequest();
+blueXhr.open("GET", blueUrl);
+blueXhr.responseText = "{}";
+blueXhr.send(null);
+blueXhr.listeners.load.forEach(function (fn) { fn(); });
+check(blueIds.length === 1 && blueHookPage.__fanAuditKeepListTemplate(blueIds[0]) === true && blueHookPage.__fanAuditHasListTemplate("BlueVerifiedFollowers") === true, "认证粉丝页的请求能被捕获");
+check(blueHookPage.__fanAuditHasListTemplate("Followers") !== true, "认证粉丝请求不会当成普通粉丝");
+check(!isOwnListApiUrl("https://x.com/i/api/graphql/capturedHash/FavoriteTweet", ""), "写接口不在快速读取里");
+const firstPage = buildListPageRequest({op: "Following", url: listUrl, method: "GET", body: ""}, "");
+check(firstPage && firstPage.url.indexOf("capturedHash") >= 0 && firstPage.url.indexOf("Bearer") < 0, "下一页沿用捕获到的接口编号，不带令牌");
+const firstVars = JSON.parse(decodeURIComponent(firstPage.url.split("variables=")[1].split("&")[0]));
+check(firstVars.count === FAST_READ_PAGE_SIZE && firstVars.cursor == null && firstVars.userId === "1", "第一页每页 100 人并且从名单开头读");
+const secondPage = buildListPageRequest({op: "Following", url: listUrl, method: "GET", body: ""}, "cursor-2");
+const secondVars = JSON.parse(decodeURIComponent(secondPage.url.split("variables=")[1].split("&")[0]));
+check(secondVars.cursor === "cursor-2" && secondVars.count === 100, "下一页带上游标");
+check(buildListPageRequest({op: "Followers", url: listUrl, method: "GET", body: ""}, "") == null, "关注请求不能拿去读粉丝");
+check(bottomCursor({data: {user: {result: {timeline: {timeline: {instructions: [{entries: [{entryId: "cursor-bottom-1", content: {cursorType: "Bottom", value: "NEXT"}}]}]}}}}}}) === "NEXT", "从时间线里取底部游标");
+check(bottomCursor({data: {}}) === "", "没有游标就停");
+check(fastReadStopReason(429, "5").indexOf("429") >= 0, "429 立刻停");
+check(fastReadStopReason(500, "").indexOf("500") >= 0, "错误状态码立刻停");
+check(fastReadStopReason(200, String(FAST_READ_REMAINING_FLOOR)).indexOf("接近 0") >= 0, "剩余额度接近 0 立刻停");
+check(fastReadStopReason(200, "20") === "", "额度还够就继续");
+check(fastPageStopReason(10, 10, "c1", "c2") === "这一页没有新账号，已停止", "重复页没有新账号就停");
+check(fastPageStopReason(10, 10, "", "") === "这一页没有新账号，也没有下一页，已停止", "空页没有下一页就停");
+check(fastPageStopReason(10, 12, "c1", "c1") === "游标没有变化，已停止", "游标不变就停");
+check(fastPageStopReason(10, 12, "c1", "c2") === "", "有新账号并且游标前进才继续");
+const fastIdle = createFastReader();
+check(fastIdle.notePage().action === "stop", "没点开始不会发快速请求");
+check(fastIdle.start().ok === true, "快速读取可以开始");
+let fastPages = 0;
+for (let i = 0; i < 200; i++) {
+  const step = fastIdle.notePage();
+  if (step.action !== "continue") break;
+  fastPages += 1;
+}
+check(fastPages === FAST_READ_MAX_PAGES && fastIdle.running() === false, "快速读取单次最多 120 页");
+check(fastIdle.notePage().action === "stop", "到上限后不自动再请求");
+const replayPage = makePage();
+replayPage.XMLHttpRequest.prototype.setRequestHeader = function (name, value) {
+  this.sentHeaders = this.sentHeaders || {};
+  this.sentHeaders[name] = value;
+};
+let replayInit = null;
+replayPage.fetch = function (input, init) {
+  replayPage.fetchCalls += 1;
+  replayInit = init;
+  return Promise.resolve({
+    status: 200,
+    ok: true,
+    headers: {get: function (name) { return name === "x-rate-limit-remaining" ? "9" : ""; }},
+    text: function () { return Promise.resolve("{\"data\":{}}"); },
+    clone: function () { return {text: function () { return Promise.resolve("{\"data\":{}}"); }}; }
+  });
+};
+const replaySeen = [];
+installHooks(replayPage, function (url, text, body, listId) { replaySeen.push({url: url, listId: listId}); });
+const replayXhr = new replayPage.XMLHttpRequest();
+replayXhr.open("GET", listUrl);
+replayXhr.setRequestHeader("authorization", "Bearer test-token");
+replayXhr.setRequestHeader("cookie", "ct0=secret");
+replayXhr.responseText = "{\"data\":{}}";
+replayXhr.send(null);
+replayXhr.listeners.load.forEach(function (fn) { fn(); });
+check(replaySeen.length === 1 && replaySeen[0].listId, "列表请求带一个内存编号");
+check(JSON.stringify(replaySeen[0]).indexOf("test-token") < 0 && JSON.stringify(replaySeen[0]).indexOf("secret") < 0, "响应事件里不带令牌或 cookie");
+check(replayPage.__fanAuditKeepListTemplate(replaySeen[0].listId) === true, "确认是自己的名单后才留下请求");
+const exposed = replayPage.__fanAuditListTemplate("Following");
+check(exposed && exposed.url.indexOf("capturedHash") >= 0 && exposed.headers == null, "交出去的模板没有请求头");
+const replayReq = buildListPageRequest(exposed, "");
+const replayResult = await replayPage.__fanAuditFetchList("Following", replayReq.url, replayReq.method, replayReq.body);
+check(replayResult.status === 200 && replayResult.remaining === "9", "快速读取走页面原来的 fetch");
+check(replayInit && replayInit.headers.authorization === "Bearer test-token" && replayInit.headers.cookie == null, "复用页面设置过的令牌，不带 cookie 头");
+check(replayPage.__fanAuditFetchList("Followers", replayReq.url, "GET", "").then, "别的名单没有捕获到就不会发");
+const wrong = await replayPage.__fanAuditFetchList("FavoriteTweet", "https://x.com/i/api/graphql/x/FavoriteTweet", "POST", "{}");
+check(wrong.status === 0, "写接口直接拒绝");
 
 if (failed) {
   console.error(failed + " checks failed");

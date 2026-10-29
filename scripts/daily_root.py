@@ -1,6 +1,7 @@
 """只读合并日期目录；不推断缺失的对话字段，不复制任何输入文件。"""
 import csv
 from datetime import date, timedelta
+import math
 from pathlib import Path
 import re
 
@@ -9,6 +10,59 @@ OUTPUT_NAMES = ("accounts.csv", "dashboard.html", "dashboard_public.html", "foll
 
 def norm(value):
     return (value or "").strip().lstrip("@").lower()
+
+
+def _js_round(value):
+    """和名单展示里的 Math.round 对齐：正数 .5 向上。"""
+    if value >= 0:
+        return int(math.floor(value + 0.5))
+    return int(math.ceil(value - 0.5))
+
+
+def revisit_text(row):
+    """回访率只用于展示，不参与打分，也不改变星级门槛。
+
+    分子 I_raw：对方回复我的条数，含问候。
+    分母 O_raw：我发给对方的条数，含问候。
+    百分比 = round(100 * I_raw / O_raw)。分母不是正数时返回「—」，不用 0% 充数。
+    分子缺失而分母有效时按 0，可以显示 0%。可以超过 100%。
+    """
+    row = row or {}
+    if row.get("O_raw") in (None, ""):
+        return "—"
+    try:
+        denom = float(row.get("O_raw"))
+        numer = 0.0 if row.get("I_raw") in (None, "") else float(row.get("I_raw"))
+    except (TypeError, ValueError):
+        return "—"
+    if denom <= 0 or numer < 0:
+        return "—"
+    return f"{_js_round(100 * numer / denom)}%"
+
+
+def count_text(value):
+    if value in (None, ""):
+        return "—"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    if number < 0:
+        return "—"
+    return str(_js_round(number))
+
+
+def list_facts(row):
+    """互动用 raw（说话条数，不含点赞）。往返用已确认的 rounds。"""
+    row = row or {}
+    extra = ""
+    unconfirmed = row.get("unconfirmed")
+    try:
+        if unconfirmed not in (None, "") and float(unconfirmed) > 0:
+            extra = "，未确认 " + str(_js_round(float(unconfirmed)))
+    except (TypeError, ValueError):
+        extra = ""
+    return f"回访 {revisit_text(row)} · 互动 {count_text(row.get('raw'))} · 往返 {count_text(row.get('rounds'))}{extra}"
 
 
 def date_name(name):
@@ -182,7 +236,7 @@ def coverage_lines(data, meta, me="", excluded=()):
 def write_roster(path, res, meta, data, coverage, stars_txt):
     lines = ["# 互动关系名单（仅本机）", "",
              f"区间：{meta['start']} ~ {meta['end']}；数据天数：{len(data['coverage']['read_days'])}。",
-             "建议只是建议，工具不会执行任何操作。", ""]
+             "回访率 = 对方回复我的条数 ÷ 我发出的条数（都含问候）。我没有发出过就写 —。工具不会执行任何操作。", ""]
     lines.extend(coverage)
     lines.extend([""] + meta["warnings"] + [""])
     for tier in ("金牌", "银牌", "单向·他常来我少回", "单向·我常去他没回", "沉睡互关"):
@@ -195,7 +249,7 @@ def write_roster(path, res, meta, data, coverage, stars_txt):
             account = re.sub(r"[\r\n]", "", r["account"])
             lines.append(f"- {account}：{stars_txt(r)} / {r.get('score', '样本不足')}；"
                          f"实质回复 我→他 {r['O']} / 他→我 {r['I']}，往返 {r['rounds']}，"
-                         f"实质天数 {r['sub_days']}；{r['action']}")
+                         f"实质天数 {r['sub_days']}；{list_facts(r)}")
         if not selected:
             lines.append("暂无")
         lines.append("")
