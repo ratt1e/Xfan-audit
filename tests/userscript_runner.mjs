@@ -60,7 +60,7 @@ check(built.split("不能保证安全").length === 2, "只写明不能保证安�
 check(!/Bearer [A-Za-z0-9_\-.]{20,}/.test(built), "没有硬编码 Bearer 令牌");
 check(built.includes(EMPTY_GUIDE), "空状态文案在安装文件里");
 const meta = "// " + "@";
-check(built.includes(meta + "version      0.4.0"), "版本号");
+check(built.includes(meta + "version      0.4.1"), "版本号");
 check(built.includes("只在本地隐藏，不会在 X 上操作"), "排除说明写明只在本地隐藏");
 check(built.includes("/mutes") === false && built.includes("friendships/destroy") === false && built.includes("blocks/create") === false, "排除不会调用屏蔽或取关接口");
 check(built.includes(meta + "sandbox      raw"), "要求页面环境");
@@ -668,8 +668,8 @@ const blueRound = importBackup(exportBackup(blueStore, 1));
 check(coverageReport(blueRound, "demo_owner", "UTC").blueFollowers === 1, "备份保留认证粉丝标记");
 check(!("autoRead" in emptyStore().prefs), "自动读取不写入本地偏好");
 
-check(autoReadGapMs(0) === AUTO_READ_GAP_MIN_MS && autoReadGapMs(1) === AUTO_READ_GAP_MAX_MS, "滚动间隔在 1 到 2 秒");
-check(AUTO_READ_GAP_MIN_MS === 1000 && AUTO_READ_GAP_MAX_MS === 2000 && AUTO_READ_MAX_SCREENS >= 200, "滚动单次上限够读大约 2000 人");
+check(autoReadGapMs(0) === AUTO_READ_GAP_MIN_MS && autoReadGapMs(1) === AUTO_READ_GAP_MAX_MS, "滚动间隔落在随机范围两端");
+check(AUTO_READ_GAP_MIN_MS === 500 && AUTO_READ_GAP_MAX_MS === 1000 && AUTO_READ_GAP_MIN_MS < 1000 && AUTO_READ_MAX_SCREENS >= 200, "滚动更快，但仍有随机间隔和屏数上限");
 check(autoReadGapMs(0.5) >= AUTO_READ_GAP_MIN_MS && autoReadGapMs(0.5) <= AUTO_READ_GAP_MAX_MS, "中间的随机数也落在间隔里");
 check(autoReadBlockReason("超出速率限制。请稍等片刻") === "看到限流提示，已停止，不会自动重试", "限流文案会让自动读取停下");
 check(autoReadBlockReason("Something went wrong. Try reloading.") === "看到页面报错，已停止，不会自动重试", "页面报错会让自动读取停下");
@@ -723,15 +723,40 @@ for (let i = 0; i < 40; i++) {
   if (step.action === "stop") { flatReason = step.reason; break; }
   flatScrolls += 1;
 }
-check(flatReason.indexOf("已记数长时间没有增加") >= 0 && flatScrolls === AUTO_READ_FLAT_SCREENS - 1 && flatReader.phase() === "off", "已记数不涨、画面一直在换，大约 30 屏后停");
-check(flatReader.tick(999999, {pageKind: "blue-followers", count: 1006, visibleKey: "seen_x", moved: true, atBottom: false, unit: 0}).action === "idle", "已记数不涨停下后保持关闭");
+check(flatScrolls === 40 && flatReason === "" && flatReader.phase() === "running", "页面还在往下走时，已记过的账号不会让滚动停下");
+const endFlat = createAutoReader();
+endFlat.openConfirm();
+endFlat.setAcknowledged(true);
+endFlat.start(0, "followers", 100);
+let endFlatReason = "";
+let endFlatScrolls = 0;
+for (let i = 0; i < 40; i++) {
+  const step = endFlat.tick(i * 1000, {
+    pageKind: "followers",
+    count: 100,
+    visibleKey: "end_" + i,
+    moved: true,
+    atBottom: true,
+    unit: 0
+  });
+  if (step.action === "stop") { endFlatReason = step.reason; break; }
+  endFlatScrolls += 1;
+}
+check(endFlatReason.indexOf("不再往下走") >= 0 && endFlatScrolls === AUTO_READ_FLAT_SCREENS - 1 && endFlat.phase() === "off", "已经到底而且人数不增加，大约 30 屏后停");
+check(endFlat.tick(999999, {pageKind: "followers", count: 101, visibleKey: "seen_x", moved: true, atBottom: false, unit: 0}).action === "idle", "停下后保持关闭");
 const flatTime = createAutoReader();
 flatTime.openConfirm();
 flatTime.setAcknowledged(true);
 flatTime.start(0, "followers", 100);
-flatTime.tick(0, {pageKind: "followers", count: 100, visibleKey: "a", moved: true, atBottom: false, unit: 0});
-const timed = flatTime.tick(AUTO_READ_FLAT_MS, {pageKind: "followers", count: 100, visibleKey: "b", moved: true, atBottom: false, unit: 0});
-check(timed.action === "stop" && timed.reason.indexOf("已记数长时间没有增加") >= 0, "已记数约 1 分钟不增加就停");
+const moving = flatTime.tick(AUTO_READ_FLAT_MS, {pageKind: "followers", count: 100, visibleKey: "b", moved: true, atBottom: false, unit: 0});
+check(moving.action === "scroll", "还在往下滚时，一分钟人数不增加也不停");
+const stalled = createAutoReader();
+stalled.openConfirm();
+stalled.setAcknowledged(true);
+stalled.start(0, "followers", 100);
+stalled.tick(0, {pageKind: "followers", count: 100, visibleKey: "a", moved: false, atBottom: false, sinceMoveMs: 0, unit: 0});
+const timed = stalled.tick(AUTO_READ_FLAT_MS, {pageKind: "followers", count: 100, visibleKey: "b", moved: false, atBottom: false, sinceMoveMs: 0, unit: 0});
+check(timed.action === "stop" && timed.reason.indexOf("不再往下走") >= 0, "页面不再往下走，并且大约 1 分钟人数不增加就停");
 const nearDone = createAutoReader();
 nearDone.openConfirm();
 nearDone.setAcknowledged(true);
@@ -859,10 +884,14 @@ check(fastReadStopReason(429, "5").indexOf("429") >= 0, "429 立刻停");
 check(fastReadStopReason(500, "").indexOf("500") >= 0, "错误状态码立刻停");
 check(fastReadStopReason(200, String(FAST_READ_REMAINING_FLOOR)).indexOf("接近 0") >= 0, "剩余额度接近 0 立刻停");
 check(fastReadStopReason(200, "20") === "", "额度还够就继续");
-check(fastPageStopReason(10, 10, "c1", "c2") === "这一页没有新账号，已停止", "重复页没有新账号就停");
-check(fastPageStopReason(10, 10, "", "") === "这一页没有新账号，也没有下一页，已停止", "空页没有下一页就停");
-check(fastPageStopReason(10, 12, "c1", "c1") === "游标没有变化，已停止", "游标不变就停");
+check(fastPageStopReason(10, 10, "", "c2", 8, 0) === "", "第一页全是已记账号，只要有下一页就继续");
+check(fastPageStopReason(10, 10, "c1", "c2", 20, 0) === "", "中间页没有新人但游标往下，继续翻");
+check(fastPageStopReason(10, 10, "", "", 0).indexOf("没有下一页") >= 0 || fastPageStopReason(10, 10, "", "", 0).indexOf("没有账号") >= 0, "空页没有下一页就停");
+check(fastPageStopReason(10, 12, "c1", "c1").indexOf("游标没有往下走") >= 0, "游标不变就停");
 check(fastPageStopReason(10, 12, "c1", "c2") === "", "有新账号并且游标前进才继续");
+check(fastPageStopReason(10, 12, "c1", "").indexOf("没有下一页") >= 0, "没有下一页就结束这一份名单");
+check(fastPageStopReason(95, 95, "c1", "c2", 10, 100).indexOf("差不多了") >= 0, "接近公开总数就停");
+check(built.includes("概览") && built.includes("名单") && built.includes("采集") && built.includes("这一页没有新账号，已停止") === false, "面板分成标签，不再因为一页没有新账号就停");
 const fastIdle = createFastReader();
 check(fastIdle.notePage().action === "stop", "没点开始不会发快速请求");
 check(fastIdle.start().ok === true, "快速读取可以开始");

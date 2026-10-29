@@ -17,8 +17,9 @@ export var EMPTY_GUIDE = "刚安装还没有数据？依次打开你的关注列
 export var TEXT_LIMIT = 30;
 export var SNAPSHOT_WAITING = "下次完整采集后自动对比";
 // 自动读取默认关闭，刷新后也不恢复。这些数只约束「用户勾选并点了开始」之后的那一次。
-export var AUTO_READ_GAP_MIN_MS = 1000;
-export var AUTO_READ_GAP_MAX_MS = 2000;
+// 仍是随机间隔，不取消等待。比早先的 1–2 秒短，单次屏数和 12 分钟上限不变。
+export var AUTO_READ_GAP_MIN_MS = 500;
+export var AUTO_READ_GAP_MAX_MS = 1000;
 export var AUTO_READ_MAX_SCREENS = 220;
 export var AUTO_READ_MAX_MS = 12 * 60 * 1000;
 export var AUTO_READ_STALL_MS = 45000;
@@ -26,7 +27,8 @@ export var AUTO_READ_STALL_SCREENS = 4;
 export var AUTO_READ_STALL_FLOOR_MS = 12000;
 // 到底或页面不再滚动之后，还要连续这么多次看不到加载，才停。
 export var AUTO_READ_DRY_LIMIT = 5;
-// 已记人数完全不增加时，满 30 屏或满 1 分钟就停。画面还在换也不再无限滚。
+// 页面还在往下走时，已记人数不增加也不停（重跑要先翻过已经记过的人）。
+// 只有滚不动或已经到底，才用 30 屏 / 1 分钟作为「不再往下」的停点。
 export var AUTO_READ_FLAT_SCREENS = 30;
 export var AUTO_READ_FLAT_MS = 60 * 1000;
 // 连续这么久滚动位置完全没变，就认为没找到名单自己的滚动容器。
@@ -1257,14 +1259,19 @@ export function bottomCursor(json) {
 }
 
 // 429、任何非 2xx、或 x-rate-limit-remaining 小于等于 2，都立刻停。不自动重试。
-// 快速翻页：这一页没有新账号、游标没动、或空页，都立刻停。有新账号且游标前进才继续。
-export function fastPageStopReason(beforeCount, afterCount, prevCursor, nextCursor) {
+// 快速翻页：已经记过的一页只要游标还在往下，就继续。空页、没有下一页、游标不动、或已接近公开总数，才结束这一份名单。
+export function fastPageStopReason(beforeCount, afterCount, prevCursor, nextCursor, pageUsers, expected) {
   var added = (afterCount | 0) > (beforeCount | 0);
   var cursor = String(nextCursor || "");
   var prev = String(prevCursor || "");
-  if (cursor && prev && cursor === prev) return "游标没有变化，已停止";
-  if (!added && !cursor) return "这一页没有新账号，也没有下一页，已停止";
-  if (!added) return "这一页没有新账号，已停止";
+  var users = pageUsers == null ? -1 : (pageUsers | 0);
+  var total = expected | 0;
+  if (cursor && prev && cursor === prev) return "游标没有往下走，这一份名单到头了。已停止。若已记人数还没到公开总数，过一会儿再开一次。";
+  if (users === 0) return "这一页没有账号。已停止。若还差一点，过一会儿再开一次。";
+  if (!cursor) return added
+    ? "没有下一页，这一份名单到头了。已停止。"
+    : "没有下一页，这一份名单到头了。已停止。若已记人数还没到公开总数，过一会儿再开一次。";
+  if (total > 0 && ((afterCount | 0) >= total || listIsComplete(afterCount | 0, total))) return "已记人数接近公开总数，差不多了。已停止。";
   return "";
 }
 
@@ -1302,7 +1309,7 @@ export function createFastReader() {
     notePage: function () {
       if (!running) return {action: "stop", reason: stopReason || "已停止"};
       if (pages >= FAST_READ_MAX_PAGES) {
-        stopReason = "已到单次 " + FAST_READ_MAX_PAGES + " 页上限，已停止";
+        stopReason = "已到单次 " + FAST_READ_MAX_PAGES + " 页上限。已停止。再开一次会重新从已捕获的名单请求，已经记过的页会翻过去。";
         running = false;
         return {action: "stop", reason: stopReason};
       }
@@ -1403,13 +1410,14 @@ export function createAutoReader() {
       var atBottom = info.atBottom === true;
       if (!info.pageKind || info.pageKind !== startedKind) return finish("不在刚才那份自己的名单页了，已停止");
       if (info.blocked) return finish(info.blocked);
-      if (now - startedAt >= AUTO_READ_MAX_MS) return finish("已到单次 " + (AUTO_READ_MAX_MS / 60000) + " 分钟上限，已停止");
-      if (screens >= AUTO_READ_MAX_SCREENS) return finish("已到单次 " + AUTO_READ_MAX_SCREENS + " 屏上限，已停止");
-      if (!moved && !atBottom && (info.sinceMoveMs | 0) >= AUTO_READ_NO_MOVE_MS) return finish("没有找到可滚动的列表，已停止");
-      if (expected > 0 && (count >= expected || listIsComplete(count, expected))) return finish("已记人数接近总数，差不多了，已停止");
-      if (flatScreens >= AUTO_READ_FLAT_SCREENS || now - lastGainAt >= AUTO_READ_FLAT_MS) return finish("已记数长时间没有增加，可能已读完或页面不再提供新名单");
-      if (atBottom && dry >= AUTO_READ_DRY_LIMIT) return finish("已到列表底，没有继续加载，已停止");
-      if (!moved && dry >= AUTO_READ_DRY_LIMIT) return finish("页面没有继续加载，已停止");
+      if (now - startedAt >= AUTO_READ_MAX_MS) return finish("已到单次 " + (AUTO_READ_MAX_MS / 60000) + " 分钟上限。已停止。列表停在当前位置，再开一次会接着往下翻。");
+      if (screens >= AUTO_READ_MAX_SCREENS) return finish("已到单次 " + AUTO_READ_MAX_SCREENS + " 屏上限。已停止。列表停在当前位置，再开一次会接着往下翻。");
+      if (!moved && !atBottom && (info.sinceMoveMs | 0) >= AUTO_READ_NO_MOVE_MS) return finish("没有找到可滚动的列表。已停止。请先打开你自己的关注、粉丝或认证粉丝页，再开一次。");
+      if (expected > 0 && (count >= expected || listIsComplete(count, expected))) return finish("已记人数接近公开总数，差不多了。已停止。");
+      var stillMoving = moved && !atBottom;
+      if (!stillMoving && (flatScreens >= AUTO_READ_FLAT_SCREENS || now - lastGainAt >= AUTO_READ_FLAT_MS)) return finish("已记人数没有增加，而且页面不再往下走。已停止。若还没到公开总数，确认还在自己的名单页后再开一次。");
+      if (atBottom && dry >= AUTO_READ_DRY_LIMIT) return finish("已到列表底部，没有继续加载。已停止。若人数还差一点，过一会儿再开一次，会从当前位置继续。");
+      if (!moved && dry >= AUTO_READ_DRY_LIMIT) return finish("页面没有继续加载。已停止。请确认打开的是你自己的关注、粉丝或认证粉丝页，再开一次。");
       screens += 1;
       return {action: "scroll", gapMs: autoReadGapMs(info.unit), screens: screens, sinceGain: flatScreens};
     }
