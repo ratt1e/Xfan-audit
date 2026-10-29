@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         fan-audit 粉丝体检
 // @namespace    https://github.com/ratt1e/Xfan-audit
-// @version      0.4.1
-// @description  在 X 上边逛边记下公开回复和关注名单，也能导入导出的 JSON。默认只读你浏览过的内容。可选自动读取名单默认关闭。重跑会先翻过已记账号。本地排除只隐藏，不在 X 上操作。
+// @version      0.5.0
+// @description  在 X 上边逛边记下公开回复和关注名单，也能导入导出的 JSON。默认只记你正在看的页面。可选自动读取默认关闭，由脚本请求自己的名单。本地排除只隐藏，不在 X 上操作。
 // @author       ranger_escape
 // @match        *://x.com/*
 // @match        *://twitter.com/*
@@ -1106,28 +1106,15 @@ var RETENTION_MS = RETENTION_DAYS * 24 * 60 * 60 * 1000;
 var EMPTY_GUIDE = "刚安装还没有数据？依次打开你的关注列表、粉丝列表和主页回复页，手动往下滑几屏，脚本会记下。";
 var TEXT_LIMIT = 30;
 var SNAPSHOT_WAITING = "下次完整采集后自动对比";
-// 自动读取默认关闭，刷新后也不恢复。这些数只约束「用户勾选并点了开始」之后的那一次。
-// 仍是随机间隔，不取消等待。比早先的 1–2 秒短，单次屏数和 12 分钟上限不变。
-var AUTO_READ_GAP_MIN_MS = 500;
-var AUTO_READ_GAP_MAX_MS = 1000;
-var AUTO_READ_MAX_SCREENS = 220;
-var AUTO_READ_MAX_MS = 12 * 60 * 1000;
-var AUTO_READ_STALL_MS = 45000;
-var AUTO_READ_STALL_SCREENS = 4;
-var AUTO_READ_STALL_FLOOR_MS = 12000;
-// 到底或页面不再滚动之后，还要连续这么多次看不到加载，才停。
-var AUTO_READ_DRY_LIMIT = 5;
-// 页面还在往下走时，已记人数不增加也不停（重跑要先翻过已经记过的人）。
-// 只有滚不动或已经到底，才用 30 屏 / 1 分钟作为「不再往下」的停点。
-var AUTO_READ_FLAT_SCREENS = 30;
-var AUTO_READ_FLAT_MS = 60 * 1000;
-// 连续这么久滚动位置完全没变，就认为没找到名单自己的滚动容器。
-var AUTO_READ_NO_MOVE_MS = 6000;
+// 自动读取默认关闭，刷新后也不恢复。只在勾选并点了开始之后，由脚本请求自己的名单。
 var FAST_READ_PAGE_SIZE = 100;
 var FAST_READ_MAX_PAGES = 120;
 var FAST_READ_REMAINING_FLOOR = 2;
-var AUTO_READ_RISK = "自动读取默认关闭。两种方式都只读你自己的关注和粉丝名单，不会关注、取关、点赞、转发、回复、私信或拉黑，也不会读别人的名单。\n\n滚动：脚本代替你在当前页面往下翻，让页面自己加载。这已经不属于「只读你浏览过的内容」。\n\n快速：脚本自己连续请求 X 的关注和粉丝列表接口，用游标一页一页往下读。这是自动化抓取，风险比滚动更高，可能被限流、临时限制甚至封号。X 没有公布具体阈值，不能保证安全，后果自负。不想冒险就关掉，继续用手动滑动。";
-var AUTO_READ_ACK = "我已阅读上面的提示。我知道快速模式会由脚本自己连续请求列表接口，可能被限流、临时限制甚至封号，后果自己承担。";
+var FAST_FEATURE_TRIES = 3;
+// X 网页自己带的公开 Bearer。页面请求里捕获到的优先。不写入备份或诊断。
+var PUBLIC_WEB_BEARER = "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA";
+var AUTO_READ_RISK = "自动读取默认关闭。开启后，脚本会自己连续请求你的正在关注列表（也可以再读粉丝列表），用游标一页一页往下读。不会关注、取关、点赞、转发、回复、私信或拉黑，也不读别人的名单。\n\n请求会优先用页面刚才自己发出的登录状态。没有捕获到时，用 X 网页公开的令牌，并在你自己的浏览器里读取登录 cookie，只为给这次发往 x.com 的请求带上校验。接口编号优先用捕获到的请求，否则从 X 已经加载的页面代码里查找。令牌和 cookie 不保存、不写入备份或诊断，也不发到别处。\n\n这是自动化抓取，可能被限流、临时限制甚至封号。X 没有公布具体阈值，不能保证安全，后果自负。不想冒险就关掉，自己往下翻，脚本仍会记下页面已经加载的内容。";
+var AUTO_READ_ACK = "我已阅读上面的提示。我知道脚本会自己连续请求列表接口，可能被限流、临时限制甚至封号，后果自己承担。";
 
 var OPS = {
   UserRepliesTimeline: "replies",
@@ -1374,6 +1361,7 @@ function readUser(user) {
     return readUser(user.result);
   }
   if (user.__typename === "UserUnavailable") return null;
+  if (user.__typename === "UserWithVisibilityResults" && user.user) return readUser(user.user);
   var core = user.core || {};
   var legacy = user.legacy || {};
   var handle = core.screen_name || core.screenName || legacy.screen_name || legacy.screenName || user.screen_name || "";
@@ -1385,12 +1373,22 @@ function readUser(user) {
   var followersNum = typeof followers === "number" ? followers : parseInt(followers || 0, 10);
   if (isNaN(followersNum)) followersNum = 0;
   var verified = user.is_blue_verified === true || !!(user.verification && user.verification.verified === true) || legacy.verified === true;
+  var followsMe = null;
+  var perspectives = user.relationship_perspectives || user.relationshipPerspectives;
+  if (perspectives && typeof perspectives === "object") {
+    if (perspectives.followed_by == null && perspectives.followedBy == null) followsMe = false;
+    else followsMe = !!(perspectives.followed_by != null ? perspectives.followed_by : perspectives.followedBy);
+  } else if (legacy && ("followed_by" in legacy || "followedBy" in legacy)) {
+    var legacyFlag = legacy.followed_by != null ? legacy.followed_by : legacy.followedBy;
+    followsMe = !!legacyFlag;
+  }
   return {
     id: id,
     handle: norm(handle),
     name: String(core.name || legacy.name || "").replace(/\s+/g, " ").trim(),
     verified: verified,
-    followers: followersNum
+    followers: followersNum,
+    followsMe: followsMe
   };
 }
 
@@ -1932,9 +1930,15 @@ function applyCapture(store, captured, now) {
         followers: user.followers || (prev && prev.followers) || 0,
         seen: now
       };
+      if (user.followsMe === true || user.followsMe === false) next.followsMe = user.followsMe;
+      else if (prev && (prev.followsMe === true || prev.followsMe === false)) next.followsMe = prev.followsMe;
+      if (bucket === "following" && (next.followsMe === true || next.followsMe === false) && !store.meta.sawRelationship) {
+        store.meta.sawRelationship = true;
+        changed = true;
+      }
       if (prev && prev.src === "export") next.src = "export";
       if (bucket === "followers" && (captured.kind === "blue-followers" || (prev && prev.fromBlue) || carriedBlue)) next.fromBlue = true;
-      if (!prev || prev.handle !== next.handle || prev.name !== next.name || prev.verified !== next.verified || prev.followers !== next.followers || prev.id !== next.id || !!prev.fromBlue !== !!next.fromBlue) {
+      if (!prev || prev.handle !== next.handle || prev.name !== next.name || prev.verified !== next.verified || prev.followers !== next.followers || prev.id !== next.id || !!prev.fromBlue !== !!next.fromBlue || prev.followsMe !== next.followsMe) {
         store[bucket][key] = next;
         changed = true;
       } else prev.seen = now;
@@ -2160,62 +2164,6 @@ function progressText(captured, expected) {
   return text;
 }
 
-function overflowCanScroll(overflowY) {
-  var oy = String(overflowY || "");
-  return oy === "auto" || oy === "scroll" || oy === "overlay";
-}
-
-// 从格子往上找真正在滚的那一层。主栏外面的窗口只有自己确实更高时才用。
-function chooseScrollNode(chain) {
-  var list = chain || [];
-  for (var i = 0; i < list.length; i++) {
-    var item = list[i];
-    if (!item || item.isDocument) continue;
-    if (overflowCanScroll(item.overflowY) && item.scrollHeight > item.clientHeight + 40) return i;
-  }
-  for (var j = 0; j < list.length; j++) {
-    var doc = list[j];
-    if (doc && doc.isDocument && doc.scrollHeight > doc.clientHeight + 80) return j;
-  }
-  return -1;
-}
-
-// 从当前滚动位置往下推大约一屏，不先跳到已加载内容的末尾。
-function nudgeScroller(scroller, viewHeight) {
-  if (!scroller || typeof scroller.scrollTop !== "number") return {moved: false, atBottom: false, pos: 0};
-  var before = scroller.scrollTop || 0;
-  var client = scroller.clientHeight || viewHeight || 700;
-  var total = scroller.scrollHeight || 0;
-  var delta = Math.max(480, Math.floor((viewHeight || client || 700) * 0.9));
-  var max = total > client ? total - client : before;
-  var target = before + delta;
-  if (target > max) target = max;
-  try { scroller.scrollTop = target; } catch (err) {}
-  var after = scroller.scrollTop || 0;
-  if (after <= before + 8 && typeof scroller.scrollBy === "function") {
-    try { scroller.scrollBy(0, delta); } catch (err) {}
-    after = scroller.scrollTop || 0;
-  }
-  return {moved: after > before + 8, atBottom: total > 0 && after + client >= total - 48, pos: after};
-}
-
-function scrollStartPlan(input) {
-  input = input || {};
-  if (!input.acked) return {ok: false, action: "", reason: "请先勾选确认"};
-  if (input.mode !== "scroll" && input.mode !== "fast") return {ok: false, action: "", reason: "请先选择滚动或快速"};
-  if (input.mode === "fast") return {ok: true, action: "fast", reason: ""};
-  if (!input.pageKind) return {ok: false, action: "", reason: "没找到可滚动的列表，请先打开关注、粉丝或认证粉丝页"};
-  if (!input.hasScroller) return {ok: false, action: "", reason: "没有找到可滚动的列表，请先打开关注、粉丝或认证粉丝页"};
-  return {ok: true, action: "scroll", reason: ""};
-}
-
-function autoReadGapMs(unit) {
-  var u = Number(unit);
-  if (!isFinite(u) || u < 0) u = 0;
-  if (u >= 1) return AUTO_READ_GAP_MAX_MS;
-  return AUTO_READ_GAP_MIN_MS + Math.floor(u * (AUTO_READ_GAP_MAX_MS - AUTO_READ_GAP_MIN_MS + 1));
-}
-
 function autoReadPageKind(pathname, owner) {
   var kind = listKindFromPath(pathname, owner);
   if (kind === "following" || kind === "followers" || kind === "blue-followers") return kind;
@@ -2264,7 +2212,7 @@ function listUrlParts(url) {
   return {path: qAt >= 0 ? text.slice(0, qAt) : text, query: qAt >= 0 ? text.slice(qAt + 1) : "", hash: hash};
 }
 
-// 只接受页面自己打过的 Following / Followers。接口编号留在捕获到的路径里，这里不写死。
+// Following / Followers / BlueVerifiedFollowers。捕获到的地址优先；没有时用查到的接口编号拼。
 function isOwnListApiUrl(url, op) {
   var parts = listUrlParts(url);
   var match = parts.path.match(/^https?:\/\/([^/]+)\/i\/api\/graphql\/[^/?#]+\/(Following|Followers|BlueVerifiedFollowers)$/i);
@@ -2320,6 +2268,77 @@ function buildListPageRequest(template, cursor) {
   return {url: nextUrl, method: tpl.method, body: tpl.method === "POST" ? nextBody : ""};
 }
 
+function queryIdFromBundle(source, op) {
+  var name = String(op || "");
+  if (name !== "Following" && name !== "Followers" && name !== "BlueVerifiedFollowers") return "";
+  var match = String(source || "").match(new RegExp('queryId:"([^"]+)",operationName:"' + name + '"'));
+  return match ? match[1] : "";
+}
+
+function viewerIdFromTwid(value) {
+  var text = String(value || "");
+  try { text = decodeURIComponent(text); } catch (err) {}
+  var match = text.match(/u=(\d+)/);
+  return match ? match[1] : "";
+}
+
+function missingFeatureNames(message) {
+  var match = String(message || "").match(/cannot be null:\s*(.+)$/);
+  if (!match) return [];
+  var out = [];
+  match[1].split(",").forEach(function (part) {
+    var key = part.trim();
+    if (key && /^[A-Za-z0-9_]+$/.test(key) && out.indexOf(key) < 0) out.push(key);
+  });
+  return out;
+}
+
+function buildDiscoveredListRequest(input) {
+  input = input || {};
+  var op = input.op;
+  if (op !== "Following" && op !== "Followers" && op !== "BlueVerifiedFollowers") return null;
+  var queryId = String(input.queryId || "");
+  var viewerId = String(input.viewerId || "");
+  if (!/^[A-Za-z0-9_-]{8,}$/.test(queryId) || !/^\d+$/.test(viewerId)) return null;
+  var variables = {userId: viewerId, count: FAST_READ_PAGE_SIZE, includePromotedContent: false};
+  if (input.cursor) variables.cursor = String(input.cursor);
+  var features = {};
+  var source = input.features && typeof input.features === "object" ? input.features : {};
+  Object.keys(source).forEach(function (key) {
+    if (/^[A-Za-z0-9_]+$/.test(key)) features[key] = source[key];
+  });
+  var origin = String(input.origin || "https://x.com").replace(/\/$/, "");
+  if (origin !== "https://x.com" && origin !== "https://twitter.com") origin = "https://x.com";
+  var url = origin + "/i/api/graphql/" + queryId + "/" + op
+    + "?variables=" + encodeURIComponent(JSON.stringify(variables))
+    + "&features=" + encodeURIComponent(JSON.stringify(features));
+  if (!isOwnListApiUrl(url, op)) return null;
+  return {url: url, method: "GET", body: ""};
+}
+
+function featuresFromListUrl(url) {
+  var params = parseQuery(listUrlParts(url).query);
+  if (!params.features) return {};
+  try {
+    var parsed = JSON.parse(params.features);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch (err) {
+    return {};
+  }
+}
+
+function viewerIdFromListUrl(url) {
+  var params = parseQuery(listUrlParts(url).query);
+  if (!params.variables) return "";
+  try {
+    var parsed = JSON.parse(params.variables);
+    var id = parsed && parsed.userId != null ? String(parsed.userId) : "";
+    return /^\d+$/.test(id) ? id : "";
+  } catch (err) {
+    return "";
+  }
+}
+
 function bottomCursor(json) {
   var found = "";
   function walk(node, depth) {
@@ -2365,6 +2384,31 @@ function fastPageStopReason(beforeCount, afterCount, prevCursor, nextCursor, pag
   return "";
 }
 
+function fastRecoverPlan(input) {
+  input = input || {};
+  var code = Number(input.status);
+  if (!isFinite(code)) code = 0;
+  var tries = input.featureTries | 0;
+  var features = {};
+  var prev = input.features && typeof input.features === "object" ? input.features : {};
+  Object.keys(prev).forEach(function (key) { features[key] = prev[key]; });
+  var message = "";
+  try {
+    var json = JSON.parse(String(input.bodyText || ""));
+    if (json && json.errors && json.errors[0]) message = String(json.errors[0].message || "");
+  } catch (err) {}
+  if (code === 429) return {action: "stop", features: features, reason: fastReadStopReason(429, input.remaining)};
+  var missing = missingFeatureNames(message);
+  if (missing.length && tries < FAST_FEATURE_TRIES) {
+    missing.forEach(function (key) { features[key] = true; });
+    return {action: "fill", features: features, reason: ""};
+  }
+  if ((code === 400 || code === 404) && !input.rediscovered) return {action: "rediscover", features: features, reason: ""};
+  var stop = fastReadStopReason(code, input.remaining);
+  if (stop) return {action: "stop", features: features, reason: stop};
+  return {action: "ok", features: features, reason: ""};
+}
+
 function fastReadStopReason(status, remaining) {
   var code = Number(status);
   if (!isFinite(code)) code = 0;
@@ -2405,111 +2449,6 @@ function createFastReader() {
       }
       pages += 1;
       return {action: "continue", pages: pages};
-    }
-  };
-}
-
-function autoReadBlockReason(text) {
-  var raw = String(text || "").replace(/\s+/g, " ").trim();
-  if (!raw || raw.length > 400) return "";
-  if (/速率限制|超出速率|rate limit|too many requests/i.test(raw)) return "看到限流提示，已停止，不会自动重试";
-  if (/something went wrong|出错了|请稍后再试|try again later|请尝试重新加载/i.test(raw)) return "看到页面报错，已停止，不会自动重试";
-  return "";
-}
-
-// 内存里的开关。不写入油猴存储，所以刷新页面后一定是关闭。没勾选、没点开始时 tick 不会要求滚动。
-function createAutoReader() {
-  var phase = "off";
-  var acked = false;
-  var startedAt = 0;
-  var startedKind = "";
-  var screens = 0;
-  var lastCount = 0;
-  var lastVisible = "";
-  var lastGainAt = 0;
-  var flatScreens = 0;
-  var dry = 0;
-  var stopReason = "";
-  function resetRun() {
-    phase = "off";
-    acked = false;
-    startedAt = 0;
-    startedKind = "";
-    screens = 0;
-    lastCount = 0;
-    lastVisible = "";
-    lastGainAt = 0;
-    flatScreens = 0;
-    dry = 0;
-  }
-  function finish(reason) {
-    stopReason = reason;
-    resetRun();
-    return {action: "stop", reason: reason};
-  }
-  return {
-    phase: function () { return phase; },
-    screens: function () { return screens; },
-    screensSinceGain: function () { return flatScreens; },
-    stopReason: function () { return stopReason; },
-    openConfirm: function () {
-      if (phase === "running") return "running";
-      phase = "confirm";
-      acked = false;
-      stopReason = "";
-      return "confirm";
-    },
-    setAcknowledged: function (checked) { acked = !!checked; },
-    start: function (now, pageKind, count) {
-      if (phase === "running") return {ok: false, reason: "已经在读"};
-      if (!acked) return {ok: false, reason: "需要先勾选确认"};
-      if (!pageKind) return {ok: false, reason: "请先打开你自己的关注或粉丝页"};
-      phase = "running";
-      startedAt = now;
-      startedKind = pageKind;
-      lastCount = count | 0;
-      lastVisible = "";
-      lastGainAt = now;
-      screens = 0;
-      flatScreens = 0;
-      dry = 0;
-      stopReason = "";
-      return {ok: true};
-    },
-    stop: function (reason) {
-      stopReason = reason || "已停止";
-      resetRun();
-    },
-    tick: function (now, info) {
-      if (phase !== "running") return {action: "idle"};
-      info = info || {};
-      var count = info.count | 0;
-      var visible = String(info.visibleKey || "");
-      var expected = info.expected | 0;
-      // 只有已记人数变多才算「新增」。屏幕上换人（含已经记过的）只说明页面还在动，不重置新增计时。
-      if (count > lastCount) {
-        lastCount = count;
-        lastGainAt = now;
-        flatScreens = 0;
-      } else flatScreens += 1;
-      if (visible && visible !== lastVisible) {
-        lastVisible = visible;
-        dry = 0;
-      } else dry += 1;
-      var moved = info.moved === true || (info.moved == null && info.stuck !== true);
-      var atBottom = info.atBottom === true;
-      if (!info.pageKind || info.pageKind !== startedKind) return finish("不在刚才那份自己的名单页了，已停止");
-      if (info.blocked) return finish(info.blocked);
-      if (now - startedAt >= AUTO_READ_MAX_MS) return finish("已到单次 " + (AUTO_READ_MAX_MS / 60000) + " 分钟上限。已停止。列表停在当前位置，再开一次会接着往下翻。");
-      if (screens >= AUTO_READ_MAX_SCREENS) return finish("已到单次 " + AUTO_READ_MAX_SCREENS + " 屏上限。已停止。列表停在当前位置，再开一次会接着往下翻。");
-      if (!moved && !atBottom && (info.sinceMoveMs | 0) >= AUTO_READ_NO_MOVE_MS) return finish("没有找到可滚动的列表。已停止。请先打开你自己的关注、粉丝或认证粉丝页，再开一次。");
-      if (expected > 0 && (count >= expected || listIsComplete(count, expected))) return finish("已记人数接近公开总数，差不多了。已停止。");
-      var stillMoving = moved && !atBottom;
-      if (!stillMoving && (flatScreens >= AUTO_READ_FLAT_SCREENS || now - lastGainAt >= AUTO_READ_FLAT_MS)) return finish("已记人数没有增加，而且页面不再往下走。已停止。若还没到公开总数，确认还在自己的名单页后再开一次。");
-      if (atBottom && dry >= AUTO_READ_DRY_LIMIT) return finish("已到列表底部，没有继续加载。已停止。若人数还差一点，过一会儿再开一次，会从当前位置继续。");
-      if (!moved && dry >= AUTO_READ_DRY_LIMIT) return finish("页面没有继续加载。已停止。请确认打开的是你自己的关注、粉丝或认证粉丝页，再开一次。");
-      screens += 1;
-      return {action: "scroll", gapMs: autoReadGapMs(info.unit), screens: screens, sinceGain: flatScreens};
     }
   };
 }
@@ -3013,6 +2952,31 @@ function toEngineData(store, owner, repliesFromTweets) {
   }
   var following = usersOf(store.following);
   var followers = usersOf(store.followers);
+  var relationshipKnown = false;
+  var dropFollow = {};
+  Object.keys(store.following || {}).forEach(function (key) {
+    var user = store.following[key];
+    if (!user || personExcluded(look, user)) return;
+    if (user.followsMe !== true && user.followsMe !== false) return;
+    relationshipKnown = true;
+    var handle = norm(user.handle);
+    if (!handle) return;
+    if (user.followsMe) {
+      if (!followers.map[handle]) {
+        followers.map[handle] = {
+          handle: handle,
+          verified: user.verified ? "true" : "",
+          is_blue_verified: user.verified ? "true" : "",
+          followers_count: user.followers || ""
+        };
+        followers.list.push({id: user.id || "", handle: handle, name: user.name || ""});
+      }
+    } else dropFollow[handle] = 1;
+  });
+  if (relationshipKnown) {
+    Object.keys(dropFollow).forEach(function (handle) { delete followers.map[handle]; });
+    followers.list = followers.list.filter(function (person) { return !dropFollow[person.handle]; });
+  }
   var meta = store.meta || {};
   var data = {
     rows: [],
@@ -3022,7 +2986,7 @@ function toEngineData(store, owner, repliesFromTweets) {
     followingAccounts: following.list,
     followerAccounts: followers.list,
     sawFollowing: !!meta.sawFollowing,
-    sawFollowers: !!(meta.sawFollowers || meta.sawBlueFollowers),
+    sawFollowers: !!(meta.sawFollowers || meta.sawBlueFollowers || relationshipKnown),
     sawPrevFollowers: false,
     sawPrevFollowing: false,
     keepIds: store.keepIds || {},
@@ -3075,6 +3039,7 @@ function normalizeStore(input) {
   store.meta.sawBlueFollowers = !!meta.sawBlueFollowers;
   store.meta.sawNotifications = !!meta.sawNotifications;
   store.meta.sawExport = !!meta.sawExport;
+  store.meta.sawRelationship = !!meta.sawRelationship;
   store.totals.followers = countNum(input.totals && input.totals.followers);
   store.totals.following = countNum(input.totals && input.totals.following);
   store.totals.blue = countNum(input.totals && input.totals.blue);
@@ -3102,6 +3067,7 @@ function normalizeStore(input) {
         followers: isNaN(followers) ? 0 : followers,
         seen: user.seen || 0
       };
+      if (user.followsMe === true || user.followsMe === false) store[bucket][storedKey].followsMe = user.followsMe;
       if (user.src === "export") store[bucket][storedKey].src = "export";
       if (bucket === "followers" && user.fromBlue) store[bucket][storedKey].fromBlue = true;
     });
@@ -3214,9 +3180,9 @@ function contextProblems(info) {
 }
 
 // 只替换页面上的 open / send / fetch，好在 load 和响应体里读页面自己的结果。
-// 不读 cookie。Following / Followers 上页面自己设置的请求头只留在这个函数的内存里，
-// 等用户点了快速读取才用来再发同类请求。不写入备份，不放进诊断，也不通过事件交出去。
-// 这个函数不能引用外层变量：跨沙箱时会把它的源码注进页面再执行。
+// 快速读取时：捕获到的 Authorization 优先，否则用 PUBLIC_WEB_BEARER。
+// ct0 只在发往 x.com 的名单请求上写成 x-csrf-token，不保存、不放进事件。
+// 这个函数引用的 PUBLIC_WEB_BEARER 由 pageHookProgram 在页面里声明；直接调用时用模块里的同名常量。
 function attachHooks(page, emit) {
   if (!page || typeof page.XMLHttpRequest !== "function") {
     throw new Error("页面上没有 XMLHttpRequest");
@@ -3229,6 +3195,7 @@ function attachHooks(page, emit) {
   var listPending = {};
   var listTemplates = {};
   var listSeq = 0;
+  var discoveredIds = {};
   function keepHeaderName(name) {
     var key = String(name || "").toLowerCase();
     return !!key && key !== "cookie" && key !== "cookie2" && key !== "set-cookie";
@@ -3388,11 +3355,70 @@ function attachHooks(page, emit) {
   function allowedReplay(url, op) {
     return listOp(url) === op && (op === "Following" || op === "Followers" || op === "BlueVerifiedFollowers");
   }
+  function readPageCookie(name) {
+    var raw = "";
+    try { raw = String(page.document && page.document.cookie || ""); } catch (err) { raw = ""; }
+    var parts = raw.split(";");
+    var want = String(name || "");
+    for (var i = 0; i < parts.length; i++) {
+      var part = parts[i].replace(/^\s+/, "");
+      var eq = part.indexOf("=");
+      if (eq < 0 || part.slice(0, eq) !== want) continue;
+      try { return decodeURIComponent(part.slice(eq + 1)); } catch (err2) { return part.slice(eq + 1); }
+    }
+    return "";
+  }
+  function headerNamed(headers, name) {
+    var want = String(name || "").toLowerCase();
+    var found = "";
+    Object.keys(headers || {}).forEach(function (key) {
+      if (String(key).toLowerCase() === want && headers[key]) found = headers[key];
+    });
+    return found;
+  }
+  function listHeaders(tpl) {
+    var headers = {};
+    var source = (tpl && tpl.headers) || {};
+    Object.keys(source).forEach(function (key) {
+      if (keepHeaderName(key)) headers[key] = source[key];
+    });
+    if (!headerNamed(headers, "authorization")) headers.authorization = "Bearer " + PUBLIC_WEB_BEARER;
+    var csrf = readPageCookie("ct0");
+    if (csrf) headers["x-csrf-token"] = csrf;
+    if (!headerNamed(headers, "x-twitter-auth-type")) headers["x-twitter-auth-type"] = "OAuth2Session";
+    if (!headerNamed(headers, "x-twitter-active-user")) headers["x-twitter-active-user"] = "yes";
+    return headers;
+  }
+  function discoverQueryId(op) {
+    if (discoveredIds[op]) return Promise.resolve(discoveredIds[op]);
+    var srcs = [];
+    try {
+      var scripts = page.document && page.document.scripts ? page.document.scripts : [];
+      for (var i = 0; i < scripts.length; i++) {
+        var src = scripts[i] && scripts[i].src;
+        if (src && /client-web/.test(String(src))) srcs.push(String(src));
+      }
+    } catch (err) {}
+    function step(index) {
+      if (index >= srcs.length) return Promise.resolve(discoveredIds[op] || "");
+      if (typeof origFetch !== "function") return Promise.resolve("");
+      return origFetch.call(page, srcs[index], {credentials: "omit"}).then(function (res) {
+        if (!res || typeof res.text !== "function") return "";
+        return res.text();
+      }, function () { return ""; }).then(function (text) {
+        var match = String(text || "").match(new RegExp('queryId:"([^"]+)",operationName:"' + op + '"'));
+        if (match) { discoveredIds[op] = match[1]; return match[1]; }
+        return step(index + 1);
+      });
+    }
+    return step(0);
+  }
   function readListPage(op, url, method, body) {
+    if (!allowedReplay(url, op)) return Promise.resolve({status: 0, text: "", remaining: "", needManual: false});
+    if (typeof origFetch !== "function") return Promise.resolve({status: 0, text: "", remaining: "", needManual: true});
+    if (!readPageCookie("ct0")) return Promise.resolve({status: 0, text: "", remaining: "", needManual: true});
     var tpl = listTemplates[op];
-    if (!tpl || !allowedReplay(url, op)) return Promise.resolve({status: 0, text: "", remaining: ""});
-    if (typeof origFetch !== "function") return Promise.resolve({status: 0, text: "", remaining: ""});
-    var init = {method: method === "POST" ? "POST" : "GET", headers: tpl.headers || {}, credentials: "same-origin", cache: "no-store"};
+    var init = {method: method === "POST" ? "POST" : "GET", headers: listHeaders(tpl), credentials: "same-origin", cache: "no-store"};
     if (init.method === "POST") init.body = typeof body === "string" ? body : "";
     return origFetch.call(page, url, init).then(function (res) {
       var status = res && res.status ? res.status : 0;
@@ -3407,6 +3433,43 @@ function attachHooks(page, emit) {
       return {status: 0, text: "", remaining: ""};
     });
   }
+  page.__fanAuditEnsureList = function (op, fresh) {
+    if (op !== "Following" && op !== "Followers" && op !== "BlueVerifiedFollowers") {
+      return Promise.resolve({queryId: "", viewerId: "", features: {}, captured: false, hasCsrf: false});
+    }
+    if (fresh) delete discoveredIds[op];
+    var tpl = listTemplates[op];
+    var capturedId = "";
+    if (tpl && tpl.url) {
+      var found = String(tpl.url).match(/\/graphql\/([^/?#]+)\/(Following|Followers|BlueVerifiedFollowers)/);
+      if (found && found[2] === op) capturedId = found[1];
+    }
+    function pack(id) {
+      var viewer = "";
+      var features = {};
+      if (tpl && tpl.url) {
+        try {
+          var rawVars = (String(tpl.url).split("variables=")[1] || "").split("&")[0];
+          var vars = JSON.parse(decodeURIComponent(rawVars));
+          if (vars && /^\d+$/.test(String(vars.userId || ""))) viewer = String(vars.userId);
+        } catch (err) {}
+        try {
+          var rawFeatures = (String(tpl.url).split("features=")[1] || "").split("&")[0];
+          var parsed = JSON.parse(decodeURIComponent(rawFeatures));
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) features = parsed;
+        } catch (err2) {}
+      }
+      if (!viewer) {
+        var viewerCookie = readPageCookie("twid");
+        try { viewerCookie = decodeURIComponent(viewerCookie); } catch (err3) {}
+        var idMatch = String(viewerCookie).match(/u=(\d+)/);
+        if (idMatch) viewer = idMatch[1];
+      }
+      return {queryId: id || "", viewerId: viewer, features: features, captured: !!capturedId && !fresh, hasCsrf: !!readPageCookie("ct0")};
+    }
+    if (capturedId && !fresh) return Promise.resolve(pack(capturedId));
+    return discoverQueryId(op).then(function (id) { return pack(id || capturedId); });
+  };
   page.__fanAuditKeepListTemplate = function (id) {
     var item = listPending[String(id || "")];
     if (!item) return false;
@@ -3444,7 +3507,7 @@ function installHooks(page, onResponse) {
 }
 
 function pageHookProgram() {
-  return "try{(" + attachHooks.toString() + ")(window,function(url,text,body,listId){try{document.dispatchEvent(new CustomEvent(\"fan-audit-capture\",{detail:{url:String(url||\"\"),text:String(text||\"\"),body:typeof body===\"string\"?body:\"\",listId:String(listId||\"\")}}));}catch(err){}});}catch(err){}\n";
+  return "try{var PUBLIC_WEB_BEARER=" + JSON.stringify(PUBLIC_WEB_BEARER) + ";(" + attachHooks.toString() + ")(window,function(url,text,body,listId){try{document.dispatchEvent(new CustomEvent(\"fan-audit-capture\",{detail:{url:String(url||\"\"),text:String(text||\"\"),body:typeof body===\"string\"?body:\"\",listId:String(listId||\"\")}}));}catch(err){}});}catch(err){}\n";
 }
 
 var BOARD_CSS = [
@@ -4025,21 +4088,13 @@ function boot() {
     more.appendChild(keepBox);
     more.appendChild(excludeBox);
 
-    var autoReader = createAutoReader();
     var fastReader = createFastReader();
+    var autoPhase = "off";
     var autoShown = "off";
-    var autoTimer = 0;
-    var lastScroll = {moved: false, atBottom: false};
-    var lastMoveAt = 0;
-    var didMoveOnce = false;
     var autoBox = el("section");
     autoBox.id = "auto-read";
-    function gapLabel(ms) {
-      var tenths = Math.round(ms / 100);
-      return String(Math.floor(tenths / 10)) + "." + String(tenths % 10);
-    }
-    autoBox.appendChild(el("p", "", "自动读取我自己的关注 / 粉丝名单"));
-    autoBox.appendChild(el("p", "muted", "默认关闭。滚动大约 " + gapLabel(AUTO_READ_GAP_MIN_MS) + " 到 " + gapLabel(AUTO_READ_GAP_MAX_MS) + " 秒一屏，间隔仍是随机的。快速模式页与页之间不等待。刷新后回到关闭。"));
+    autoBox.appendChild(el("p", "", "自动读取我自己的名单"));
+    autoBox.appendChild(el("p", "muted", "默认关闭。开启后脚本自己请求列表，单次最多 " + FAST_READ_MAX_PAGES + " 页。自己往下翻时，脚本仍会记下页面已经加载的内容。刷新后回到关闭。"));
     var autoOpen = el("button", "ctrl", "查看风险并决定是否开启");
     autoOpen.type = "button";
     autoOpen.id = "auto-read-open";
@@ -4047,25 +4102,14 @@ function boot() {
     autoRisk.id = "auto-read-risk";
     autoRisk.hidden = true;
     autoRisk.appendChild(el("p", "risk", AUTO_READ_RISK));
-    var autoModeRow = el("div");
-    var autoScrollMode = el("input");
-    autoScrollMode.type = "radio";
-    autoScrollMode.name = "fan-audit-auto-mode";
-    autoScrollMode.value = "scroll";
-    autoScrollMode.checked = true;
-    var autoScrollLabel = el("label");
-    autoScrollLabel.appendChild(autoScrollMode);
-    autoScrollLabel.appendChild(document.createTextNode(" 滚动（约 " + gapLabel(AUTO_READ_GAP_MIN_MS) + "–" + gapLabel(AUTO_READ_GAP_MAX_MS) + " 秒一屏，单次最多 " + AUTO_READ_MAX_SCREENS + " 屏）"));
-    var autoFastMode = el("input");
-    autoFastMode.type = "radio";
-    autoFastMode.name = "fan-audit-auto-mode";
-    autoFastMode.value = "fast";
-    var autoFastLabel = el("label");
-    autoFastLabel.appendChild(autoFastMode);
-    autoFastLabel.appendChild(document.createTextNode(" 快速（脚本自己连续请求列表，每页约 100 人，单次最多 " + FAST_READ_MAX_PAGES + " 页，风险更高）"));
-    autoModeRow.appendChild(autoScrollLabel);
-    autoModeRow.appendChild(autoFastLabel);
-    autoRisk.appendChild(autoModeRow);
+    var autoFollowingOnlyLabel = el("label");
+    var autoFollowingOnly = el("input");
+    autoFollowingOnly.type = "checkbox";
+    autoFollowingOnly.id = "auto-following-only";
+    autoFollowingOnly.checked = true;
+    autoFollowingOnlyLabel.appendChild(autoFollowingOnly);
+    autoFollowingOnlyLabel.appendChild(document.createTextNode(" 只读正在关注，用对方是否关注我来判断互关（默认）"));
+    autoRisk.appendChild(autoFollowingOnlyLabel);
     var autoAckLabel = el("label");
     var autoAck = el("input");
     autoAck.type = "checkbox";
@@ -4087,7 +4131,7 @@ function boot() {
     autoRisk.appendChild(autoAckLabel);
     autoRisk.appendChild(autoRiskRow);
     autoRisk.appendChild(autoNeed);
-    var autoStatus = el("p", "muted", "默认关闭。不点开始就不会滚动。");
+    var autoStatus = el("p", "muted", "默认关闭。不点开始就不会请求名单。");
     autoStatus.id = "auto-read-status";
     var autoStop = el("button", "ctrl danger", "停止");
     autoStop.type = "button";
@@ -4184,264 +4228,125 @@ function boot() {
       widenBtn.textContent = wide ? "退出全屏" : "全屏";
       widenBtn.setAttribute("aria-pressed", wide ? "true" : "false");
     }
-    function clearAutoTimer() {
-      if (!autoTimer) return;
-      clearTimeout(autoTimer);
-      autoTimer = 0;
-    }
     var fastKnownPages = 0;
     var fastListNotes = [];
+    var fastFeatures = {};
     renderAutoRead = function () {
-      var phase = fastReader.running() ? "running" : autoReader.phase();
+      var phase = fastReader.running() ? "running" : autoPhase;
       autoOpen.hidden = phase === "running";
       autoRisk.hidden = phase !== "confirm";
       autoStop.hidden = phase !== "running";
       autoFloat.hidden = phase !== "running";
       if (phase === "confirm" && autoShown !== "confirm") {
         autoAck.checked = false;
-        autoReader.setAcknowledged(false);
-        autoScrollMode.checked = true;
-        autoFastMode.checked = false;
+        autoFollowingOnly.checked = true;
         refreshStartGate();
       }
       autoShown = phase;
-      var reason = fastReader.stopReason() || autoReader.stopReason();
-      if (phase === "running" && fastReader.running()) autoStatus.textContent = "正在快速读取。已请求 " + fastReader.pages() + " 页" + (fastKnownPages ? "，" + fastKnownPages + " 页全是已记账号，会继续往下翻" : "") + "。可以随时停止。";
-      else if (phase === "running") autoStatus.textContent = "正在滚动。已滚 " + autoReader.screens() + " 屏，距离上次新增 " + autoReader.screensSinceGain() + " 屏。" + moveAgeText() + "。可以随时停止。";
-      else if (phase === "confirm") autoStatus.textContent = "先看完上面的提示，选一种方式并勾选后才能开始。现在还没有滚动，也没有发请求。";
+      var reason = fastReader.stopReason();
+      if (phase === "running") autoStatus.textContent = "正在读取。已请求 " + fastReader.pages() + " 页" + (fastKnownPages ? "，" + fastKnownPages + " 页全是已记账号，会继续往下翻" : "") + "。可以随时停止。";
+      else if (phase === "confirm") autoStatus.textContent = "先看完上面的提示并勾选后才能开始。现在还没有发请求。";
       else if (reason) autoStatus.textContent = reason + " 自动读取已关闭。";
-      else autoStatus.textContent = "默认关闭。不点开始就不会滚动。";
+      else autoStatus.textContent = "默认关闭。不点开始就不会请求名单。";
     }
     function refreshStartGate() {
-      var missing = [];
-      if (!autoScrollMode.checked && !autoFastMode.checked) missing.push("没选方式");
-      if (!autoAck.checked) missing.push("没勾确认");
-      var blocked = missing.length > 0;
+      var blocked = !autoAck.checked;
       autoStart.setAttribute("aria-disabled", blocked ? "true" : "false");
-      autoNeed.textContent = blocked ? "开始读取还不能点：" + missing.join("，") + "。" : "可以点开始读取。";
-    }
-    function moveAgeText() {
-      if (!didMoveOnce || !lastMoveAt) return "最近一次滚动：还没有";
-      var sec = Math.max(0, Math.round((Date.now() - lastMoveAt) / 1000));
-      return "最近一次滚动：" + (sec <= 1 ? "刚刚" : sec + " 秒前");
+      autoNeed.textContent = blocked ? "开始读取还不能点：没勾确认。" : "可以点开始读取。";
     }
     function haltAuto(reason) {
-      clearAutoTimer();
-      autoReader.stop(reason);
+      autoPhase = "off";
       fastReader.stop(reason);
       if (reason) status.textContent = reason;
       renderAutoRead();
     }
-    function findPageScroller() {
-      var doc = document;
-      var view = window;
-      try {
-        var page = pageWindow();
-        if (page && page.document) { doc = page.document; view = page; }
-      } catch (err) {}
-      var column = doc.querySelector('[data-testid="primaryColumn"]');
-      var cell = column && column.querySelector('[data-testid="UserCell"]');
-      var start = cell || column;
-      if (!start) return null;
-      var chain = [];
-      var nodes = [];
-      var node = start;
-      while (node) {
-        var overflowY = "";
-        try { overflowY = view.getComputedStyle(node).overflowY || ""; } catch (err) {}
-        var isDocument = node === doc.body || node === doc.documentElement || node === doc.scrollingElement;
-        chain.push({
-          overflowY: overflowY,
-          scrollHeight: node.scrollHeight || 0,
-          clientHeight: node === doc.documentElement || node === doc.body ? (view.innerHeight || node.clientHeight || 0) : (node.clientHeight || 0),
-          isDocument: isDocument
-        });
-        nodes.push(node);
-        if (node === doc.documentElement || node === doc.body) break;
-        node = node.parentElement;
-      }
-      var index = chooseScrollNode(chain);
-      if (index < 0) return null;
-      var picked = nodes[index];
-      var windowScroll = picked === doc.scrollingElement || picked === doc.documentElement || picked === doc.body;
-      return {node: picked, view: view, windowScroll: windowScroll};
-    }
-    function scrollMetrics(found) {
-      var view = found.view;
-      var node = found.node;
-      var doc = view.document || document;
-      if (found.windowScroll) {
-        var y = view.scrollY || view.pageYOffset || 0;
-        var height = view.innerHeight || 0;
-        var full = 0;
-        try { full = (doc.scrollingElement || doc.documentElement).scrollHeight || 0; } catch (err) {}
-        return {pos: y, atBottom: full > 0 && y + height >= full - 48};
-      }
-      var pos = node.scrollTop || 0;
-      var client = node.clientHeight || 0;
-      var total = node.scrollHeight || 0;
-      return {pos: pos, atBottom: total > 0 && pos + client >= total - 48};
-    }
-    function visibleListKey() {
-      var doc = document;
-      try {
-        var pageView = pageWindow();
-        if (pageView && pageView.document) doc = pageView.document;
-      } catch (err) {}
-      var root = doc.querySelector('[data-testid="primaryColumn"]') || doc.querySelector('main[role="main"]');
-      if (!root) return "";
-      var cells = root.querySelectorAll('[data-testid="UserCell"]');
-      var names = [];
-      for (var i = 0; i < cells.length; i++) {
-        var links = cells[i].querySelectorAll("a[href]");
-        var handle = "";
-        for (var j = 0; j < links.length; j++) {
-          var match = String(links[j].getAttribute("href") || "").match(/^\/([A-Za-z0-9_]{1,15})\/?$/);
-          if (match) { handle = match[1].toLowerCase(); break; }
-        }
-        if (handle) names.push(handle);
-      }
-      return names.join("\n");
-    }
-    function nudgeOwnList() {
-      var found = findPageScroller();
-      if (!found || !found.node) return {moved: false, atBottom: false};
-      var view = found.view;
-      var viewHeight = found.windowScroll ? (view.innerHeight || 700) : (found.node.clientHeight || 700);
-      if (found.windowScroll) {
-        var y = view.scrollY || view.pageYOffset || 0;
-        var delta = Math.max(480, Math.floor(viewHeight * 0.9));
-        try { view.scrollTo(0, y + delta); } catch (err) {}
-        var afterY = view.scrollY || view.pageYOffset || 0;
-        var doc = view.document || document;
-        var full = 0;
-        try { full = (doc.scrollingElement || doc.documentElement).scrollHeight || 0; } catch (err) {}
-        return {moved: afterY > y + 8, atBottom: full > 0 && afterY + viewHeight >= full - 48};
-      }
-      return nudgeScroller(found.node, viewHeight);
-    }
-    function pageBlockReason() {
-      var doc = document;
-      try {
-        var page = pageWindow();
-        if (page && page.document) doc = page.document;
-      } catch (err) {}
-      var nodes = doc.querySelectorAll('[data-testid="toast"], [role="alert"], [data-testid="error-detail"], [data-testid="empty_state_header_text"], [data-testid="empty_state_body_text"]');
-      for (var i = 0; i < nodes.length; i++) {
-        var reason = autoReadBlockReason(nodes[i].textContent || "");
-        if (reason) return reason;
-      }
-      return "";
-    }
-    function scheduleAuto(delay) {
-      clearAutoTimer();
-      autoTimer = setTimeout(runAutoTick, delay);
-    }
-    function runAutoTick() {
-      autoTimer = 0;
-      if (autoReader.phase() !== "running") return;
-      var ownerName = currentOwner();
-      var kind = autoReadPageKind(location.pathname, ownerName);
-      var decision = autoReader.tick(Date.now(), {
-        pageKind: kind,
-        blocked: pageBlockReason(),
-        count: autoReadCount(store, kind),
-        expected: kind === "following" ? (store.totals.following || 0) : kind === "blue-followers" ? (store.totals.blue || 0) : (store.totals.followers || 0),
-        visibleKey: visibleListKey(),
-        moved: lastScroll.moved,
-        atBottom: lastScroll.atBottom,
-        sinceMoveMs: lastMoveAt ? Date.now() - lastMoveAt : 0,
-        unit: Math.random()
-      });
-      if (decision.action !== "scroll") {
-        if (decision.action === "stop") status.textContent = decision.reason;
-        renderAutoRead();
-        updateBadge();
-        return;
-      }
-      lastScroll = nudgeOwnList();
-      if (lastScroll.moved) {
-        lastMoveAt = Date.now();
-        didMoveOnce = true;
-      }
-      scanCells();
-      scanTotals();
-      scheduleAuto(decision.gapMs);
-      renderAutoRead();
-      updateBadge();
-      if (panelOpen) render();
-    }
-    autoOpen.addEventListener("click", function () {
-      autoReader.openConfirm();
-      renderAutoRead();
-    });
-    function syncStartGate() {
-      autoReader.setAcknowledged(!!autoAck.checked);
-      refreshStartGate();
-    }
-    autoAck.addEventListener("change", syncStartGate);
-    autoScrollMode.addEventListener("change", refreshStartGate);
-    autoFastMode.addEventListener("change", refreshStartGate);
-    autoCancel.addEventListener("click", function () {
-      haltAuto("先不读。没有滚动。");
-    });
-    function chosenAutoMode() {
-      return autoFastMode.checked ? "fast" : "scroll";
-    }
-    function hasListTemplate(op) {
-      return !!(page && typeof page.__fanAuditHasListTemplate === "function" && page.__fanAuditHasListTemplate(op));
-    }
-    function runFastList(op, cursor, done) {
+    var MANUAL_FALLBACK = "自动读取没能开始。请自己打开正在关注页往下翻，脚本会记下页面已经加载的名单。";
+    function runFastList(op, cursor, features, rediscovered, featureTries, done, counted) {
       if (!fastReader.running()) return;
-      var decision = fastReader.notePage();
-      if (decision.action !== "continue") {
-        status.textContent = decision.reason;
-        haltAuto(decision.reason);
-        return;
-      }
-      var tpl = page && page.__fanAuditListTemplate ? page.__fanAuditListTemplate(op) : null;
-      var req = buildListPageRequest(tpl, cursor);
-      if (!req || typeof page.__fanAuditFetchList !== "function") {
-        haltAuto("还不能发这一页。请先在当前这个名单页手动往下滑一点，让页面自己加载一页后再试。关注页对应正在关注，粉丝页对应关注者，认证粉丝页对应认证粉丝。");
-        return;
-      }
-      Promise.resolve(page.__fanAuditFetchList(op, req.url, req.method, req.body)).then(function (res) {
-        if (!fastReader.running()) return;
-        res = res || {};
-        var stop = fastReadStopReason(res.status, res.remaining);
-        if (stop) {
-          haltAuto(stop);
+      if (!counted) {
+        var decision = fastReader.notePage();
+        if (decision.action !== "continue") {
+          status.textContent = decision.reason;
+          haltAuto(decision.reason);
           return;
         }
-        var kind = op === "Following" ? "following" : op === "BlueVerifiedFollowers" ? "blue-followers" : "followers";
-        var before = autoReadCount(store, kind);
-        ingest(req.url, res.text || "", req.body || "", false, "");
-        var after = autoReadCount(store, kind);
-        var next = "";
-        var pageUsers = -1;
-        try {
-          var parsed = parseCapture(req.url, res.text || "", {owner: currentOwner()});
-          pageUsers = parsed && parsed.users ? parsed.users.length : 0;
-          next = bottomCursor(JSON.parse(res.text || ""));
-        } catch (err) {
-          next = "";
-          pageUsers = -1;
-        }
-        var expected = kind === "following" ? (store.totals.following || 0) : kind === "blue-followers" ? (store.totals.blue || 0) : (store.totals.followers || 0);
-        renderAutoRead();
-        updateBadge();
-        if (panelOpen) render();
-        var pageStop = fastPageStopReason(before, after, cursor, next, pageUsers, expected);
-        if (!pageStop && pageUsers > 0 && after === before) fastKnownPages += 1;
-        if (pageStop) {
-          fastListNotes.push(fastListLabel(op) + "：" + pageStop);
+      }
+      var page = pageWindow();
+      if (!page || typeof page.__fanAuditEnsureList !== "function" || typeof page.__fanAuditFetchList !== "function") {
+        haltAuto(MANUAL_FALLBACK);
+        return;
+      }
+      Promise.resolve(page.__fanAuditEnsureList(op, !!rediscovered)).then(function (info) {
+        if (!fastReader.running()) return;
+        info = info || {};
+        if (!info.hasCsrf || !info.queryId || !info.viewerId) {
+          fastListNotes.push(fastListLabel(op) + "：" + MANUAL_FALLBACK);
           done();
           return;
         }
-        runFastList(op, next, done);
+        var useFeatures = features || info.features || {};
+        if (!features) fastFeatures[op] = useFeatures;
+        var req = null;
+        var tpl = page.__fanAuditListTemplate ? page.__fanAuditListTemplate(op) : null;
+        if (tpl && !rediscovered) req = buildListPageRequest(tpl, cursor);
+        if (!req) req = buildDiscoveredListRequest({op: op, queryId: info.queryId, viewerId: info.viewerId, cursor: cursor, features: useFeatures, origin: location.origin});
+        if (!req) {
+          fastListNotes.push(fastListLabel(op) + "：" + MANUAL_FALLBACK);
+          done();
+          return;
+        }
+        return Promise.resolve(page.__fanAuditFetchList(op, req.url, req.method, req.body)).then(function (res) {
+          if (!fastReader.running()) return;
+          res = res || {};
+          if (res.needManual) {
+            fastListNotes.push(fastListLabel(op) + "：" + MANUAL_FALLBACK);
+            done();
+            return;
+          }
+          var plan = fastRecoverPlan({status: res.status, remaining: res.remaining, bodyText: res.text || "", features: useFeatures, featureTries: featureTries || 0, rediscovered: !!rediscovered});
+          if (plan.action === "fill") {
+            fastFeatures[op] = plan.features;
+            runFastList(op, cursor, plan.features, rediscovered, (featureTries || 0) + 1, done, true);
+            return;
+          }
+          if (plan.action === "rediscover") {
+            runFastList(op, cursor, useFeatures, true, featureTries || 0, done, true);
+            return;
+          }
+          if (plan.action === "stop") {
+            haltAuto((res.status | 0) === 0 ? MANUAL_FALLBACK : plan.reason);
+            return;
+          }
+          var kind = op === "Following" ? "following" : op === "BlueVerifiedFollowers" ? "blue-followers" : "followers";
+          var before = autoReadCount(store, kind);
+          ingest(req.url, res.text || "", req.body || "", false, "");
+          var after = autoReadCount(store, kind);
+          var next = "";
+          var pageUsers = -1;
+          try {
+            var parsed = parseCapture(req.url, res.text || "", {owner: currentOwner()});
+            pageUsers = parsed && parsed.users ? parsed.users.length : 0;
+            next = bottomCursor(JSON.parse(res.text || ""));
+          } catch (err) {
+            next = "";
+            pageUsers = -1;
+          }
+          var expected = kind === "following" ? (store.totals.following || 0) : kind === "blue-followers" ? (store.totals.blue || 0) : (store.totals.followers || 0);
+          renderAutoRead();
+          updateBadge();
+          if (panelOpen) render();
+          var pageStop = fastPageStopReason(before, after, cursor, next, pageUsers, expected);
+          if (!pageStop && pageUsers > 0 && after === before) fastKnownPages += 1;
+          if (pageStop) {
+            fastListNotes.push(fastListLabel(op) + "：" + pageStop);
+            done();
+            return;
+          }
+          runFastList(op, next, fastFeatures[op] || useFeatures, false, 0, done);
+        });
       }, function () {
         if (!fastReader.running()) return;
-        haltAuto("请求失败，已停止，不会自动重试");
+        haltAuto(MANUAL_FALLBACK);
       });
     }
     function fastOpForKind(kind) {
@@ -4457,20 +4362,7 @@ function boot() {
       return "名单";
     }
     function startFastRead() {
-      var here = fastOpForKind(autoReadPageKind(location.pathname, currentOwner()));
-      if (here && !hasListTemplate(here)) {
-        status.textContent = "还没有捕获到你自己的" + fastListLabel(here) + "列表请求。请留在这个页面，手动往下滑一点，让页面自己加载一页后再试。关注页对应正在关注，粉丝页对应关注者，认证粉丝页对应认证粉丝。脚本不会去猜接口编号。";
-        return;
-      }
-      var ops = [];
-      if (here) ops.push(here);
-      ["Following", "Followers", "BlueVerifiedFollowers"].forEach(function (op) {
-        if (ops.indexOf(op) < 0 && hasListTemplate(op)) ops.push(op);
-      });
-      if (!ops.length) {
-        status.textContent = "还没有捕获到你自己的正在关注、关注者或认证粉丝列表请求。请打开对应页面，手动往下滑一点后再试。脚本不会去猜接口编号。";
-        return;
-      }
+      var ops = autoFollowingOnly.checked ? ["Following"] : ["Following", "Followers", "BlueVerifiedFollowers"];
       var begun = fastReader.start();
       if (!begun.ok) {
         status.textContent = begun.reason;
@@ -4478,58 +4370,46 @@ function boot() {
       }
       fastKnownPages = 0;
       fastListNotes = [];
-      autoReader.stop("");
-      status.textContent = "已开始快速读取。已经记过的页会继续往下翻。页与页之间不等待。";
+      fastFeatures = {};
+      autoPhase = "running";
+      status.textContent = autoFollowingOnly.checked
+        ? "已开始读取正在关注。已经记过的页会继续往下翻。互关用对方是否关注我来判断。"
+        : "已开始读取正在关注、关注者和认证粉丝。已经记过的页会继续往下翻。";
       renderAutoRead();
       function nextOp(index) {
         if (!fastReader.running()) return;
         if (index >= ops.length) {
-          haltAuto(fastListNotes.length ? fastListNotes.join(" ") : "捕获到的名单都翻完了。已经记过的页已翻过。");
+          haltAuto(fastListNotes.length ? fastListNotes.join(" ") : "名单都翻完了。已经记过的页已翻过。");
           return;
         }
-        runFastList(ops[index], "", function () { nextOp(index + 1); });
+        runFastList(ops[index], "", null, false, 0, function () { nextOp(index + 1); });
       }
       nextOp(0);
     }
+    autoOpen.addEventListener("click", function () {
+      if (fastReader.running()) return;
+      autoPhase = "confirm";
+      renderAutoRead();
+    });
+    function syncStartGate() {
+      refreshStartGate();
+    }
+    autoAck.addEventListener("change", syncStartGate);
+    autoCancel.addEventListener("click", function () {
+      haltAuto("先不读。没有发请求。");
+    });
     autoStart.addEventListener("click", function () {
-      if (autoReader.phase() === "running" || fastReader.running()) {
+      if (fastReader.running()) {
         autoStatus.textContent = "已经在读。可以点停止。";
         return;
       }
-      var ownerName = currentOwner();
-      var plan = scrollStartPlan({
-        acked: !!autoAck.checked,
-        mode: chosenAutoMode(),
-        pageKind: autoReadPageKind(location.pathname, ownerName),
-        hasScroller: !!findPageScroller()
-      });
-      if (!plan.ok) {
-        autoStatus.textContent = plan.reason;
-        status.textContent = plan.reason;
+      if (!autoAck.checked) {
+        autoStatus.textContent = "请先勾选确认";
+        status.textContent = "请先勾选确认";
         refreshStartGate();
         return;
       }
-      autoReader.setAcknowledged(true);
-      if (plan.action === "fast") {
-        startFastRead();
-        renderAutoRead();
-        return;
-      }
-      var kind = autoReadPageKind(location.pathname, ownerName);
-      var begun = autoReader.start(Date.now(), kind, autoReadCount(store, kind));
-      if (!begun.ok) {
-        autoStatus.textContent = begun.reason;
-        status.textContent = begun.reason;
-        renderAutoRead();
-        return;
-      }
-      lastScroll = {moved: false, atBottom: false};
-      lastMoveAt = Date.now();
-      didMoveOnce = false;
-      autoStatus.textContent = "已开始滚动。已滚 0 屏，距离上次新增 0 屏。最近一次滚动：还没有。";
-      status.textContent = "已开始滚动。若几秒后最近一次滚动仍是「还没有」，就是没找到名单自己的滚动容器。";
-      renderAutoRead();
-      scheduleAuto(autoReadGapMs(Math.random()));
+      startFastRead();
     });
     autoStop.addEventListener("click", function () { haltAuto("已手动停止"); });
     autoFloat.addEventListener("click", function () { haltAuto("已手动停止"); });
@@ -5002,7 +4882,7 @@ function boot() {
   function captureChecklist(owner, report) {
     var box = el("div");
     box.id = "checklist";
-    box.appendChild(el("p", "sub", "采集清单（点链接在当前页打开，再手动往下翻。默认不自动滚动，也不自己发请求。）"));
+    box.appendChild(el("p", "sub", "采集清单（点链接在当前页打开，再自己往下翻。默认不自己发请求。）"));
     function row(label, href, captured, detail) {
       var line = el("p", "check");
       line.appendChild(el("span", captured ? "got" : "miss", captured ? "✓" : "未采集"));

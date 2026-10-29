@@ -132,6 +132,23 @@ class TestAuditSample(unittest.TestCase):
         self.assertEqual(rows["user_01"]["stars"], "4")
 
 
+class TestFollowedBy(unittest.TestCase):
+    def test_column_adjusts_who_follows_me(self):
+        adjusted = audit.apply_followed_by(
+            {"user_01": {"handle": "user_01", "followed_by": "true"},
+             "user_02": {"handle": "user_02", "followed_by": "false"}},
+            {"user_02": {"handle": "user_02"}, "user_03": {"handle": "user_03"}},
+        )
+        self.assertIn("user_01", adjusted)
+        self.assertNotIn("user_02", adjusted)
+        self.assertIn("user_03", adjusted)
+
+    def test_missing_column_leaves_lists_alone(self):
+        original = {"user_03": {"handle": "user_03"}}
+        same = audit.apply_followed_by({"user_01": {"handle": "user_01"}}, original)
+        self.assertEqual(set(same), {"user_03"})
+
+
 class TestTierGates(unittest.TestCase):
     def setUp(self):
         conf, _ = rs.load_config()

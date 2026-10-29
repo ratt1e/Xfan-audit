@@ -1,4 +1,4 @@
-import { EMPTY_GUIDE, RETENTION_DAYS, SNAPSHOT_WAITING, BOARD_CSS, emptyStore, normalizeStore, prune, parseCapture, applyCapture, coverageReport, toEngineData, snapshotDiffInput, recordSnapshot, exportTimeFromName, maybeSnapshot, addKeep, removeKeep, looksLikeBackup, parseExcludeText, addExclude, addExcludeMany, removeExclude, clearExclude, excludeText, headerListCount, headerVerifiedCount, applyImported, contextProblems, installHooks, pageHookProgram, exportBackup, importBackup, standaloneHtml, norm, operationName, classifyUrl, listKindFromPath, userFromVisible, diagnosticsCopy, sameRealm, pageContext, badgeText, progressText, AUTO_READ_RISK, AUTO_READ_ACK, AUTO_READ_MAX_SCREENS, AUTO_READ_GAP_MIN_MS, AUTO_READ_GAP_MAX_MS, FAST_READ_MAX_PAGES, autoReadGapMs, autoReadPageKind, autoReadCount, autoReadBlockReason, createAutoReader, buildListPageRequest, bottomCursor, fastReadStopReason, fastPageStopReason, createFastReader, chooseScrollNode, nudgeScroller, scrollStartPlan } from "./logic.mjs";
+import { EMPTY_GUIDE, RETENTION_DAYS, SNAPSHOT_WAITING, BOARD_CSS, emptyStore, normalizeStore, prune, parseCapture, applyCapture, coverageReport, toEngineData, snapshotDiffInput, recordSnapshot, exportTimeFromName, maybeSnapshot, addKeep, removeKeep, looksLikeBackup, parseExcludeText, addExclude, addExcludeMany, removeExclude, clearExclude, excludeText, headerListCount, headerVerifiedCount, applyImported, contextProblems, installHooks, pageHookProgram, exportBackup, importBackup, standaloneHtml, norm, operationName, classifyUrl, listKindFromPath, userFromVisible, diagnosticsCopy, sameRealm, pageContext, badgeText, progressText, AUTO_READ_RISK, AUTO_READ_ACK, FAST_READ_MAX_PAGES, autoReadPageKind, autoReadCount, buildListPageRequest, buildDiscoveredListRequest, fastRecoverPlan, bottomCursor, fastPageStopReason, createFastReader } from "./logic.mjs";
 
 var STORE_KEY = "fan-audit-v1";
 
@@ -532,21 +532,13 @@ function boot() {
     more.appendChild(keepBox);
     more.appendChild(excludeBox);
 
-    var autoReader = createAutoReader();
     var fastReader = createFastReader();
+    var autoPhase = "off";
     var autoShown = "off";
-    var autoTimer = 0;
-    var lastScroll = {moved: false, atBottom: false};
-    var lastMoveAt = 0;
-    var didMoveOnce = false;
     var autoBox = el("section");
     autoBox.id = "auto-read";
-    function gapLabel(ms) {
-      var tenths = Math.round(ms / 100);
-      return String(Math.floor(tenths / 10)) + "." + String(tenths % 10);
-    }
-    autoBox.appendChild(el("p", "", "自动读取我自己的关注 / 粉丝名单"));
-    autoBox.appendChild(el("p", "muted", "默认关闭。滚动大约 " + gapLabel(AUTO_READ_GAP_MIN_MS) + " 到 " + gapLabel(AUTO_READ_GAP_MAX_MS) + " 秒一屏，间隔仍是随机的。快速模式页与页之间不等待。刷新后回到关闭。"));
+    autoBox.appendChild(el("p", "", "自动读取我自己的名单"));
+    autoBox.appendChild(el("p", "muted", "默认关闭。开启后脚本自己请求列表，单次最多 " + FAST_READ_MAX_PAGES + " 页。自己往下翻时，脚本仍会记下页面已经加载的内容。刷新后回到关闭。"));
     var autoOpen = el("button", "ctrl", "查看风险并决定是否开启");
     autoOpen.type = "button";
     autoOpen.id = "auto-read-open";
@@ -554,25 +546,14 @@ function boot() {
     autoRisk.id = "auto-read-risk";
     autoRisk.hidden = true;
     autoRisk.appendChild(el("p", "risk", AUTO_READ_RISK));
-    var autoModeRow = el("div");
-    var autoScrollMode = el("input");
-    autoScrollMode.type = "radio";
-    autoScrollMode.name = "fan-audit-auto-mode";
-    autoScrollMode.value = "scroll";
-    autoScrollMode.checked = true;
-    var autoScrollLabel = el("label");
-    autoScrollLabel.appendChild(autoScrollMode);
-    autoScrollLabel.appendChild(document.createTextNode(" 滚动（约 " + gapLabel(AUTO_READ_GAP_MIN_MS) + "–" + gapLabel(AUTO_READ_GAP_MAX_MS) + " 秒一屏，单次最多 " + AUTO_READ_MAX_SCREENS + " 屏）"));
-    var autoFastMode = el("input");
-    autoFastMode.type = "radio";
-    autoFastMode.name = "fan-audit-auto-mode";
-    autoFastMode.value = "fast";
-    var autoFastLabel = el("label");
-    autoFastLabel.appendChild(autoFastMode);
-    autoFastLabel.appendChild(document.createTextNode(" 快速（脚本自己连续请求列表，每页约 100 人，单次最多 " + FAST_READ_MAX_PAGES + " 页，风险更高）"));
-    autoModeRow.appendChild(autoScrollLabel);
-    autoModeRow.appendChild(autoFastLabel);
-    autoRisk.appendChild(autoModeRow);
+    var autoFollowingOnlyLabel = el("label");
+    var autoFollowingOnly = el("input");
+    autoFollowingOnly.type = "checkbox";
+    autoFollowingOnly.id = "auto-following-only";
+    autoFollowingOnly.checked = true;
+    autoFollowingOnlyLabel.appendChild(autoFollowingOnly);
+    autoFollowingOnlyLabel.appendChild(document.createTextNode(" 只读正在关注，用对方是否关注我来判断互关（默认）"));
+    autoRisk.appendChild(autoFollowingOnlyLabel);
     var autoAckLabel = el("label");
     var autoAck = el("input");
     autoAck.type = "checkbox";
@@ -594,7 +575,7 @@ function boot() {
     autoRisk.appendChild(autoAckLabel);
     autoRisk.appendChild(autoRiskRow);
     autoRisk.appendChild(autoNeed);
-    var autoStatus = el("p", "muted", "默认关闭。不点开始就不会滚动。");
+    var autoStatus = el("p", "muted", "默认关闭。不点开始就不会请求名单。");
     autoStatus.id = "auto-read-status";
     var autoStop = el("button", "ctrl danger", "停止");
     autoStop.type = "button";
@@ -691,264 +672,125 @@ function boot() {
       widenBtn.textContent = wide ? "退出全屏" : "全屏";
       widenBtn.setAttribute("aria-pressed", wide ? "true" : "false");
     }
-    function clearAutoTimer() {
-      if (!autoTimer) return;
-      clearTimeout(autoTimer);
-      autoTimer = 0;
-    }
     var fastKnownPages = 0;
     var fastListNotes = [];
+    var fastFeatures = {};
     renderAutoRead = function () {
-      var phase = fastReader.running() ? "running" : autoReader.phase();
+      var phase = fastReader.running() ? "running" : autoPhase;
       autoOpen.hidden = phase === "running";
       autoRisk.hidden = phase !== "confirm";
       autoStop.hidden = phase !== "running";
       autoFloat.hidden = phase !== "running";
       if (phase === "confirm" && autoShown !== "confirm") {
         autoAck.checked = false;
-        autoReader.setAcknowledged(false);
-        autoScrollMode.checked = true;
-        autoFastMode.checked = false;
+        autoFollowingOnly.checked = true;
         refreshStartGate();
       }
       autoShown = phase;
-      var reason = fastReader.stopReason() || autoReader.stopReason();
-      if (phase === "running" && fastReader.running()) autoStatus.textContent = "正在快速读取。已请求 " + fastReader.pages() + " 页" + (fastKnownPages ? "，" + fastKnownPages + " 页全是已记账号，会继续往下翻" : "") + "。可以随时停止。";
-      else if (phase === "running") autoStatus.textContent = "正在滚动。已滚 " + autoReader.screens() + " 屏，距离上次新增 " + autoReader.screensSinceGain() + " 屏。" + moveAgeText() + "。可以随时停止。";
-      else if (phase === "confirm") autoStatus.textContent = "先看完上面的提示，选一种方式并勾选后才能开始。现在还没有滚动，也没有发请求。";
+      var reason = fastReader.stopReason();
+      if (phase === "running") autoStatus.textContent = "正在读取。已请求 " + fastReader.pages() + " 页" + (fastKnownPages ? "，" + fastKnownPages + " 页全是已记账号，会继续往下翻" : "") + "。可以随时停止。";
+      else if (phase === "confirm") autoStatus.textContent = "先看完上面的提示并勾选后才能开始。现在还没有发请求。";
       else if (reason) autoStatus.textContent = reason + " 自动读取已关闭。";
-      else autoStatus.textContent = "默认关闭。不点开始就不会滚动。";
+      else autoStatus.textContent = "默认关闭。不点开始就不会请求名单。";
     }
     function refreshStartGate() {
-      var missing = [];
-      if (!autoScrollMode.checked && !autoFastMode.checked) missing.push("没选方式");
-      if (!autoAck.checked) missing.push("没勾确认");
-      var blocked = missing.length > 0;
+      var blocked = !autoAck.checked;
       autoStart.setAttribute("aria-disabled", blocked ? "true" : "false");
-      autoNeed.textContent = blocked ? "开始读取还不能点：" + missing.join("，") + "。" : "可以点开始读取。";
-    }
-    function moveAgeText() {
-      if (!didMoveOnce || !lastMoveAt) return "最近一次滚动：还没有";
-      var sec = Math.max(0, Math.round((Date.now() - lastMoveAt) / 1000));
-      return "最近一次滚动：" + (sec <= 1 ? "刚刚" : sec + " 秒前");
+      autoNeed.textContent = blocked ? "开始读取还不能点：没勾确认。" : "可以点开始读取。";
     }
     function haltAuto(reason) {
-      clearAutoTimer();
-      autoReader.stop(reason);
+      autoPhase = "off";
       fastReader.stop(reason);
       if (reason) status.textContent = reason;
       renderAutoRead();
     }
-    function findPageScroller() {
-      var doc = document;
-      var view = window;
-      try {
-        var page = pageWindow();
-        if (page && page.document) { doc = page.document; view = page; }
-      } catch (err) {}
-      var column = doc.querySelector('[data-testid="primaryColumn"]');
-      var cell = column && column.querySelector('[data-testid="UserCell"]');
-      var start = cell || column;
-      if (!start) return null;
-      var chain = [];
-      var nodes = [];
-      var node = start;
-      while (node) {
-        var overflowY = "";
-        try { overflowY = view.getComputedStyle(node).overflowY || ""; } catch (err) {}
-        var isDocument = node === doc.body || node === doc.documentElement || node === doc.scrollingElement;
-        chain.push({
-          overflowY: overflowY,
-          scrollHeight: node.scrollHeight || 0,
-          clientHeight: node === doc.documentElement || node === doc.body ? (view.innerHeight || node.clientHeight || 0) : (node.clientHeight || 0),
-          isDocument: isDocument
-        });
-        nodes.push(node);
-        if (node === doc.documentElement || node === doc.body) break;
-        node = node.parentElement;
-      }
-      var index = chooseScrollNode(chain);
-      if (index < 0) return null;
-      var picked = nodes[index];
-      var windowScroll = picked === doc.scrollingElement || picked === doc.documentElement || picked === doc.body;
-      return {node: picked, view: view, windowScroll: windowScroll};
-    }
-    function scrollMetrics(found) {
-      var view = found.view;
-      var node = found.node;
-      var doc = view.document || document;
-      if (found.windowScroll) {
-        var y = view.scrollY || view.pageYOffset || 0;
-        var height = view.innerHeight || 0;
-        var full = 0;
-        try { full = (doc.scrollingElement || doc.documentElement).scrollHeight || 0; } catch (err) {}
-        return {pos: y, atBottom: full > 0 && y + height >= full - 48};
-      }
-      var pos = node.scrollTop || 0;
-      var client = node.clientHeight || 0;
-      var total = node.scrollHeight || 0;
-      return {pos: pos, atBottom: total > 0 && pos + client >= total - 48};
-    }
-    function visibleListKey() {
-      var doc = document;
-      try {
-        var pageView = pageWindow();
-        if (pageView && pageView.document) doc = pageView.document;
-      } catch (err) {}
-      var root = doc.querySelector('[data-testid="primaryColumn"]') || doc.querySelector('main[role="main"]');
-      if (!root) return "";
-      var cells = root.querySelectorAll('[data-testid="UserCell"]');
-      var names = [];
-      for (var i = 0; i < cells.length; i++) {
-        var links = cells[i].querySelectorAll("a[href]");
-        var handle = "";
-        for (var j = 0; j < links.length; j++) {
-          var match = String(links[j].getAttribute("href") || "").match(/^\/([A-Za-z0-9_]{1,15})\/?$/);
-          if (match) { handle = match[1].toLowerCase(); break; }
-        }
-        if (handle) names.push(handle);
-      }
-      return names.join("\n");
-    }
-    function nudgeOwnList() {
-      var found = findPageScroller();
-      if (!found || !found.node) return {moved: false, atBottom: false};
-      var view = found.view;
-      var viewHeight = found.windowScroll ? (view.innerHeight || 700) : (found.node.clientHeight || 700);
-      if (found.windowScroll) {
-        var y = view.scrollY || view.pageYOffset || 0;
-        var delta = Math.max(480, Math.floor(viewHeight * 0.9));
-        try { view.scrollTo(0, y + delta); } catch (err) {}
-        var afterY = view.scrollY || view.pageYOffset || 0;
-        var doc = view.document || document;
-        var full = 0;
-        try { full = (doc.scrollingElement || doc.documentElement).scrollHeight || 0; } catch (err) {}
-        return {moved: afterY > y + 8, atBottom: full > 0 && afterY + viewHeight >= full - 48};
-      }
-      return nudgeScroller(found.node, viewHeight);
-    }
-    function pageBlockReason() {
-      var doc = document;
-      try {
-        var page = pageWindow();
-        if (page && page.document) doc = page.document;
-      } catch (err) {}
-      var nodes = doc.querySelectorAll('[data-testid="toast"], [role="alert"], [data-testid="error-detail"], [data-testid="empty_state_header_text"], [data-testid="empty_state_body_text"]');
-      for (var i = 0; i < nodes.length; i++) {
-        var reason = autoReadBlockReason(nodes[i].textContent || "");
-        if (reason) return reason;
-      }
-      return "";
-    }
-    function scheduleAuto(delay) {
-      clearAutoTimer();
-      autoTimer = setTimeout(runAutoTick, delay);
-    }
-    function runAutoTick() {
-      autoTimer = 0;
-      if (autoReader.phase() !== "running") return;
-      var ownerName = currentOwner();
-      var kind = autoReadPageKind(location.pathname, ownerName);
-      var decision = autoReader.tick(Date.now(), {
-        pageKind: kind,
-        blocked: pageBlockReason(),
-        count: autoReadCount(store, kind),
-        expected: kind === "following" ? (store.totals.following || 0) : kind === "blue-followers" ? (store.totals.blue || 0) : (store.totals.followers || 0),
-        visibleKey: visibleListKey(),
-        moved: lastScroll.moved,
-        atBottom: lastScroll.atBottom,
-        sinceMoveMs: lastMoveAt ? Date.now() - lastMoveAt : 0,
-        unit: Math.random()
-      });
-      if (decision.action !== "scroll") {
-        if (decision.action === "stop") status.textContent = decision.reason;
-        renderAutoRead();
-        updateBadge();
-        return;
-      }
-      lastScroll = nudgeOwnList();
-      if (lastScroll.moved) {
-        lastMoveAt = Date.now();
-        didMoveOnce = true;
-      }
-      scanCells();
-      scanTotals();
-      scheduleAuto(decision.gapMs);
-      renderAutoRead();
-      updateBadge();
-      if (panelOpen) render();
-    }
-    autoOpen.addEventListener("click", function () {
-      autoReader.openConfirm();
-      renderAutoRead();
-    });
-    function syncStartGate() {
-      autoReader.setAcknowledged(!!autoAck.checked);
-      refreshStartGate();
-    }
-    autoAck.addEventListener("change", syncStartGate);
-    autoScrollMode.addEventListener("change", refreshStartGate);
-    autoFastMode.addEventListener("change", refreshStartGate);
-    autoCancel.addEventListener("click", function () {
-      haltAuto("先不读。没有滚动。");
-    });
-    function chosenAutoMode() {
-      return autoFastMode.checked ? "fast" : "scroll";
-    }
-    function hasListTemplate(op) {
-      return !!(page && typeof page.__fanAuditHasListTemplate === "function" && page.__fanAuditHasListTemplate(op));
-    }
-    function runFastList(op, cursor, done) {
+    var MANUAL_FALLBACK = "自动读取没能开始。请自己打开正在关注页往下翻，脚本会记下页面已经加载的名单。";
+    function runFastList(op, cursor, features, rediscovered, featureTries, done, counted) {
       if (!fastReader.running()) return;
-      var decision = fastReader.notePage();
-      if (decision.action !== "continue") {
-        status.textContent = decision.reason;
-        haltAuto(decision.reason);
-        return;
-      }
-      var tpl = page && page.__fanAuditListTemplate ? page.__fanAuditListTemplate(op) : null;
-      var req = buildListPageRequest(tpl, cursor);
-      if (!req || typeof page.__fanAuditFetchList !== "function") {
-        haltAuto("还不能发这一页。请先在当前这个名单页手动往下滑一点，让页面自己加载一页后再试。关注页对应正在关注，粉丝页对应关注者，认证粉丝页对应认证粉丝。");
-        return;
-      }
-      Promise.resolve(page.__fanAuditFetchList(op, req.url, req.method, req.body)).then(function (res) {
-        if (!fastReader.running()) return;
-        res = res || {};
-        var stop = fastReadStopReason(res.status, res.remaining);
-        if (stop) {
-          haltAuto(stop);
+      if (!counted) {
+        var decision = fastReader.notePage();
+        if (decision.action !== "continue") {
+          status.textContent = decision.reason;
+          haltAuto(decision.reason);
           return;
         }
-        var kind = op === "Following" ? "following" : op === "BlueVerifiedFollowers" ? "blue-followers" : "followers";
-        var before = autoReadCount(store, kind);
-        ingest(req.url, res.text || "", req.body || "", false, "");
-        var after = autoReadCount(store, kind);
-        var next = "";
-        var pageUsers = -1;
-        try {
-          var parsed = parseCapture(req.url, res.text || "", {owner: currentOwner()});
-          pageUsers = parsed && parsed.users ? parsed.users.length : 0;
-          next = bottomCursor(JSON.parse(res.text || ""));
-        } catch (err) {
-          next = "";
-          pageUsers = -1;
-        }
-        var expected = kind === "following" ? (store.totals.following || 0) : kind === "blue-followers" ? (store.totals.blue || 0) : (store.totals.followers || 0);
-        renderAutoRead();
-        updateBadge();
-        if (panelOpen) render();
-        var pageStop = fastPageStopReason(before, after, cursor, next, pageUsers, expected);
-        if (!pageStop && pageUsers > 0 && after === before) fastKnownPages += 1;
-        if (pageStop) {
-          fastListNotes.push(fastListLabel(op) + "：" + pageStop);
+      }
+      var page = pageWindow();
+      if (!page || typeof page.__fanAuditEnsureList !== "function" || typeof page.__fanAuditFetchList !== "function") {
+        haltAuto(MANUAL_FALLBACK);
+        return;
+      }
+      Promise.resolve(page.__fanAuditEnsureList(op, !!rediscovered)).then(function (info) {
+        if (!fastReader.running()) return;
+        info = info || {};
+        if (!info.hasCsrf || !info.queryId || !info.viewerId) {
+          fastListNotes.push(fastListLabel(op) + "：" + MANUAL_FALLBACK);
           done();
           return;
         }
-        runFastList(op, next, done);
+        var useFeatures = features || info.features || {};
+        if (!features) fastFeatures[op] = useFeatures;
+        var req = null;
+        var tpl = page.__fanAuditListTemplate ? page.__fanAuditListTemplate(op) : null;
+        if (tpl && !rediscovered) req = buildListPageRequest(tpl, cursor);
+        if (!req) req = buildDiscoveredListRequest({op: op, queryId: info.queryId, viewerId: info.viewerId, cursor: cursor, features: useFeatures, origin: location.origin});
+        if (!req) {
+          fastListNotes.push(fastListLabel(op) + "：" + MANUAL_FALLBACK);
+          done();
+          return;
+        }
+        return Promise.resolve(page.__fanAuditFetchList(op, req.url, req.method, req.body)).then(function (res) {
+          if (!fastReader.running()) return;
+          res = res || {};
+          if (res.needManual) {
+            fastListNotes.push(fastListLabel(op) + "：" + MANUAL_FALLBACK);
+            done();
+            return;
+          }
+          var plan = fastRecoverPlan({status: res.status, remaining: res.remaining, bodyText: res.text || "", features: useFeatures, featureTries: featureTries || 0, rediscovered: !!rediscovered});
+          if (plan.action === "fill") {
+            fastFeatures[op] = plan.features;
+            runFastList(op, cursor, plan.features, rediscovered, (featureTries || 0) + 1, done, true);
+            return;
+          }
+          if (plan.action === "rediscover") {
+            runFastList(op, cursor, useFeatures, true, featureTries || 0, done, true);
+            return;
+          }
+          if (plan.action === "stop") {
+            haltAuto((res.status | 0) === 0 ? MANUAL_FALLBACK : plan.reason);
+            return;
+          }
+          var kind = op === "Following" ? "following" : op === "BlueVerifiedFollowers" ? "blue-followers" : "followers";
+          var before = autoReadCount(store, kind);
+          ingest(req.url, res.text || "", req.body || "", false, "");
+          var after = autoReadCount(store, kind);
+          var next = "";
+          var pageUsers = -1;
+          try {
+            var parsed = parseCapture(req.url, res.text || "", {owner: currentOwner()});
+            pageUsers = parsed && parsed.users ? parsed.users.length : 0;
+            next = bottomCursor(JSON.parse(res.text || ""));
+          } catch (err) {
+            next = "";
+            pageUsers = -1;
+          }
+          var expected = kind === "following" ? (store.totals.following || 0) : kind === "blue-followers" ? (store.totals.blue || 0) : (store.totals.followers || 0);
+          renderAutoRead();
+          updateBadge();
+          if (panelOpen) render();
+          var pageStop = fastPageStopReason(before, after, cursor, next, pageUsers, expected);
+          if (!pageStop && pageUsers > 0 && after === before) fastKnownPages += 1;
+          if (pageStop) {
+            fastListNotes.push(fastListLabel(op) + "：" + pageStop);
+            done();
+            return;
+          }
+          runFastList(op, next, fastFeatures[op] || useFeatures, false, 0, done);
+        });
       }, function () {
         if (!fastReader.running()) return;
-        haltAuto("请求失败，已停止，不会自动重试");
+        haltAuto(MANUAL_FALLBACK);
       });
     }
     function fastOpForKind(kind) {
@@ -964,20 +806,7 @@ function boot() {
       return "名单";
     }
     function startFastRead() {
-      var here = fastOpForKind(autoReadPageKind(location.pathname, currentOwner()));
-      if (here && !hasListTemplate(here)) {
-        status.textContent = "还没有捕获到你自己的" + fastListLabel(here) + "列表请求。请留在这个页面，手动往下滑一点，让页面自己加载一页后再试。关注页对应正在关注，粉丝页对应关注者，认证粉丝页对应认证粉丝。脚本不会去猜接口编号。";
-        return;
-      }
-      var ops = [];
-      if (here) ops.push(here);
-      ["Following", "Followers", "BlueVerifiedFollowers"].forEach(function (op) {
-        if (ops.indexOf(op) < 0 && hasListTemplate(op)) ops.push(op);
-      });
-      if (!ops.length) {
-        status.textContent = "还没有捕获到你自己的正在关注、关注者或认证粉丝列表请求。请打开对应页面，手动往下滑一点后再试。脚本不会去猜接口编号。";
-        return;
-      }
+      var ops = autoFollowingOnly.checked ? ["Following"] : ["Following", "Followers", "BlueVerifiedFollowers"];
       var begun = fastReader.start();
       if (!begun.ok) {
         status.textContent = begun.reason;
@@ -985,58 +814,46 @@ function boot() {
       }
       fastKnownPages = 0;
       fastListNotes = [];
-      autoReader.stop("");
-      status.textContent = "已开始快速读取。已经记过的页会继续往下翻。页与页之间不等待。";
+      fastFeatures = {};
+      autoPhase = "running";
+      status.textContent = autoFollowingOnly.checked
+        ? "已开始读取正在关注。已经记过的页会继续往下翻。互关用对方是否关注我来判断。"
+        : "已开始读取正在关注、关注者和认证粉丝。已经记过的页会继续往下翻。";
       renderAutoRead();
       function nextOp(index) {
         if (!fastReader.running()) return;
         if (index >= ops.length) {
-          haltAuto(fastListNotes.length ? fastListNotes.join(" ") : "捕获到的名单都翻完了。已经记过的页已翻过。");
+          haltAuto(fastListNotes.length ? fastListNotes.join(" ") : "名单都翻完了。已经记过的页已翻过。");
           return;
         }
-        runFastList(ops[index], "", function () { nextOp(index + 1); });
+        runFastList(ops[index], "", null, false, 0, function () { nextOp(index + 1); });
       }
       nextOp(0);
     }
+    autoOpen.addEventListener("click", function () {
+      if (fastReader.running()) return;
+      autoPhase = "confirm";
+      renderAutoRead();
+    });
+    function syncStartGate() {
+      refreshStartGate();
+    }
+    autoAck.addEventListener("change", syncStartGate);
+    autoCancel.addEventListener("click", function () {
+      haltAuto("先不读。没有发请求。");
+    });
     autoStart.addEventListener("click", function () {
-      if (autoReader.phase() === "running" || fastReader.running()) {
+      if (fastReader.running()) {
         autoStatus.textContent = "已经在读。可以点停止。";
         return;
       }
-      var ownerName = currentOwner();
-      var plan = scrollStartPlan({
-        acked: !!autoAck.checked,
-        mode: chosenAutoMode(),
-        pageKind: autoReadPageKind(location.pathname, ownerName),
-        hasScroller: !!findPageScroller()
-      });
-      if (!plan.ok) {
-        autoStatus.textContent = plan.reason;
-        status.textContent = plan.reason;
+      if (!autoAck.checked) {
+        autoStatus.textContent = "请先勾选确认";
+        status.textContent = "请先勾选确认";
         refreshStartGate();
         return;
       }
-      autoReader.setAcknowledged(true);
-      if (plan.action === "fast") {
-        startFastRead();
-        renderAutoRead();
-        return;
-      }
-      var kind = autoReadPageKind(location.pathname, ownerName);
-      var begun = autoReader.start(Date.now(), kind, autoReadCount(store, kind));
-      if (!begun.ok) {
-        autoStatus.textContent = begun.reason;
-        status.textContent = begun.reason;
-        renderAutoRead();
-        return;
-      }
-      lastScroll = {moved: false, atBottom: false};
-      lastMoveAt = Date.now();
-      didMoveOnce = false;
-      autoStatus.textContent = "已开始滚动。已滚 0 屏，距离上次新增 0 屏。最近一次滚动：还没有。";
-      status.textContent = "已开始滚动。若几秒后最近一次滚动仍是「还没有」，就是没找到名单自己的滚动容器。";
-      renderAutoRead();
-      scheduleAuto(autoReadGapMs(Math.random()));
+      startFastRead();
     });
     autoStop.addEventListener("click", function () { haltAuto("已手动停止"); });
     autoFloat.addEventListener("click", function () { haltAuto("已手动停止"); });
@@ -1509,7 +1326,7 @@ function boot() {
   function captureChecklist(owner, report) {
     var box = el("div");
     box.id = "checklist";
-    box.appendChild(el("p", "sub", "采集清单（点链接在当前页打开，再手动往下翻。默认不自动滚动，也不自己发请求。）"));
+    box.appendChild(el("p", "sub", "采集清单（点链接在当前页打开，再自己往下翻。默认不自己发请求。）"));
     function row(label, href, captured, detail) {
       var line = el("p", "check");
       line.appendChild(el("span", captured ? "got" : "miss", captured ? "✓" : "未采集"));

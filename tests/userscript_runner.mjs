@@ -9,10 +9,9 @@ import {
   pageContext, badgeText, listIsComplete, exportTimeFromName, recordSnapshot, snapshotDiffInput,
   addKeep, removeKeep, applyImported, headerListCount, headerVerifiedCount, SNAPSHOT_WAITING, looksLikeBackup,
   parseExcludeText, addExclude, addExcludeMany, removeExclude, clearExclude, excludeText,
-  progressText, AUTO_READ_MAX_SCREENS, AUTO_READ_GAP_MIN_MS, AUTO_READ_GAP_MAX_MS, AUTO_READ_DRY_LIMIT,
-  AUTO_READ_FLAT_SCREENS, AUTO_READ_FLAT_MS, AUTO_READ_NO_MOVE_MS, fastPageStopReason,
-  chooseScrollNode, nudgeScroller, scrollStartPlan,
-  autoReadGapMs, autoReadPageKind, autoReadCount, autoReadBlockReason, createAutoReader, FAST_READ_PAGE_SIZE, FAST_READ_MAX_PAGES,
+  progressText, fastPageStopReason, fastRecoverPlan, queryIdFromBundle, viewerIdFromTwid, missingFeatureNames,
+  buildDiscoveredListRequest, PUBLIC_WEB_BEARER,
+  autoReadPageKind, autoReadCount, FAST_READ_PAGE_SIZE, FAST_READ_MAX_PAGES,
   FAST_READ_REMAINING_FLOOR, buildListPageRequest, bottomCursor, fastReadStopReason, createFastReader,
   isOwnListApiUrl
 } from "../userscript/src/logic.mjs";
@@ -51,16 +50,18 @@ check(classifyUrl("https://x.com/i/api/graphql/abc/HomeTimeline") === "", "首�
 check(classifyUrl("https://x.com/i/api/graphql/abc/DirectMessages") === "", "私信不收");
 check(built.includes("GM_xmlhttpRequest") === false, "不使用 GM_xmlhttpRequest");
 check(!new RegExp("(^|\\n)\\s*//\\s*" + "@" + "connect\\b").test(built), "没有 connect 授权");
-check(built.includes("document.cookie") === false, "不读 cookie");
-check(built.includes("nudgeOwnList"), "自动读取靠滚动页面本身");
-check(built.includes("createAutoReader"), "自动读取有独立开关");
-check(built.includes("脚本自己连续请求 X 的关注和粉丝列表接口") && built.includes("不想冒险就关掉，继续用手动滑动") && built.includes("也不会读别人的名单"), "风险提示原文在安装文件里");
+check(built.includes("document.cookie"), "快速读取会在页面里读登录 cookie");
+check(built.includes("x-csrf-token"), "cookie 只用来填校验头");
+check(built.includes("createFastReader"), "自动读取有独立开关");
+check(built.includes("脚本会自己连续请求你的正在关注列表") && built.includes("不想冒险就关掉，自己往下翻") && built.includes("也不读别人的名单"), "风险提示原文在安装文件里");
+check(built.includes("X 网页公开的令牌") && built.includes(PUBLIC_WEB_BEARER), "写明并带上网页公开令牌");
+check(built.includes("createAutoReader") === false && built.includes("nudgeOwnList") === false, "没有自动滚动");
 check(built.includes("不封号") === false, "不写不封号");
 check(built.split("不能保证安全").length === 2, "只写明不能保证安全，没有别的安全保证");
-check(!/Bearer [A-Za-z0-9_\-.]{20,}/.test(built), "没有硬编码 Bearer 令牌");
+check(!/Bearer [A-Za-z0-9_\-.]{20,}/.test(built.replace(PUBLIC_WEB_BEARER, "")), "除了网页公开令牌，没有别的硬编码 Bearer");
 check(built.includes(EMPTY_GUIDE), "空状态文案在安装文件里");
 const meta = "// " + "@";
-check(built.includes(meta + "version      0.4.1"), "版本号");
+check(built.includes(meta + "version      0.5.0"), "版本号");
 check(built.includes("只在本地隐藏，不会在 X 上操作"), "排除说明写明只在本地隐藏");
 check(built.includes("/mutes") === false && built.includes("friendships/destroy") === false && built.includes("blocks/create") === false, "排除不会调用屏蔽或取关接口");
 check(built.includes(meta + "sandbox      raw"), "要求页面环境");
@@ -349,7 +350,8 @@ sandbox.XMLHttpRequest = hookPage.XMLHttpRequest;
 sandbox.fetch = hookPage.fetch;
 vm.runInContext(pageHookProgram(), vm.createContext(sandbox), {filename: "page-hook.js"});
 check(sandbox.__fanAuditPageHook === 1, "页面钩子脚本能执行");
-check(pageHookProgram().indexOf("document.cookie") < 0 && pageHookProgram().indexOf("GM_") < 0, "注进页面的钩子不读 cookie、不用 GM");
+check(pageHookProgram().indexOf("document.cookie") >= 0 && pageHookProgram().indexOf("ct0") >= 0 && pageHookProgram().indexOf("GM_") < 0, "注进页面的钩子只为名单请求读 ct0，不用 GM");
+check(pageHookProgram().indexOf("friendships/destroy") < 0, "钩子里没有取关接口");
 const hookedXhr = new sandbox.XMLHttpRequest();
 hookedXhr.open("GET", "https://x.com/i/api/graphql/hash/Following");
 hookedXhr.responseText = "{\"data\":{}}";
@@ -668,182 +670,23 @@ const blueRound = importBackup(exportBackup(blueStore, 1));
 check(coverageReport(blueRound, "demo_owner", "UTC").blueFollowers === 1, "备份保留认证粉丝标记");
 check(!("autoRead" in emptyStore().prefs), "自动读取不写入本地偏好");
 
-check(autoReadGapMs(0) === AUTO_READ_GAP_MIN_MS && autoReadGapMs(1) === AUTO_READ_GAP_MAX_MS, "滚动间隔落在随机范围两端");
-check(AUTO_READ_GAP_MIN_MS === 500 && AUTO_READ_GAP_MAX_MS === 1000 && AUTO_READ_GAP_MIN_MS < 1000 && AUTO_READ_MAX_SCREENS >= 200, "滚动更快，但仍有随机间隔和屏数上限");
-check(autoReadGapMs(0.5) >= AUTO_READ_GAP_MIN_MS && autoReadGapMs(0.5) <= AUTO_READ_GAP_MAX_MS, "中间的随机数也落在间隔里");
-check(autoReadBlockReason("超出速率限制。请稍等片刻") === "看到限流提示，已停止，不会自动重试", "限流文案会让自动读取停下");
-check(autoReadBlockReason("Something went wrong. Try reloading.") === "看到页面报错，已停止，不会自动重试", "页面报错会让自动读取停下");
-check(autoReadBlockReason("普通一条帖子，没有速率这两个字连在接口外") === "", "普通正文不当成报错");
-const idleReader = createAutoReader();
-check(idleReader.phase() === "off" && idleReader.tick(1000, {pageKind: "followers", count: 1, unit: 0}).action === "idle", "没点启动时不会滚动");
-idleReader.openConfirm();
-check(idleReader.start(1000, "followers", 0).ok === false, "没勾选不能开始");
-check(idleReader.tick(1000, {pageKind: "followers", count: 0, unit: 0}).action === "idle", "只打开提示时也不滚动");
-idleReader.setAcknowledged(true);
-check(idleReader.start(1000, "", 0).ok === false, "不在自己的名单页不能开始");
-check(idleReader.start(1000, "followers", 0).ok === true, "勾选后可以开始");
-const blocked = idleReader.tick(1000, {pageKind: "followers", count: 0, blocked: "看到限流提示，已停止，不会自动重试", unit: 0});
-check(blocked.action === "stop" && idleReader.phase() === "off", "限流立刻停下");
-check(idleReader.tick(5000, {pageKind: "followers", count: 9, unit: 0}).action === "idle", "停下后不自动重试");
-const knownReader = createAutoReader();
-knownReader.openConfirm();
-knownReader.setAcknowledged(true);
-knownReader.start(0, "blue-followers", 100);
-let knownScrolls = 0;
-let knownStopped = "";
-for (let i = 0; i < 12; i++) {
-  const step = knownReader.tick(i * 1500, {
-    pageKind: "blue-followers",
-    count: 100,
-    visibleKey: "user_" + i + "\nuser_" + (i + 1),
-    moved: true,
-    atBottom: false,
-    unit: 0
-  });
-  if (step.action === "stop") { knownStopped = step.reason; break; }
-  knownScrolls += 1;
-}
-check(knownScrolls === 12 && knownStopped === "" && knownReader.phase() === "running", "刚开始的十几屏，已记过的人换到屏幕上仍继续滚");
-const flatReader = createAutoReader();
-flatReader.openConfirm();
-flatReader.setAcknowledged(true);
-flatReader.start(0, "blue-followers", 1005);
-let flatScrolls = 0;
-let flatReason = "";
-for (let i = 0; i < 40; i++) {
-  const step = flatReader.tick(i * 1000, {
-    pageKind: "blue-followers",
-    count: 1005,
-    expected: 0,
-    visibleKey: "seen_" + i,
-    moved: true,
-    atBottom: false,
-    unit: 0
-  });
-  if (step.action === "stop") { flatReason = step.reason; break; }
-  flatScrolls += 1;
-}
-check(flatScrolls === 40 && flatReason === "" && flatReader.phase() === "running", "页面还在往下走时，已记过的账号不会让滚动停下");
-const endFlat = createAutoReader();
-endFlat.openConfirm();
-endFlat.setAcknowledged(true);
-endFlat.start(0, "followers", 100);
-let endFlatReason = "";
-let endFlatScrolls = 0;
-for (let i = 0; i < 40; i++) {
-  const step = endFlat.tick(i * 1000, {
-    pageKind: "followers",
-    count: 100,
-    visibleKey: "end_" + i,
-    moved: true,
-    atBottom: true,
-    unit: 0
-  });
-  if (step.action === "stop") { endFlatReason = step.reason; break; }
-  endFlatScrolls += 1;
-}
-check(endFlatReason.indexOf("不再往下走") >= 0 && endFlatScrolls === AUTO_READ_FLAT_SCREENS - 1 && endFlat.phase() === "off", "已经到底而且人数不增加，大约 30 屏后停");
-check(endFlat.tick(999999, {pageKind: "followers", count: 101, visibleKey: "seen_x", moved: true, atBottom: false, unit: 0}).action === "idle", "停下后保持关闭");
-const flatTime = createAutoReader();
-flatTime.openConfirm();
-flatTime.setAcknowledged(true);
-flatTime.start(0, "followers", 100);
-const moving = flatTime.tick(AUTO_READ_FLAT_MS, {pageKind: "followers", count: 100, visibleKey: "b", moved: true, atBottom: false, unit: 0});
-check(moving.action === "scroll", "还在往下滚时，一分钟人数不增加也不停");
-const stalled = createAutoReader();
-stalled.openConfirm();
-stalled.setAcknowledged(true);
-stalled.start(0, "followers", 100);
-stalled.tick(0, {pageKind: "followers", count: 100, visibleKey: "a", moved: false, atBottom: false, sinceMoveMs: 0, unit: 0});
-const timed = stalled.tick(AUTO_READ_FLAT_MS, {pageKind: "followers", count: 100, visibleKey: "b", moved: false, atBottom: false, sinceMoveMs: 0, unit: 0});
-check(timed.action === "stop" && timed.reason.indexOf("不再往下走") >= 0, "页面不再往下走，并且大约 1 分钟人数不增加就停");
-const nearDone = createAutoReader();
-nearDone.openConfirm();
-nearDone.setAcknowledged(true);
-nearDone.start(0, "following", 95);
-const nearly = nearDone.tick(1000, {pageKind: "following", count: 95, expected: 100, visibleKey: "c", moved: true, atBottom: false, unit: 0});
-check(nearly.action === "stop" && nearly.reason.indexOf("差不多了") >= 0, "已记人数接近总数就停");
-const bottomReader = createAutoReader();
-bottomReader.openConfirm();
-bottomReader.setAcknowledged(true);
-bottomReader.start(0, "followers", 100);
-bottomReader.tick(0, {pageKind: "followers", count: 100, visibleKey: "user_a", moved: true, atBottom: false, unit: 0});
-let bottomReason = "";
-for (let i = 0; i < 8; i++) {
-  const step = bottomReader.tick(1000 + i * 1000, {
-    pageKind: "followers",
-    count: 100,
-    visibleKey: "user_a",
-    moved: false,
-    atBottom: true,
-    unit: 0
-  });
-  if (step.action === "stop") { bottomReason = step.reason; break; }
-}
-check(bottomReason.indexOf("已到列表底") >= 0 && bottomReader.phase() === "off", "到底且不再加载才停");
-check(bottomReader.tick(20000, {pageKind: "followers", count: 100, visibleKey: "user_b", moved: true, atBottom: false, unit: 0}).action === "idle", "停下后保持关闭");
-const stuckReader = createAutoReader();
-stuckReader.openConfirm();
-stuckReader.setAcknowledged(true);
-stuckReader.start(0, "following", 3);
-stuckReader.tick(0, {pageKind: "following", count: 3, visibleKey: "user_a", moved: true, atBottom: false, unit: 0});
-let stuckReason = "";
-for (let i = 0; i < AUTO_READ_DRY_LIMIT + 2; i++) {
-  const step = stuckReader.tick(1000 + i * 1000, {
-    pageKind: "following",
-    count: 3,
-    visibleKey: "user_a",
-    moved: false,
-    atBottom: false,
-    unit: 0
-  });
-  if (step.action === "stop") { stuckReason = step.reason; break; }
-}
-check(stuckReason.indexOf("页面没有继续加载") >= 0, "滚不动且画面不变就说明没有继续加载");
-check(scrollStartPlan({acked: false, mode: "scroll", pageKind: "followers", hasScroller: true}).reason === "请先勾选确认", "没勾确认不能开始滚动");
-check(scrollStartPlan({acked: true, mode: "scroll", pageKind: "followers", hasScroller: false}).reason === "没有找到可滚动的列表，请先打开关注、粉丝或认证粉丝页", "找不到滚动容器就说明原因");
-const scrollOk = scrollStartPlan({acked: true, mode: "scroll", pageKind: "blue-followers", hasScroller: true});
-check(scrollOk.ok === true && scrollOk.action === "scroll", "勾选并且找到容器时滚动模式可以启动");
-check(scrollStartPlan({acked: true, mode: "fast", pageKind: "", hasScroller: false}).action === "fast", "快速模式不依赖滚动容器");
-const inner = chooseScrollNode([
-  {overflowY: "visible", scrollHeight: 400, clientHeight: 800, isDocument: false},
-  {overflowY: "auto", scrollHeight: 9000, clientHeight: 700, isDocument: false},
-  {overflowY: "visible", scrollHeight: 800, clientHeight: 800, isDocument: true}
-]);
-check(inner === 1, "优先用名单格子外面真正在滚的那一层");
-check(chooseScrollNode([{overflowY: "visible", scrollHeight: 800, clientHeight: 800, isDocument: true}]) === -1, "窗口本身不更高时不当成可滚动列表");
-const fakeList = {scrollTop: 120, clientHeight: 700, scrollHeight: 8000};
-const nudged = nudgeScroller(fakeList, 700);
-check(nudged.moved === true && fakeList.scrollTop > 120 && fakeList.scrollTop < 120 + 700, "滚动从当前位置往下推一屏，不跳到末尾");
-check(nudgeScroller(null, 700).moved === false, "没有容器时滚动不生效");
-const noMove = createAutoReader();
-noMove.openConfirm();
-noMove.setAcknowledged(true);
-noMove.start(0, "followers", 4);
-noMove.tick(1000, {pageKind: "followers", count: 4, visibleKey: "a", moved: false, atBottom: false, sinceMoveMs: 1000, unit: 0});
-const missed = noMove.tick(1000 + AUTO_READ_NO_MOVE_MS, {pageKind: "followers", count: 4, visibleKey: "b", moved: false, atBottom: false, sinceMoveMs: AUTO_READ_NO_MOVE_MS, unit: 0});
-check(missed.action === "stop" && missed.reason.indexOf("没有找到可滚动的列表") >= 0 && noMove.phase() === "off", "好几秒都没滚到就停并写明原因");
-const capReader = createAutoReader();
-capReader.openConfirm();
-capReader.setAcknowledged(true);
-capReader.start(0, "followers", 0);
-let scrolls = 0;
-let capNow = 0;
-let capCount = 0;
-for (let i = 0; i < 300; i++) {
-  capCount += 1;
-  const step = capReader.tick(capNow, {pageKind: "followers", count: capCount, unit: 0, stuck: false});
-  if (step.action !== "scroll") break;
-  scrolls += 1;
-  capNow += 1000;
-}
-check(scrolls === AUTO_READ_MAX_SCREENS && capReader.phase() === "off", "单次最多 220 屏");
-const switched = createAutoReader();
-switched.openConfirm();
-switched.setAcknowledged(true);
-switched.start(0, "followers", 1);
-const left = switched.tick(1000, {pageKind: "following", count: 2, unit: 0});
-check(left.action === "stop" && left.reason.indexOf("不在刚才") >= 0, "离开刚才那份自己的名单就停");
+check(queryIdFromBundle('queryId:"abc123XYZ",operationName:"Following"', "Following") === "abc123XYZ", "能从页面代码里认出正在关注的接口编号");
+check(queryIdFromBundle('queryId:"abc123XYZ",operationName:"Following"', "Followers") === "", "别的接口编号不会认错");
+check(viewerIdFromTwid("u%3D424242") === "424242", "从 twid 里取出自己的数字 ID");
+check(missingFeatureNames("cannot be null: responsive_web_graphql_exclude_directive_enabled, verified_phone_label_enabled").length === 2, "缺参数时能补上字段名");
+const discovered = buildDiscoveredListRequest({op: "Following", queryId: "discoveredId1", viewerId: "99", cursor: "", features: {responsive: true}});
+check(discovered && discovered.url.indexOf("/graphql/discoveredId1/Following") >= 0 && discovered.url.indexOf("Bearer") < 0, "没有捕获请求时用查到的接口编号，地址里不带令牌");
+const discoveredVars = JSON.parse(decodeURIComponent(discovered.url.split("variables=")[1].split("&")[0]));
+check(discoveredVars.userId === "99" && discoveredVars.count === FAST_READ_PAGE_SIZE && discoveredVars.cursor == null, "发现的请求从名单开头、每页 100 人");
+check(buildDiscoveredListRequest({op: "FavoriteTweet", queryId: "discoveredId1", viewerId: "99"}) == null, "写接口不能用发现的编号去请求");
+const fill = fastRecoverPlan({status: 400, bodyText: JSON.stringify({errors: [{message: "cannot be null: some_flag"}]}), features: {}, featureTries: 0, rediscovered: false});
+check(fill.action === "fill" && fill.features.some_flag === true, "缺参数最多补三次里的第一次");
+const again = fastRecoverPlan({status: 400, bodyText: "{}", features: fill.features, featureTries: 3, rediscovered: false});
+check(again.action === "rediscover", "补满三次后，400 只重新找一次接口编号");
+const afterFind = fastRecoverPlan({status: 400, bodyText: "{}", features: {}, featureTries: 3, rediscovered: true});
+check(afterFind.action === "stop" && afterFind.reason.indexOf("400") >= 0, "重新找过仍是 400 就停");
+check(fastRecoverPlan({status: 429, bodyText: "{}", remaining: "9"}).action === "stop", "429 不重新找接口");
+
 check(fan.revisitText({O_raw: 2, I_raw: 1}) === "50%", "回访率是对方回复除以我发出的");
 check(fan.revisitText({O_raw: 0, I_raw: 3}) === "—", "没有我发出的次数时不写 0%");
 check(fan.revisitText({I_raw: 3}) === "—", "缺分母时不写 0%");
@@ -852,7 +695,7 @@ const maskedFacts = fan.boardHtml([{account: "user_01", tier: "银牌", status: 
 check(maskedFacts.indexOf("user_01") < 0 && maskedFacts.indexOf("回访 50%") >= 0, "打码后账号名隐藏，数据仍显示");
 check(maskedFacts.indexOf("重点维护") < 0 && maskedFacts.indexOf("建议动作") < 0, "名单不写建议");
 check(built.includes("更多") && built.includes("一键打码") && built.includes("全屏") && built.includes("查看风险并决定是否开启"), "主界面留打码和全屏，其余收进更多");
-check(built.includes("脚本自己连续请求") && built.includes("风险比滚动更高"), "风险提示写明快速模式是自己请求列表");
+check(built.includes("脚本会自己连续请求你的正在关注列表") && built.includes("不能保证安全") && built.includes("风险比滚动更高") === false, "风险提示写自动请求，不再提滚动方式");
 const listUrl = "https://x.com/i/api/graphql/capturedHash/Following?variables=" + encodeURIComponent(JSON.stringify({userId: "1", count: 20, cursor: "old"})) + "&features=" + encodeURIComponent(JSON.stringify({responsive: true}));
 check(isOwnListApiUrl(listUrl, "Following") && !isOwnListApiUrl(listUrl, "Followers"), "只认自己捕获到的关注或粉丝接口");
 const blueUrl = "https://x.com/i/api/graphql/capturedHash/BlueVerifiedFollowers?variables=" + encodeURIComponent(JSON.stringify({userId: "1", count: 20}));
@@ -935,12 +778,55 @@ check(replayPage.__fanAuditKeepListTemplate(replaySeen[0].listId) === true, "确
 const exposed = replayPage.__fanAuditListTemplate("Following");
 check(exposed && exposed.url.indexOf("capturedHash") >= 0 && exposed.headers == null, "交出去的模板没有请求头");
 const replayReq = buildListPageRequest(exposed, "");
+replayPage.document = {cookie: "ct0=csrf-value; twid=u%3D7", scripts: []};
 const replayResult = await replayPage.__fanAuditFetchList("Following", replayReq.url, replayReq.method, replayReq.body);
 check(replayResult.status === 200 && replayResult.remaining === "9", "快速读取走页面原来的 fetch");
-check(replayInit && replayInit.headers.authorization === "Bearer test-token" && replayInit.headers.cookie == null, "复用页面设置过的令牌，不带 cookie 头");
+check(replayInit && replayInit.headers.authorization === "Bearer test-token" && replayInit.headers.cookie == null && replayInit.headers["x-csrf-token"] === "csrf-value", "复用捕获到的令牌，cookie 只变成校验头");
+check(JSON.stringify(replayResult).indexOf("csrf-value") < 0 && JSON.stringify(replayResult).indexOf("test-token") < 0, "响应结果里不带回令牌或 cookie");
 check(replayPage.__fanAuditFetchList("Followers", replayReq.url, "GET", "").then, "别的名单没有捕获到就不会发");
 const wrong = await replayPage.__fanAuditFetchList("FavoriteTweet", "https://x.com/i/api/graphql/x/FavoriteTweet", "POST", "{}");
 check(wrong.status === 0, "写接口直接拒绝");
+const barePage = makePage();
+barePage.document = {
+  cookie: "ct0=csrf-value; twid=u%3D4242",
+  scripts: [{src: "https://abs.twimg.com/responsive-web/client-web/main.js"}]
+};
+barePage.bodies["https://abs.twimg.com/responsive-web/client-web/main.js"] = 'queryId:"foundQuery1",operationName:"Following"';
+let bareInit = null;
+barePage.fetch = function (input, init) {
+  const key = typeof input === "string" ? input : "";
+  if (key.indexOf("/graphql/") >= 0) bareInit = init;
+  const text = barePage.bodies[key] || "{\"data\":{}}";
+  return Promise.resolve({
+    status: 200,
+    ok: true,
+    headers: {get: function () { return ""; }},
+    text: function () { return Promise.resolve(text); },
+    clone: function () { return {text: function () { return Promise.resolve(text); }}; }
+  });
+};
+installHooks(barePage, function () {});
+const ensured = await barePage.__fanAuditEnsureList("Following", false);
+check(ensured.queryId === "foundQuery1" && ensured.viewerId === "4242" && ensured.hasCsrf === true && ensured.captured === false, "没捕获请求时从页面代码和 twid 找出接口");
+const bareReq = buildDiscoveredListRequest({op: "Following", queryId: ensured.queryId, viewerId: ensured.viewerId, features: {}});
+const bareResult = await barePage.__fanAuditFetchList("Following", bareReq.url, "GET", "");
+check(bareResult.status === 200 && bareInit && bareInit.headers.authorization === "Bearer " + PUBLIC_WEB_BEARER && bareInit.headers.cookie == null, "没有捕获令牌时用网页公开令牌，仍不带 cookie 头");
+const relStore = emptyStore();
+relStore.prefs.owner = "demo_owner";
+applyCapture(relStore, {kind: "following", skip: "", users: [
+  {id: "1", handle: "user_01", followsMe: true},
+  {id: "2", handle: "user_02", followsMe: false}
+]}, 1);
+const relData = toEngineData(relStore, "demo_owner", fan.repliesFromTweets);
+check(relData.sawFollowing && relData.sawFollowers, "只有正在关注、但带了是否关注我时，没回关可以算");
+check(!!relData.followers.user_01 && !relData.followers.user_02, "对方关注我才算进粉丝侧");
+const relRows = fan.analyze(relData, {me: "demo_owner", days: 30, gapsAreEmpty: true, tz: "UTC"}).rows;
+check(relRows.filter(function (row) { return row.account === "user_01"; })[0].mutual === true, "followed_by 为真是互关");
+check(relRows.filter(function (row) { return row.account === "user_02"; })[0].mutual === false, "followed_by 为假不是互关");
+const relBack = fan.notFollowedBack(relData, relRows);
+check(relBack && relBack.ready && relBack.items.length === 1 && relBack.items[0].handle === "user_02", "没回关只剩对方没关注我的人");
+const relBackup = exportBackup(relStore, 1);
+check(relBackup.indexOf(PUBLIC_WEB_BEARER) < 0 && relBackup.indexOf("csrf-value") < 0, "备份里没有令牌或 cookie");
 
 const parsedExclude = parseExcludeText("# 注释\n\n@User_02, USER_02\nuser_08");
 check(parsedExclude.length === 2 && parsedExclude.some(function (item) { return item.handle === "user_02"; }) && parsedExclude.some(function (item) { return item.handle === "user_08"; }), "逗号、换行、@ 和大小写都认成同一个账号");
