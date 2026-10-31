@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         fan-audit 粉丝体检
 // @namespace    https://github.com/ratt1e/Xfan-audit
-// @version      0.4.0
-// @description  在 X 上边逛边记下公开回复和关注名单，也能导入导出的 JSON。默认只读你浏览过的内容。可选自动读取名单默认关闭，可选滚动或快速请求。本地排除只隐藏，不在 X 上操作。
+// @version      0.5.0
+// @description  在 X 上边逛边记下公开回复和关注名单，也能导入导出的 JSON。默认只读你浏览过的内容。可选自动读取名单默认关闭，可选滚动或快速请求。本地排除只隐藏，不在 X 上操作。看板另有互惠名单，按回访率排我主动投入过的人。
 // @author       ranger_escape
 // @match        *://x.com/*
 // @match        *://twitter.com/*
@@ -69,7 +69,8 @@ var root = {};
       priority_bonus: {mutual: 5, verified: 5, followers_log10_max: 5}
     },
     greetings: {max_core_len: 15, words: ["早安", "早上好", "午安", "晚安", "互关", "回关", "互粉", "浇水", "浇朋友", "浇浇", "打卡", "新朋友", "gm", "gn", "follow back", "^来了", "^你好", "来咯", "来啦", "串门", "互一互", "互动互动", "早早早", "出摊"]},
-    exclude_accounts: ["grok"]
+    exclude_accounts: ["grok"],
+    reciprocity: {min_out: 3, high: 1.0, fair: 0.6, top: 20}
   };
   var TIERS = ["金牌", "银牌", "单向·他常来我少回", "单向·我常去他没回", "沉睡互关", "样本不足", "其他有分", "零互动"];
   var TALK = {reply: 1, quote: 1, mention: 1};
@@ -1049,9 +1050,88 @@ var root = {};
       + '<div class="grid"><div class="card"><div class="num">' + count + '</div><div class="lab">没回关</div></div></div>'
       + body + "</section>";
   }
+  // 互惠名单：只看我发出过 min_out 条的人，按「对方回复我 ÷ 我发出」分组。
+  // 回访率口径与 revisitText 一致（分子分母都含问候，不封顶），只是把这份数据组织成名单。
+  // 只做展示，不进入 score()，也不改变分层和星级门槛。
+  function reciprocity(rows, conf) {
+    var c = conf || CONFIG.reciprocity || {};
+    var minOut = Number(c.min_out);
+    if (!isFinite(minOut) || minOut < 1) minOut = 3;
+    var hiLine = Number(c.high);
+    if (!isFinite(hiLine) || hiLine <= 0) hiLine = 1.0;
+    var fairLine = Number(c.fair);
+    if (!isFinite(fairLine) || fairLine <= 0) fairLine = 0.6;
+    if (fairLine > hiLine) fairLine = hiLine;
+    var top = Number(c.top);
+    if (!isFinite(top) || top < 1) top = 20;
+    var items = [];
+    (rows || []).forEach(function (x) {
+      if (!x || !x.account) return;
+      var out = Number(x.O_raw);
+      if (!isFinite(out) || out < minOut) return;
+      var inn = Number(x.I_raw);
+      if (!isFinite(inn) || inn < 0) inn = 0;
+      items.push({
+        account: x.account, rate: inn / out, out: out, inn: inn,
+        rounds: x.rounds || 0, tier: x.tier || "",
+        score: x.score == null ? null : x.score,
+        mutual: !!x.mutual, verified: !!x.verified
+      });
+    });
+    items.sort(function (a, b) {
+      if (b.rate !== a.rate) return b.rate - a.rate;
+      if (b.rounds !== a.rounds) return b.rounds - a.rounds;
+      if (b.out !== a.out) return b.out - a.out;
+      return a.account < b.account ? -1 : 1;
+    });
+    function pick(test) {
+      return items.filter(test);
+    }
+    return {
+      ready: items.length > 0, total: items.length, min_out: minOut, high: hiLine, fair: fairLine, top: top,
+      groups: [
+        {key: "carried", label: "他回得不比我少", note: "他回你的条数不少于你发出的（含持平）", items: pick(function (it) { return it.rate >= hiLine; })},
+        {key: "even", label: "有来有回", note: "他回了一部分，还没到一比一", items: pick(function (it) { return it.rate >= fairLine && it.rate < hiLine; })},
+        {key: "oneway", label: "我单向投入", note: "你发出得多，他回得少", items: pick(function (it) { return it.rate < fairLine; })}
+      ]
+    };
+  }
+  function reciprocityHtml(info, options) {
+    if (!info || !info.ready) return "";
+    options = options || {};
+    var known = {};
+    (options.rows || []).forEach(function (row, i) { known[row.account] = aliasText(i + 1); });
+    var next = (options.rows || []).length + 1;
+    var assigned = {};
+    function label(account) {
+      if (!options.masked) return profileAnchor(account, "@" + account);
+      if (known[account]) return escHtml(known[account]);
+      if (!assigned[account]) { assigned[account] = aliasText(next); next += 1; }
+      return escHtml(assigned[account]);
+    }
+    var cards = info.groups.map(function (g) {
+      return '<div class="card"><div class="num">' + g.items.length + '</div><div class="lab">' + escHtml(g.label) + "</div></div>";
+    }).join("");
+    var blocks = info.groups.map(function (g) {
+      var head = '<h3>' + escHtml(g.label) + "（" + g.items.length + "）</h3><p class=\"muted\">" + escHtml(g.note) + "</p>";
+      if (!g.items.length) return head + '<p class="muted">（暂时没有）</p>';
+      var shown = options.showAll ? g.items : g.items.slice(0, info.top);
+      var body = "<table><tr><th>账号</th><th>回访率</th><th>我发出</th><th>他回复</th><th>往返</th><th>分层</th></tr>";
+      shown.forEach(function (it) {
+        body += "<tr><td>" + label(it.account) + "</td><td>" + Math.round(it.rate * 100) + "%</td><td>" + it.out + "</td><td>" + it.inn + "</td><td>" + it.rounds + "</td><td>" + escHtml(it.tier || "—") + "</td></tr>";
+      });
+      body += "</table>";
+      if (!options.showAll && g.items.length > info.top) body += '<p class="muted">还有 ' + (g.items.length - info.top) + " 人未列出</p>";
+      return head + body;
+    }).join("");
+    return '<section class="card" id="reciprocity" style="margin-bottom:16px"><h2>互惠名单</h2>'
+      + '<p class="muted">只列我发出过 ' + info.min_out + " 条以上的人。回访率 = 他回复我 ÷ 我发出，口径与上面一致（含问候，可以超过 100%）。"
+      + "这是投入产出的一个视角，不是评价谁好谁坏；零公开回复也不等于没看过你。</p>"
+      + '<div class="grid">' + cards + "</div>" + blocks + "</section>";
+  }
   function applyConfig(cfg) {
     if (!cfg) return;
-    ["window", "weights", "persistence", "greeting_cap", "likes", "insufficient", "stars", "tiers", "greetings", "exclude_accounts"].forEach(function (key) {
+    ["window", "weights", "persistence", "greeting_cap", "likes", "insufficient", "stars", "tiers", "greetings", "exclude_accounts", "reciprocity"].forEach(function (key) {
       if (cfg[key] != null) CONFIG[key] = cfg[key];
     });
   }
@@ -1069,6 +1149,7 @@ var root = {};
     var rows = result.rows;
     var back = notFollowedBack(data, rows);
     var diff = followDiff(data);
+    var rec = reciprocity(rows, options.config && options.config.reciprocity);
     var extras = [];
     if (back) extras.push({id: "not-followed-back", count: back.ready ? String(back.items.length) : "—", label: "没回关"});
     if (diff) {
@@ -1079,12 +1160,14 @@ var root = {};
       });
       extras.push({id: "follow-diff", count: changeSeen ? String(changeTotal) : "—", label: "关注变化"});
     }
+    if (rec && rec.ready) extras.push({id: "reciprocity", count: String(rec.total), label: "互惠名单"});
     var html = boardHtml(rows, {masked: !!options.masked, open: options.open || {}, extras: extras, showAll: !!options.showAll, interactionReady: result.meta.interactionReady !== false, interactionNote: result.meta.interactionNote || ""});
     if (back) html += notFollowedBackHtml(back, {masked: !!options.masked, rows: rows});
     if (diff) html += followDiffHtml(diff, {masked: !!options.masked, rows: rows});
-    return {html: html, rows: rows, meta: result.meta, back: back, diff: diff};
+    if (rec) html += reciprocityHtml(rec, {masked: !!options.masked, rows: rows, showAll: !!options.showAll});
+    return {html: html, rows: rows, meta: result.meta, back: back, diff: diff, reciprocity: rec};
   }
-  root.FanAudit = {CONFIG: CONFIG, TIERS: TIERS, defaultTimeZone: defaultTimeZone, analyze: analyze, loadTexts: loadTexts, parseCsv: parseCsv, fileKind: fileKind, nameKind: nameKind, inferOwner: inferOwner, repliesFromTweets: repliesFromTweets, boardHtml: boardHtml, revisitText: revisitText, listFacts: listFacts, jumpPlan: jumpPlan, followDiff: followDiff, followDiffHtml: followDiffHtml, notFollowedBack: notFollowedBack, notFollowedBackHtml: notFollowedBackHtml, renderReport: renderReport};
+  root.FanAudit = {CONFIG: CONFIG, TIERS: TIERS, defaultTimeZone: defaultTimeZone, analyze: analyze, loadTexts: loadTexts, parseCsv: parseCsv, fileKind: fileKind, nameKind: nameKind, inferOwner: inferOwner, repliesFromTweets: repliesFromTweets, boardHtml: boardHtml, revisitText: revisitText, listFacts: listFacts, jumpPlan: jumpPlan, followDiff: followDiff, followDiffHtml: followDiffHtml, notFollowedBack: notFollowedBack, notFollowedBackHtml: notFollowedBackHtml, reciprocity: reciprocity, reciprocityHtml: reciprocityHtml, renderReport: renderReport};
 })(root);
 /* FAN_ENGINE_END */
 var FanAudit = root.FanAudit;
@@ -5022,10 +5105,13 @@ function boot() {
         });
         extras.push({id: "follow-diff", count: changeSeen ? String(changeTotal) : "—", label: "关注变化"});
       }
+      var rec = FanAudit.reciprocity ? FanAudit.reciprocity(result.rows) : null;
+      if (rec && rec.ready) extras.push({id: "reciprocity", count: String(rec.total), label: "互惠名单"});
       var fragment = FanAudit.boardHtml(result.rows, {masked: !!store.prefs.masked, open: openTiers, extras: extras, interactionReady: result.meta.interactionReady !== false, interactionNote: result.meta.interactionNote || ""});
       if (back) fragment += FanAudit.notFollowedBackHtml(back, {masked: !!store.prefs.masked, rows: result.rows});
       var diffHtml = diff ? FanAudit.followDiffHtml(diff, {masked: !!store.prefs.masked, rows: result.rows}) : "";
       fragment += diffHtml;
+      if (rec && FanAudit.reciprocityHtml) fragment += FanAudit.reciprocityHtml(rec, {masked: !!store.prefs.masked, rows: result.rows});
       return {result: result, fragment: fragment, owner: owner, back: back};
     } catch (err) {
       return {error: err && err.message ? err.message : "时区无效，请填 IANA 名称，例如 Asia/Shanghai"};

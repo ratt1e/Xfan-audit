@@ -237,6 +237,64 @@ def score(rows, s, e, like_mode="strict", cfg=CFG, observed=None):
     return res
 
 
+RECIPROCITY_DEFAULT = dict(min_out=3, high=1.0, fair=0.6, top=20)
+
+
+def _num(value, fallback, minimum=None):
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    if out != out or out in (float("inf"), float("-inf")):
+        return fallback
+    if minimum is not None and out < minimum:
+        return fallback
+    return out
+
+
+def reciprocity_groups(rows, conf=None):
+    """互惠名单：只看我发出过 min_out 条的人，按「对方回复我 ÷ 我发出」分组。
+
+    口径和 engine/fan_audit_engine.js 的 reciprocity() 一致：分子分母都含问候，
+    回访率可以超过 100%。只做展示，不参与 score()，也不改变分层和星级门槛。
+    """
+    c = dict(RECIPROCITY_DEFAULT)
+    if isinstance(conf, dict):
+        c.update({k: conf[k] for k in c if k in conf})
+    min_out = int(_num(c["min_out"], 3, 1))
+    hi_line = _num(c["high"], 1.0, 1e-9)
+    fair_line = _num(c["fair"], 0.6, 1e-9)
+    if fair_line > hi_line:
+        fair_line = hi_line
+    top = int(_num(c["top"], 20, 1))
+
+    items = []
+    for x in rows or []:
+        if not isinstance(x, dict) or not x.get("account"):
+            continue
+        out = _num(x.get("O_raw"), 0, 0)
+        if out < min_out:
+            continue
+        inn = _num(x.get("I_raw"), 0, 0)
+        items.append(dict(account=x["account"], rate=inn / out, out=int(out), inn=int(inn),
+                          rounds=int(_num(x.get("rounds"), 0, 0)), tier=x.get("tier") or "",
+                          score=x.get("score"), mutual=bool(x.get("mutual")), verified=bool(x.get("verified"))))
+    items.sort(key=lambda it: (-it["rate"], -it["rounds"], -it["out"], it["account"]))
+
+    def pick(test):
+        return [it for it in items if test(it)]
+
+    return dict(ready=bool(items), total=len(items), min_out=min_out, high=hi_line, fair=fair_line, top=top,
+                groups=[
+                    dict(key="carried", label="他回得不比我少", note="他回你的条数不少于你发出的（含持平）",
+                         items=pick(lambda it: it["rate"] >= hi_line)),
+                    dict(key="even", label="有来有回", note="他回了一部分，还没到一比一",
+                         items=pick(lambda it: fair_line <= it["rate"] < hi_line)),
+                    dict(key="oneway", label="我单向投入", note="你发出得多，他回得少",
+                         items=pick(lambda it: it["rate"] < fair_line)),
+                ])
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="互动关系星级（离线）")
     ap.add_argument("--interactions", required=True)

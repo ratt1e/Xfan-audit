@@ -811,6 +811,56 @@ def tier_color(tier):
     return "gray"
 
 
+def reciprocity_block(rec, alias, public):
+    """互惠名单：只列我发出过 min_out 条以上的人，按回访率分三组。
+
+    口径跟 engine/fan_audit_engine.js 的 reciprocity() 一致，只做展示，
+    不进入打分，也不改变分层和星级门槛。
+    """
+    if not rec or not rec.get("ready"):
+        return ""
+
+    def label(account):
+        if public:
+            return html.escape(str(alias.get(account) or "—"))
+        return profile_link(account, "@" + account)
+
+    def pct(rate):
+        return f"{math.floor(rate * 100 + 0.5)}%"
+
+    cards = "".join(
+        f'<div class="card"><div class="num">{len(g["items"])}</div>'
+        f'<div class="lab">{html.escape(g["label"])}</div></div>'
+        for g in rec["groups"]
+    )
+    blocks = []
+    for g in rec["groups"]:
+        head = (f'<h3>{html.escape(g["label"])}（{len(g["items"])}）</h3>'
+                f'<p class="muted">{html.escape(g["note"])}</p>')
+        if not g["items"]:
+            blocks.append(head + '<p class="muted">（暂时没有）</p>')
+            continue
+        shown = g["items"][:rec["top"]]
+        body = ["<table><tr><th>账号</th><th>回访率</th><th>我发出</th><th>他回复</th><th>往返</th><th>分层</th></tr>"]
+        for it in shown:
+            body.append(
+                f'<tr><td>{label(it["account"])}</td><td>{pct(it["rate"])}</td>'
+                f'<td>{it["out"]}</td><td>{it["inn"]}</td><td>{it["rounds"]}</td>'
+                f'<td>{html.escape(it.get("tier") or "—")}</td></tr>'
+            )
+        body.append("</table>")
+        if len(g["items"]) > rec["top"]:
+            body.append(f'<p class="muted">还有 {len(g["items"]) - rec["top"]} 人未列出</p>')
+        blocks.append(head + "".join(body))
+    return (
+        '<section class="card" id="reciprocity" style="margin-bottom:16px"><h2>互惠名单</h2>'
+        f'<p class="muted">只列我发出过 {rec["min_out"]} 条以上的人。回访率 = 他回复我 ÷ 我发出，'
+        "口径与上面一致（含问候，可以超过 100%）。这是投入产出的一个视角，不是评价谁好谁坏；"
+        "零公开回复也不等于没看过你。</p>"
+        f'<div class="grid">{cards}</div>' + "".join(blocks) + "</section>"
+    )
+
+
 def render(res, meta, data=None, conf=None, public=False, lists_dir=None, prev_dir=None, keep_path=None, bundle=None, exclude_ids=(), exclude_handles=()):
     alias = {}
     if public:
@@ -847,6 +897,9 @@ def render(res, meta, data=None, conf=None, public=False, lists_dir=None, prev_d
     diff = meta.get("follow_diff")
     if diff:
         stat_cards += jump_card("#follow-diff", follow_count(diff), "关注变化", empty=(follow_count(diff) == "0"))
+    rec = meta.get("reciprocity")
+    if rec and rec.get("ready"):
+        stat_cards += jump_card("#reciprocity", rec["total"], "互惠名单", empty=(rec["total"] == 0))
 
     def tier_section(tier):
         rows = [row for row in res if row["tier"] == tier]
@@ -915,6 +968,7 @@ def render(res, meta, data=None, conf=None, public=False, lists_dir=None, prev_d
 {sections}
 {not_back_block(info, alias, public)}
 {follow_block(diff, alias, public) if diff else ""}
+{reciprocity_block(rec, alias, public)}
 </div>
 <footer>fan-audit v0.1 · 试用版 · 权重待验证 · 回访率只是已采集回复的比例，工具不会自动取关或屏蔽。改日期只在这份文件里重算，不联网。</footer>
 <script id="fan-audit-engine">
@@ -947,13 +1001,22 @@ def open_dashboard(path):
 
 
 def write_csv(res, path):
-    keys = ["account", "tier", "status", "score", "stars", "priority", "O", "I", "O_raw", "I_raw", "greet", "rounds", "T",
+    keys = ["account", "tier", "status", "score", "stars", "priority", "O", "I", "O_raw", "I_raw", "revisit",
+            "greet", "rounds", "T",
             "unconfirmed", "active_days", "sub_days", "L_in", "P", "B", "R", "greet_cap", "mutual", "i_follow",
             "follows_me", "verified", "followers_count", "action"]
+    rows = []
+    for row in res:
+        item = dict(row)
+        denom = row.get("O_raw") or 0
+        numer = row.get("I_raw")
+        # 与 engine/fan_audit_engine.js 的 revisitText 同一口径：我没有发出过就留空，不写 0%。
+        item["revisit"] = "" if not denom or numer is None else math.floor(100 * numer / denom + 0.5)
+        rows.append(item)
     with open(path, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.DictWriter(f, fieldnames=keys, extrasaction="ignore")
         w.writeheader()
-        w.writerows(res)
+        w.writerows(rows)
 
 
 def main(argv=None):
@@ -1083,6 +1146,7 @@ def main(argv=None):
         except (ValueError, OSError) as exc:
             ap.error(str(exc) if isinstance(exc, ValueError) else "输出目录无法更新")
     os.makedirs(a.out, exist_ok=True)
+    meta["reciprocity"] = rs.reciprocity_groups(res, conf.get("reciprocity"))
     write_csv(res, os.path.join(a.out, "accounts.csv"))
     try:
         private_html = render(res, meta, data, conf, public=False, lists_dir=lists_dir,
@@ -1119,6 +1183,10 @@ def main(argv=None):
     if a.auto_prev or a.prev_lists:
         print(os.path.join(a.out, follow_diff.SUMMARY_NAME))
     print(nfb.summary_line(meta["not_followed_back"]))
+    rec = meta.get("reciprocity") or {}
+    if rec.get("ready"):
+        sizes = "，".join(f'{g["label"]} {len(g["items"])}' for g in rec["groups"])
+        print(f'互惠名单 {rec["total"]} 人（我发出 ≥{rec["min_out"]} 条）：{sizes}')
     if exclude_used and exclude_n:
         print(f"已排除 {exclude_n} 人")
     c = Counter(x["tier"] for x in res)

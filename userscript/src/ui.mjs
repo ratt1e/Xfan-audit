@@ -1537,10 +1537,13 @@ function boot() {
         });
         extras.push({id: "follow-diff", count: changeSeen ? String(changeTotal) : "—", label: "关注变化"});
       }
+      var rec = FanAudit.reciprocity ? FanAudit.reciprocity(result.rows) : null;
+      if (rec && rec.ready) extras.push({id: "reciprocity", count: String(rec.total), label: "互惠名单"});
       var fragment = FanAudit.boardHtml(result.rows, {masked: !!store.prefs.masked, open: openTiers, extras: extras, interactionReady: result.meta.interactionReady !== false, interactionNote: result.meta.interactionNote || ""});
       if (back) fragment += FanAudit.notFollowedBackHtml(back, {masked: !!store.prefs.masked, rows: result.rows});
       var diffHtml = diff ? FanAudit.followDiffHtml(diff, {masked: !!store.prefs.masked, rows: result.rows}) : "";
       fragment += diffHtml;
+      if (rec && FanAudit.reciprocityHtml) fragment += FanAudit.reciprocityHtml(rec, {masked: !!store.prefs.masked, rows: result.rows});
       return {result: result, fragment: fragment, owner: owner, back: back};
     } catch (err) {
       return {error: err && err.message ? err.message : "时区无效，请填 IANA 名称，例如 Asia/Shanghai"};

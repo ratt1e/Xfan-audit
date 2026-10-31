@@ -19,6 +19,13 @@
     "one_way": {"min_from_one_side": 3, "max_from_other_side": 1},
     "priority_bonus": {"mutual": 5, "verified": 5, "followers_log10_max": 5}
   },
+  "reciprocity": {
+    "min_out": 3,
+    "high": 1.0,
+    "fair": 0.6,
+    "top": 20,
+    "_说明": "互惠名单：只列我发出过 min_out 条以上的人。high / fair 是回访率（他回复 ÷ 我发出）的分档线，可以超过 1（他回得比我发得多）。只做展示，不参与打分，也不改变分层和星级门槛。"
+  },
   "greetings": {
     "max_core_len": 15,
     "_规则": "去掉 @ 和链接、标点、表情后不超过 max_core_len 个字，且包含下列任一词，就算问候/水评。以 ^ 开头的词只在开头匹配；英文词按单词边界匹配。",

@@ -60,7 +60,7 @@ check(built.split("不能保证安全").length === 2, "只写明不能保证安�
 check(!/Bearer [A-Za-z0-9_\-.]{20,}/.test(built), "没有硬编码 Bearer 令牌");
 check(built.includes(EMPTY_GUIDE), "空状态文案在安装文件里");
 const meta = "// " + "@";
-check(built.includes(meta + "version      0.4.0"), "版本号");
+check(built.includes(meta + "version      0.5.0"), "版本号");
 check(built.includes("只在本地隐藏，不会在 X 上操作"), "排除说明写明只在本地隐藏");
 check(built.includes("/mutes") === false && built.includes("friendships/destroy") === false && built.includes("blocks/create") === false, "排除不会调用屏蔽或取关接口");
 check(built.includes(meta + "sandbox      raw"), "要求页面环境");
