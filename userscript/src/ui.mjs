@@ -1,4 +1,4 @@
-import { EMPTY_GUIDE, RETENTION_DAYS, SNAPSHOT_WAITING, BOARD_CSS, emptyStore, normalizeStore, prune, parseCapture, applyCapture, coverageReport, toEngineData, snapshotDiffInput, recordSnapshot, exportTimeFromName, maybeSnapshot, addKeep, removeKeep, looksLikeBackup, parseExcludeText, addExclude, addExcludeMany, removeExclude, clearExclude, excludeText, headerListCount, headerVerifiedCount, applyImported, contextProblems, installHooks, pageHookProgram, exportBackup, importBackup, standaloneHtml, norm, operationName, classifyUrl, listKindFromPath, userFromVisible, diagnosticsCopy, sameRealm, pageContext, badgeText, progressText, AUTO_READ_RISK, AUTO_READ_ACK, FAST_READ_MAX_PAGES, READ_FAIL, listReadReport, autoReadPageKind, autoReadCount, buildListPageRequest, buildDiscoveredListRequest, fastRecoverPlan, bottomCursor, fastPageStopReason, createFastReader } from "./logic.mjs";
+import { EMPTY_GUIDE, RETENTION_DAYS, SNAPSHOT_WAITING, BOARD_CSS, emptyStore, normalizeStore, prune, parseCapture, applyCapture, coverageReport, toEngineData, snapshotDiffInput, recordSnapshot, exportTimeFromName, maybeSnapshot, addKeep, removeKeep, looksLikeBackup, parseExcludeText, addExclude, addExcludeMany, removeExclude, clearExclude, excludeText, headerListCount, headerVerifiedCount, applyImported, contextProblems, installHooks, pageHookProgram, exportBackup, importBackup, standaloneHtml, norm, operationName, classifyUrl, listKindFromPath, userFromVisible, diagnosticsCopy, sameRealm, pageContext, badgeText, progressText, AUTO_READ_RISK, AUTO_READ_ACK, FAST_READ_MAX_PAGES, READ_FAIL, UNKNOWN_ACCOUNT, listReadReport, idAgreement, autoReadPageKind, buildListPageRequest, buildDiscoveredListRequest, applyViewerId, viewerIdFromListRequest, fastRecoverPlan, bottomCursor, createFastRound, fastRoundCount, advanceFastRound, fastRoundStatusText, fastRoundDoneText, createFastReader } from "./logic.mjs";
 
 var STORE_KEY = "fan-audit-v1";
 
@@ -182,10 +182,10 @@ function boot() {
     if ((captured.kind === "following" || captured.kind === "followers" || captured.kind === "blue-followers") && !captured.skip && typeof keep === "function") keep(listId);
     else if (typeof drop === "function") drop(listId);
   }
-  function ingest(url, text, body, countTraffic, listId) {
+  function ingest(url, text, body, countTraffic, listId, requestUserId) {
     if (countTraffic) noteTraffic(url);
     var owner = currentOwner();
-    var captured = parseCapture(url, text, {owner: owner, body: body, pageKind: listKindFromPath(location.pathname, owner), pagePath: location.pathname});
+    var captured = parseCapture(url, text, {owner: owner, body: body, pageKind: listKindFromPath(location.pathname, owner), pagePath: location.pathname, requestUserId: requestUserId || ""});
     rememberListTemplate(captured, listId);
     if (captured.skip) {
       diag.skips[captured.skip] = (diag.skips[captured.skip] || 0) + 1;
@@ -651,10 +651,25 @@ function boot() {
       widenBtn.textContent = wide ? "退出全屏" : "全屏";
       widenBtn.setAttribute("aria-pressed", wide ? "true" : "false");
     }
-    var fastKnownPages = 0;
     var fastListNotes = [];
     var fastFeatures = {};
     var fastKind = "following";
+    var fastRoundSeen = createFastRound();
+    var fastRoundPages = 0;
+    var fastRoundNoted = false;
+    function fastExpected(kind) {
+      if (kind === "followers") return store.totals.followers || 0;
+      if (kind === "blue-followers") return store.totals.blue || 0;
+      return store.totals.following || 0;
+    }
+    function roundSummary() {
+      return fastRoundDoneText(fastRoundCount(fastRoundSeen), fastRoundPages);
+    }
+    function resetFastRound() {
+      fastRoundSeen = createFastRound();
+      fastRoundPages = 0;
+      fastRoundNoted = false;
+    }
     renderAutoRead = function () {
       var phase = fastReader.running() ? "running" : autoPhase;
       autoRisk.hidden = phase !== "confirm";
@@ -663,16 +678,21 @@ function boot() {
       if (phase === "confirm" && autoShown !== "confirm") autoAck.checked = false;
       autoShown = phase;
       var reason = fastReader.stopReason();
-      if (phase === "running") {
-        var total = fastKind === "followers" ? (store.totals.followers || 0) : fastKind === "blue-followers" ? (store.totals.blue || 0) : (store.totals.following || 0);
-        autoStatus.textContent = "读取中 " + progressText(autoReadCount(store, fastKind), total);
-      } else if (phase === "confirm") autoStatus.textContent = "";
+      if (phase === "running") autoStatus.textContent = fastRoundStatusText(fastRoundCount(fastRoundSeen), fastExpected(fastKind));
+      else if (phase === "confirm") autoStatus.textContent = "";
       else if (reason) autoStatus.textContent = reason;
       else autoStatus.textContent = "";
     }
     function haltAuto(reason) {
       autoPhase = "off";
-      fastReader.stop(reason);
+      var text = String(reason || "");
+      var notes = fastListNotes.join(" ");
+      if (notes && text !== notes && text.indexOf(notes) !== 0) text = notes + (text ? " " + text : "");
+      if (!fastRoundNoted) {
+        if (text && !/[。！？]$/.test(text)) text += "。";
+        text += roundSummary();
+      }
+      fastReader.stop(text);
       renderAutoRead();
     }
     var MANUAL_FALLBACK = "自动读取没能开始。请自己打开正在关注页往下翻，脚本会记下页面已经加载的名单。";
@@ -685,6 +705,11 @@ function boot() {
           return;
         }
       }
+      if (!String(cursor || "") && !counted) {
+        resetFastRound();
+        fastKind = op === "Following" ? "following" : op === "BlueVerifiedFollowers" ? "blue-followers" : "followers";
+        renderAutoRead();
+      }
       var page = pageWindow();
       if (!page || typeof page.__fanAuditEnsureList !== "function" || typeof page.__fanAuditFetchList !== "function") {
         haltAuto(MANUAL_FALLBACK);
@@ -693,7 +718,20 @@ function boot() {
       Promise.resolve(page.__fanAuditEnsureList(op, !!rediscovered)).then(function (info) {
         if (!fastReader.running()) return;
         info = info || {};
-        if (!info.hasCsrf || !info.queryId || !info.viewerId) {
+        if (!info.viewerId) {
+          diag.listRead = listReadReport({
+            op: op,
+            status: 0,
+            auth: info.auth,
+            querySource: info.captured ? "captured" : (info.queryId ? "discovered" : "unknown"),
+            users: 0,
+            rawUsers: 0,
+            ids: idAgreement([info.twidId, info.capturedViewerId])
+          });
+          haltAuto(UNKNOWN_ACCOUNT);
+          return;
+        }
+        if (!info.hasCsrf || !info.queryId) {
           fastListNotes.push(fastListLabel(op) + "：" + MANUAL_FALLBACK);
           done();
           return;
@@ -704,6 +742,7 @@ function boot() {
         var tpl = page.__fanAuditListTemplate ? page.__fanAuditListTemplate(op) : null;
         if (tpl && !rediscovered) req = buildListPageRequest(tpl, cursor);
         if (!req) req = buildDiscoveredListRequest({op: op, queryId: info.queryId, viewerId: info.viewerId, cursor: cursor, features: useFeatures, origin: location.origin});
+        req = req ? applyViewerId(req, info.viewerId) : null;
         if (!req) {
           fastListNotes.push(fastListLabel(op) + "：" + MANUAL_FALLBACK);
           done();
@@ -733,40 +772,54 @@ function boot() {
           }
           var kind = op === "Following" ? "following" : op === "BlueVerifiedFollowers" ? "blue-followers" : "followers";
           fastKind = kind;
-          var before = autoReadCount(store, kind);
-          ingest(req.url, res.text || "", req.body || "", false, "");
-          var after = autoReadCount(store, kind);
+          var requestUserId = viewerIdFromListRequest(req.url, req.body);
+          ingest(req.url, res.text || "", req.body || "", false, "", requestUserId);
           var next = "";
-          var pageUsers = -1;
+          var parsed = null;
+          var rawUsers = 0;
           try {
-            var parsed = parseCapture(req.url, res.text || "", {owner: currentOwner()});
-            pageUsers = parsed && parsed.users ? parsed.users.length : 0;
+            parsed = parseCapture(req.url, res.text || "", {owner: currentOwner(), requestUserId: requestUserId});
+            rawUsers = parsed && parsed.rawUsers != null ? (parsed.rawUsers | 0) : 0;
+          } catch (err) {
+            rawUsers = 0;
+          }
+          try {
             next = bottomCursor(JSON.parse(res.text || ""));
           } catch (err) {
             next = "";
-            pageUsers = -1;
           }
-          var expected = kind === "following" ? (store.totals.following || 0) : kind === "blue-followers" ? (store.totals.blue || 0) : (store.totals.followers || 0);
-          renderAutoRead();
-          updateBadge();
-          if (panelOpen) render();
-          if ((pageUsers | 0) === 0 && !String(cursor || "")) {
+          var pageUsers = parsed && parsed.users ? parsed.users.length : 0;
+          var expected = fastExpected(kind);
+          if ((parsed && parsed.skip) || ((rawUsers | 0) === 0 && !String(cursor || ""))) {
             diag.listRead = listReadReport({
               op: op,
               status: res.status,
               text: res.text || "",
               auth: info.auth,
               querySource: info.captured ? "captured" : "discovered",
-              users: 0,
-              skip: parsed && parsed.skip
+              users: pageUsers,
+              rawUsers: rawUsers,
+              skip: parsed && parsed.skip,
+              ids: idAgreement([info.twidId, info.capturedViewerId, requestUserId, parsed && parsed.ownerId])
             });
             haltAuto(READ_FAIL);
             return;
           }
-          var pageStop = fastPageStopReason(before, after, cursor, next, pageUsers, expected);
-          if (!pageStop && pageUsers > 0 && after === before) fastKnownPages += 1;
+          var step = advanceFastRound(fastRoundSeen, {
+            users: parsed && parsed.users ? parsed.users : [],
+            prevCursor: cursor,
+            nextCursor: next,
+            rawUsers: rawUsers,
+            expected: expected
+          });
+          fastRoundPages += 1;
+          renderAutoRead();
+          updateBadge();
+          if (panelOpen) render();
+          var pageStop = step.reason;
           if (pageStop) {
-            fastListNotes.push(fastListLabel(op) + "：" + pageStop);
+            fastListNotes.push(fastListLabel(op) + "：" + pageStop + roundSummary());
+            fastRoundNoted = true;
             done();
             return;
           }
@@ -796,9 +849,10 @@ function boot() {
         autoStatus.textContent = begun.reason;
         return;
       }
-      fastKnownPages = 0;
+      resetFastRound();
       fastListNotes = [];
       fastFeatures = {};
+      diag.listRead = "";
       autoPhase = "running";
       renderAutoRead();
       function nextOp(index) {

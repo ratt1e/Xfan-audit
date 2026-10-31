@@ -9,8 +9,9 @@ import {
   pageContext, badgeText, listIsComplete, exportTimeFromName, recordSnapshot, snapshotDiffInput,
   addKeep, removeKeep, applyImported, headerListCount, headerVerifiedCount, SNAPSHOT_WAITING, looksLikeBackup,
   parseExcludeText, addExclude, addExcludeMany, removeExclude, clearExclude, excludeText,
-  progressText, fastPageStopReason, fastRecoverPlan, READ_FAIL, listReadReport, queryIdFromBundle, viewerIdFromTwid, missingFeatureNames,
-  buildDiscoveredListRequest, PUBLIC_WEB_BEARER,
+  progressText, fastPageStopReason, fastRecoverPlan, READ_FAIL, UNKNOWN_ACCOUNT, listReadReport, idAgreement, confirmViewerId, queryIdFromBundle, viewerIdFromTwid, missingFeatureNames,
+  createFastRound, fastRoundCount, advanceFastRound, fastRoundStatusText, fastRoundDoneText,
+  buildDiscoveredListRequest, applyViewerId, viewerIdFromListRequest, PUBLIC_WEB_BEARER,
   autoReadPageKind, autoReadCount, FAST_READ_PAGE_SIZE, FAST_READ_MAX_PAGES,
   FAST_READ_REMAINING_FLOOR, buildListPageRequest, bottomCursor, fastReadStopReason, createFastReader,
   isOwnListApiUrl
@@ -61,7 +62,7 @@ check(built.split("不能保证安全").length === 2, "只写明不能保证安�
 check(!/Bearer [A-Za-z0-9_\-.]{20,}/.test(built.replace(PUBLIC_WEB_BEARER, "")), "除了网页公开令牌，没有别的硬编码 Bearer");
 check(built.includes(EMPTY_GUIDE), "空状态文案在安装文件里");
 const meta = "// " + "@";
-check(built.includes(meta + "version      0.5.1"), "版本号");
+check(built.includes(meta + "version      0.5.3"), "版本号");
 check(built.includes("只在本地隐藏，不会在 X 上操作"), "排除说明写明只在本地隐藏");
 check(built.includes("/mutes") === false && built.includes("friendships/destroy") === false && built.includes("blocks/create") === false, "排除不会调用屏蔽或取关接口");
 check(built.includes(meta + "sandbox      raw"), "要求页面环境");
@@ -673,6 +674,13 @@ check(!("autoRead" in emptyStore().prefs), "自动读取不写入本地偏好");
 check(queryIdFromBundle('queryId:"abc123XYZ",operationName:"Following"', "Following") === "abc123XYZ", "能从页面代码里认出正在关注的接口编号");
 check(queryIdFromBundle('queryId:"abc123XYZ",operationName:"Following"', "Followers") === "", "别的接口编号不会认错");
 check(viewerIdFromTwid("u%3D424242") === "424242", "从 twid 里取出自己的数字 ID");
+check(viewerIdFromTwid("u%253D4242") === "4242", "twid 被编码两次也能取出数字 ID");
+check(confirmViewerId({twid: "u%3D4242", captured: 4242}).id === "4242" && confirmViewerId({twid: "u%3D4242", captured: 4242}).agreement === "一致", "编码过的 twid 和数字 id 对得上");
+check(confirmViewerId({twid: "u%253D1111", captured: "2222"}).id === "" && confirmViewerId({twid: "u%253D1111", captured: "2222"}).agreement === "不一致", "两种 id 对不上就不确认账号");
+check(confirmViewerId({twid: "u%3D4242"}).id === "4242" && confirmViewerId({twid: "u%3D4242"}).agreement === "缺失", "只有 twid 时仍能确认账号");
+check(confirmViewerId({}).id === "" && confirmViewerId({}).agreement === "缺失", "两个来源都没有就认不出账号");
+check(idAgreement(["4242", "demo_owner"]) === "不一致", "数字 id 和用户名对不上算不一致");
+check(idAgreement(["4242"]) === "缺失" && idAgreement(["4242", "4242", ""]) === "一致", "要有两个相同的 id 才算一致");
 check(missingFeatureNames("cannot be null: responsive_web_graphql_exclude_directive_enabled, verified_phone_label_enabled").length === 2, "缺参数时能补上字段名");
 const discovered = buildDiscoveredListRequest({op: "Following", queryId: "discoveredId1", viewerId: "99", cursor: "", features: {responsive: true}});
 check(discovered && discovered.url.indexOf("/graphql/discoveredId1/Following") >= 0 && discovered.url.indexOf("Bearer") < 0, "没有捕获请求时用查到的接口编号，地址里不带令牌");
@@ -697,6 +705,7 @@ check(maskedFacts.indexOf("重点维护") < 0 && maskedFacts.indexOf("建议动�
 check(built.includes("更多") && built.includes("一键打码") && built.includes("全屏") && built.includes("自动读取名单"), "主界面留打码和全屏，自动读取只有一个按钮");
 check(built.includes("查看风险并决定是否开启") === false && built.includes(">开始读取<") === false, "不再多一步开启和开始");
 check(built.includes("脚本会自己连续请求你的正在关注列表") && built.includes("不能保证安全") && built.includes("风险比滚动更高") === false, "风险提示写自动请求，不再提滚动方式");
+check(built.includes(UNKNOWN_ACCOUNT), "认不出账号时直接说明");
 const listUrl = "https://x.com/i/api/graphql/capturedHash/Following?variables=" + encodeURIComponent(JSON.stringify({userId: "1", count: 20, cursor: "old"})) + "&features=" + encodeURIComponent(JSON.stringify({responsive: true}));
 check(isOwnListApiUrl(listUrl, "Following") && !isOwnListApiUrl(listUrl, "Followers"), "只认自己捕获到的关注或粉丝接口");
 const blueUrl = "https://x.com/i/api/graphql/capturedHash/BlueVerifiedFollowers?variables=" + encodeURIComponent(JSON.stringify({userId: "1", count: 20}));
@@ -735,7 +744,79 @@ check(fastPageStopReason(10, 10, "c1", "", 0).indexOf("没有账号") >= 0, "后
 check(fastPageStopReason(10, 12, "c1", "c1").indexOf("游标没有往下走") >= 0, "游标不变就停");
 check(fastPageStopReason(10, 12, "c1", "c2") === "", "有新账号并且游标前进才继续");
 check(fastPageStopReason(10, 12, "c1", "").indexOf("没有下一页") >= 0, "没有下一页就结束这一份名单");
-check(fastPageStopReason(95, 95, "c1", "c2", 10, 100).indexOf("差不多了") >= 0, "接近公开总数就停");
+check(fastPageStopReason(95, 95, "c1", "c2", 10, 100) === "", "本轮未到公开总数，有下一页就继续");
+check(fastPageStopReason(100, 100, "c1", "c2", 10, 100).indexOf("达到公开总数") >= 0, "本轮人数达到公开总数才停");
+check(fastPageStopReason(100, 100, "c1", "", 10, 100).indexOf("没有下一页") >= 0, "没有下一页优先于达到公开总数");
+check(built.includes("已记人数接近公开总数") === false, "不再用已记人数接近公开总数来停");
+check(built.includes("autoReadCount(store, fastKind)") === false && built.includes("progressText(autoReadCount") === false, "快速读取的进度不再用已存人数");
+check(built.includes("advanceFastRound(fastRoundSeen"), "停止判断走本轮新建的 map");
+check(built.includes("读取中 本轮已读 ") && built.includes("本轮读了 "), "进度和结束语都写本轮");
+function peoplePage(start, count) {
+  const users = [];
+  for (let i = 0; i < count; i++) {
+    const n = start + i + 1;
+    users.push({id: String(n), handle: "user_" + n});
+  }
+  return users;
+}
+function readRoundToEnd(expected, pageSize) {
+  const seen = createFastRound();
+  let cursor = "";
+  let pages = 0;
+  let reason = "";
+  let early = "";
+  while (pages < 40) {
+    const start = pages * pageSize;
+    const left = expected - start;
+    if (left <= 0) break;
+    const count = Math.min(pageSize, left);
+    const next = start + count < expected ? "p" + (pages + 1) : "";
+    const step = advanceFastRound(seen, {
+      users: peoplePage(start, count),
+      prevCursor: cursor,
+      nextCursor: next,
+      rawUsers: count,
+      expected: expected
+    });
+    pages += 1;
+    if (step.after !== Math.min(pages * pageSize, expected)) {
+      early = "人数 " + step.after;
+      break;
+    }
+    if (step.reason) {
+      reason = step.reason;
+      if (next) early = "第 " + pages + " 页还有下一页却停了";
+      break;
+    }
+    if (!next) break;
+    cursor = next;
+  }
+  return {pages: pages, reason: reason, count: fastRoundCount(seen), early: early};
+}
+const storedNear = emptyStore();
+storedNear.totals.following = 2100;
+for (let i = 1; i <= 2017; i++) storedNear.following[String(i)] = {id: String(i), handle: "user_" + i};
+const storedCount = autoReadCount(storedNear, "following");
+check(storedCount === 2017 && listIsComplete(storedCount, 2100) === true, "本地已存 2017 人，按快照口径已接近公开总数");
+check(fastPageStopReason(storedCount, storedCount, "", "p1", 100, 2100) === "", "把已存人数传进去也不会因接近而停");
+check(fastPageStopReason(2100, 2100, "", "p1", 100, 2100).indexOf("达到公开总数") >= 0, "已存人数若被当成这一轮并且已经达到公开总数，第一页就会停");
+const reread = readRoundToEnd(2100, 100);
+check(reread.early === "" && reread.pages === 21 && reread.count === 2100 && reread.reason.indexOf("没有下一页") >= 0, "已存人数接近公开总数时，重新读仍翻到末页");
+const storedFull = emptyStore();
+storedFull.totals.following = 2000;
+for (let i = 1; i <= 2000; i++) storedFull.following[String(i)] = {id: String(i), handle: "user_" + i};
+check(autoReadCount(storedFull, "following") >= storedFull.totals.following, "本地已存人数已经达到公开总数");
+const againFull = readRoundToEnd(2000, 100);
+check(againFull.early === "" && againFull.pages === 20 && againFull.count === 2000 && againFull.reason.indexOf("没有下一页") >= 0, "已存人数达到公开总数时，重新读仍翻到末页");
+const roundOnly = createFastRound();
+const page1 = advanceFastRound(roundOnly, {users: peoplePage(0, 100), prevCursor: "", nextCursor: "p1", rawUsers: 100, expected: 2000});
+check(page1.before === 0 && page1.after === 100 && page1.reason === "", "第一页只记本轮 100 人");
+const dupRound = advanceFastRound(roundOnly, {users: peoplePage(0, 100), prevCursor: "p1", nextCursor: "p2", rawUsers: 100, expected: 2000});
+check(dupRound.before === 100 && dupRound.after === 100 && dupRound.reason === "", "本轮重复的人不再累加，有下一页仍继续");
+check(fastRoundStatusText(page1.after, 2100) === "读取中 本轮已读 100 / 共约 2100", "进度一行是本轮已读 N / 共约 M");
+check(fastRoundStatusText(0, 0) === "读取中 本轮已读 0 / 总数待核实", "没有公开总数时进度不编造");
+check(fastRoundStatusText(2017, 2100).indexOf("差不多了") < 0, "本轮进度不因接近公开总数说差不多了");
+check(fastRoundDoneText(reread.count, reread.pages) === "本轮读了 2100 人、21 页。", "结束语写本轮人数和页数");
 check(built.includes("概览") && built.includes("名单") && built.includes("采集") && built.includes("这一页没有新账号，已停止") === false, "面板分成标签，不再因为一页没有新账号就停");
 const fastIdle = createFastReader();
 check(fastIdle.notePage().action === "stop", "没点开始不会发快速请求");
@@ -809,7 +890,37 @@ barePage.fetch = function (input, init) {
 };
 installHooks(barePage, function () {});
 const ensured = await barePage.__fanAuditEnsureList("Following", false);
-check(ensured.queryId === "foundQuery1" && ensured.viewerId === "4242" && ensured.hasCsrf === true && ensured.captured === false, "没捕获请求时从页面代码和 twid 找出接口");
+check(ensured.queryId === "foundQuery1" && ensured.viewerId === "4242" && ensured.twidId === "4242" && ensured.hasCsrf === true && ensured.captured === false, "没捕获请求时从页面代码和 twid 找出接口");
+const encodedPage = makePage();
+encodedPage.document = {cookie: "ct0=csrf-value; twid=u%253D4242", scripts: [{src: "https://abs.twimg.com/responsive-web/client-web/main.js"}]};
+encodedPage.bodies["https://abs.twimg.com/responsive-web/client-web/main.js"] = 'queryId:"foundQuery2",operationName:"Following"';
+encodedPage.fetch = function (input) {
+  const key = typeof input === "string" ? input : "";
+  const text = encodedPage.bodies[key] || "";
+  return Promise.resolve({
+    status: 200,
+    ok: true,
+    headers: {get: function () { return ""; }},
+    text: function () { return Promise.resolve(text); },
+    clone: function () { return {text: function () { return Promise.resolve(text); }}; }
+  });
+};
+installHooks(encodedPage, function () {});
+const encodedInfo = await encodedPage.__fanAuditEnsureList("Following", false);
+check(encodedInfo.viewerId === "4242" && encodedInfo.twidId === "4242" && encodedInfo.capturedViewerId === "", "页面里的 twid 双重编码也能解出数字 id");
+const clashPage = makePage();
+clashPage.document = {cookie: "ct0=csrf-value; twid=u%3D1111", scripts: []};
+let clashId = "";
+installHooks(clashPage, function (url, text, body, listId) { if (listId) clashId = String(listId); });
+const clashUrl = "https://x.com/i/api/graphql/capturedHash/Following?variables=" + encodeURIComponent(JSON.stringify({userId: "2222", count: 20}));
+const clashXhr = new clashPage.XMLHttpRequest();
+clashXhr.open("GET", clashUrl);
+clashXhr.responseText = "{}";
+clashXhr.send(null);
+clashXhr.listeners.load.forEach(function (fn) { fn(); });
+check(clashId && clashPage.__fanAuditKeepListTemplate(clashId) === true, "不一致测试先留下捕获请求");
+const clashInfo = await clashPage.__fanAuditEnsureList("Following", false);
+check(clashInfo.viewerId === "" && clashInfo.twidId === "1111" && clashInfo.capturedViewerId === "2222", "twid 和捕获到的 id 不一致时不给出可用的 userId");
 const bareReq = buildDiscoveredListRequest({op: "Following", queryId: ensured.queryId, viewerId: ensured.viewerId, features: {}});
 const bareResult = await barePage.__fanAuditFetchList("Following", bareReq.url, "GET", "");
 check(bareResult.status === 200 && bareInit && bareInit.headers.authorization === "Bearer " + PUBLIC_WEB_BEARER && bareInit.headers.cookie == null, "没有捕获令牌时用网页公开令牌，仍不带 cookie 头");
@@ -939,6 +1050,34 @@ const dirtyReport = listReadReport({
   users: 0
 });
 check(dirtyReport.indexOf("user_01") < 0 && dirtyReport.indexOf("supersecretvalue") < 0, "诊断抹掉账号和 cookie 值");
+const followerPage = parseCapture("https://x.com/i/api/graphql/h/Following", JSON.stringify(listPage(oldUser, "timeline")), {owner: "demo_owner", pageKind: "followers"});
+check(followerPage.skip === "不是你的关注或粉丝列表" && followerPage.users.length === 0 && followerPage.rawUsers === 1, "粉丝页上的正在关注响应，被动采集仍整页不收");
+const selfRead = parseCapture("https://x.com/i/api/graphql/h/Following", JSON.stringify(listPage(oldUser, "timeline")), {owner: "demo_owner", pageKind: "followers", requestUserId: "4242"});
+check(selfRead.skip === "" && selfRead.users.length === 1 && selfRead.users[0].handle === "user_11" && selfRead.ownerId === "", "在粉丝页启动读正在关注，按请求里的 userId 收下");
+const numbered = listPage(oldUser, "v2");
+numbered.data.user.result.rest_id = 4242;
+const numberedRead = parseCapture("https://x.com/i/api/graphql/h/Following", JSON.stringify(numbered), {owner: "demo_owner", pageKind: "followers", requestUserId: "4242"});
+check(numberedRead.skip === "" && numberedRead.ownerId === "4242" && numberedRead.users.length === 1, "响应里的 rest_id 是数字也能和请求对上");
+const otherOwner = parseCapture("https://x.com/i/api/graphql/h/Following", JSON.stringify(numbered), {owner: "demo_owner", pageKind: "following", requestUserId: "1111"});
+check(otherOwner.skip === "不是你的关注或粉丝列表" && otherOwner.rawUsers === 1 && otherOwner.users.length === 0, "响应里的 id 和请求不一致就整页不收");
+const stamped = applyViewerId(buildDiscoveredListRequest({op: "Following", queryId: "discoveredId1", viewerId: "7", features: {}}), 4242);
+const stampedId = viewerIdFromListRequest(stamped.url, stamped.body);
+check(stampedId === "4242", "发出去的请求写上确认过的数字 id");
+const ownReport = listReadReport({
+  op: "Following",
+  status: 200,
+  text: JSON.stringify(listPage(oldUser, "timeline")),
+  auth: "public",
+  querySource: "discovered",
+  users: selfRead.users.length,
+  rawUsers: selfRead.rawUsers,
+  skip: selfRead.skip,
+  ids: idAgreement(["4242", "", "4242", selfRead.ownerId])
+});
+check(ownReport.indexOf("listRead ids=一致") >= 0 && ownReport.indexOf("listRead rawUsers=1") >= 0 && ownReport.indexOf("listRead users=1") >= 0, "诊断写出是否一致和过滤前人数");
+check(ownReport.indexOf("4242") < 0 && ownReport.indexOf("user_11") < 0 && ownReport.indexOf("demo_owner") < 0, "诊断不写 id 和账号名");
+const hiddenId = listReadReport({op: "Following", status: 200, users: 0, rawUsers: 2, ids: "4242"});
+check(hiddenId.indexOf("4242") < 0 && hiddenId.indexOf("listRead ids=缺失") >= 0 && hiddenId.indexOf("listRead rawUsers=2") >= 0, "诊断遇到 id 原文就改写成缺失");
 
 if (failed) {
   console.error(failed + " checks failed");

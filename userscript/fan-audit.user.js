@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         fan-audit 粉丝体检
 // @namespace    https://github.com/ratt1e/Xfan-audit
-// @version      0.5.1
+// @version      0.5.3
 // @description  在 X 上边逛边记下公开回复和关注名单，也能导入导出的 JSON。默认只记你正在看的页面。可选自动读取默认关闭，由脚本请求自己的名单。本地排除只隐藏，不在 X 上操作。
 // @author       ranger_escape
 // @match        *://x.com/*
@@ -1311,6 +1311,7 @@ function diagnosticsCopy(state) {
 }
 
 var READ_FAIL = "读取失败，可以点复制诊断发给开发者";
+var UNKNOWN_ACCOUNT = "没认出是哪个账号";
 
 function safeDiagText(text) {
   return String(text || "")
@@ -1362,6 +1363,8 @@ function listReadReport(input) {
     "listRead auth=" + auth,
     "listRead queryIdSource=" + source,
     "listRead users=" + (input.users | 0),
+    "listRead rawUsers=" + (input.rawUsers == null ? (input.users | 0) : (input.rawUsers | 0)),
+    "listRead ids=" + (input.ids === "一致" || input.ids === "不一致" || input.ids === "缺失" ? input.ids : "缺失"),
     "listRead skip=" + (safeDiagText(input.skip) || "none"),
     "listRead errors=" + (errors.slice(0, 3).join(" | ") || "none"),
     "listRead keys=" + (shape.join(" / ") || "none")
@@ -1624,10 +1627,32 @@ function collect(instructions) {
   return {tweets: dedupeTweets(tweets), users: dedupeUsers(users)};
 }
 
-function readProfile(json) {
+function digitId(value) {
+  if (value == null) return "";
+  var id = String(value).trim();
+  return /^\d+$/.test(id) ? id : "";
+}
+
+function listOwnerNode(json) {
   var user = json && json.data && json.data.user && json.data.user.result;
-  if (user && user.result && !user.rest_id && !user.restId && !user.core && !user.legacy) user = user.result;
-  return readUser(user);
+  if (!user || typeof user !== "object") return null;
+  if (user.result && !user.rest_id && !user.restId && !user.core && !user.legacy) user = user.result;
+  if (user.__typename === "UserWithVisibilityResults" && user.user) user = user.user;
+  return user && typeof user === "object" ? user : null;
+}
+
+function readProfile(json) {
+  return readUser(listOwnerNode(json));
+}
+
+function listOwnerId(json) {
+  var user = listOwnerNode(json);
+  if (!user) return "";
+  var legacy = user.legacy || {};
+  var id = digitId(user.rest_id != null && user.rest_id !== "" ? user.rest_id : user.restId);
+  if (!id) id = digitId(legacy.id_str);
+  if (!id) id = digitId(user.id_str);
+  return id;
 }
 
 function looksLikeInstructions(list) {
@@ -1868,16 +1893,24 @@ function parseCapture(url, text, options) {
   var instructions = readInstructions(json, kind);
   var collected = collect(instructions);
   if (kind === "following" || kind === "followers" || kind === "blue-followers") {
-    if (!owner) return finish({kind: kind, skip: "还不知道你的用户名", posts: [], users: [], profile: profile});
-    var profileHandle = profile && norm(profile.handle);
-    if (profileHandle && profileHandle !== owner) {
-      return finish({kind: kind, skip: "不是你的关注或粉丝列表", posts: [], users: [], profile: profile});
+    var rawUsers = collected.users.length;
+    var ownerId = listOwnerId(json);
+    function listFinish(skip, users) {
+      return {kind: kind, skip: skip, posts: [], users: users || [], profile: profile, rawUsers: rawUsers, ownerId: ownerId};
     }
-    if (!profileHandle && options.pageKind !== kind) {
-      return finish({kind: kind, skip: "不是你的关注或粉丝列表", posts: [], users: [], profile: profile});
+    if (!owner) return finish(listFinish("还不知道你的用户名", []));
+    var profileHandle = profile && norm(profile.handle);
+    var requestId = digitId(options.requestUserId);
+    // 自己发起的读取：归属看请求里写上的 userId，不看当前打开的是哪一页。
+    if (requestId) {
+      if (ownerId && ownerId !== requestId) return finish(listFinish("不是你的关注或粉丝列表", []));
+      if (profileHandle && profileHandle !== owner && ownerId !== requestId) return finish(listFinish("不是你的关注或粉丝列表", []));
+    } else {
+      if (profileHandle && profileHandle !== owner) return finish(listFinish("不是你的关注或粉丝列表", []));
+      if (!profileHandle && options.pageKind !== kind) return finish(listFinish("不是你的关注或粉丝列表", []));
     }
     var users = collected.users.filter(function (user) { return norm(user.handle) !== owner; });
-    return attachCounts({kind: kind, skip: "", posts: [], users: users, profile: profile});
+    return attachCounts(listFinish("", users));
   }
   if (kind === "replies" || kind === "originals") {
     if (!owner) return finish({kind: kind, skip: "还不知道你的用户名", posts: [], users: [], profile: profile});
@@ -2367,9 +2400,43 @@ function queryIdFromBundle(source, op) {
 
 function viewerIdFromTwid(value) {
   var text = String(value || "");
-  try { text = decodeURIComponent(text); } catch (err) {}
+  for (var i = 0; i < 2; i++) {
+    var decoded = text;
+    try { decoded = decodeURIComponent(text); } catch (err) { break; }
+    if (decoded === text) break;
+    text = decoded;
+  }
   var match = text.match(/u=(\d+)/);
   return match ? match[1] : "";
+}
+
+// twid 解出的数字 id，或捕获到的本人数字 id。两边都有但不一样时不确认。
+// agreement 只表示能不能对上，调用方不要把 id 写进诊断。
+function confirmViewerId(input) {
+  input = input || {};
+  var fromCookie = digitId(input.twid);
+  if (!fromCookie) fromCookie = viewerIdFromTwid(input.twid);
+  var fromCaptured = digitId(input.captured);
+  if (fromCookie && fromCaptured && fromCookie !== fromCaptured) return {id: "", agreement: "不一致"};
+  var id = fromCookie || fromCaptured;
+  if (!id) return {id: "", agreement: "缺失"};
+  return {id: id, agreement: fromCookie && fromCaptured ? "一致" : "缺失"};
+}
+
+function idAgreement(values) {
+  var present = [];
+  var list = values || [];
+  for (var i = 0; i < list.length; i++) {
+    if (list[i] == null) continue;
+    var id = String(list[i]).trim();
+    if (!id) continue;
+    present.push(/^\d+$/.test(id) ? id : ("x:" + id));
+  }
+  if (present.length < 2) return "缺失";
+  for (var j = 1; j < present.length; j++) {
+    if (present[j] !== present[0]) return "不一致";
+  }
+  return "一致";
 }
 
 function missingFeatureNames(message) {
@@ -2422,11 +2489,51 @@ function viewerIdFromListUrl(url) {
   if (!params.variables) return "";
   try {
     var parsed = JSON.parse(params.variables);
-    var id = parsed && parsed.userId != null ? String(parsed.userId) : "";
-    return /^\d+$/.test(id) ? id : "";
+    return digitId(parsed && parsed.userId);
   } catch (err) {
     return "";
   }
+}
+
+function viewerIdFromListRequest(url, body) {
+  var fromUrl = viewerIdFromListUrl(url);
+  if (fromUrl) return fromUrl;
+  if (!body) return "";
+  try {
+    var parsed = JSON.parse(String(body));
+    var vars = parsed && parsed.variables && typeof parsed.variables === "object" ? parsed.variables : parsed;
+    return digitId(vars && vars.userId);
+  } catch (err) {
+    return "";
+  }
+}
+
+function applyViewerId(req, viewerId) {
+  var id = digitId(viewerId);
+  if (!req || !req.url || !id) return null;
+  var parts = listUrlParts(req.url);
+  var params = parseQuery(parts.query);
+  var variables = {};
+  if (params.variables) {
+    try { variables = JSON.parse(params.variables); } catch (err) { return null; }
+  }
+  if (!variables || typeof variables !== "object" || Array.isArray(variables)) return null;
+  variables.userId = id;
+  params.variables = JSON.stringify(variables);
+  var method = String(req.method || "GET").toUpperCase() === "POST" ? "POST" : "GET";
+  var body = typeof req.body === "string" ? req.body : "";
+  if (method === "POST" && body) {
+    try {
+      var parsedBody = JSON.parse(body);
+      if (parsedBody && typeof parsedBody === "object" && parsedBody.variables && typeof parsedBody.variables === "object" && !Array.isArray(parsedBody.variables)) {
+        parsedBody.variables.userId = id;
+        body = JSON.stringify(parsedBody);
+      }
+    } catch (err2) {}
+  }
+  var url = parts.path + (Object.keys(params).length ? "?" + encodeQuery(params) : "") + parts.hash;
+  if (!isOwnListApiUrl(url, operationName(url))) return null;
+  return {url: url, method: method, body: method === "POST" ? body : ""};
 }
 
 function bottomCursor(json) {
@@ -2457,21 +2564,79 @@ function bottomCursor(json) {
   return found;
 }
 
+// 本轮扫描自己的去重名单。每次快速读取一份名单时新建，不读 store 里已经存过的人数。
+function createFastRound() {
+  return {};
+}
+
+function fastRoundKey(user) {
+  if (!user || typeof user !== "object") return "";
+  var id = String(user.id || "");
+  if (id && !/^\d+$/.test(id)) id = "";
+  if (id) return "id:" + id;
+  var handle = norm(user.handle);
+  return handle ? "h:" + handle : "";
+}
+
+function fastRoundCount(seen) {
+  if (!seen || typeof seen !== "object" || Array.isArray(seen)) return 0;
+  return Object.keys(seen).length;
+}
+
+function noteFastRound(seen, users) {
+  var before = fastRoundCount(seen);
+  if (!seen || typeof seen !== "object" || Array.isArray(seen)) return {before: 0, after: 0};
+  (users || []).forEach(function (user) {
+    var key = fastRoundKey(user);
+    if (!key || seen[key]) return;
+    seen[key] = 1;
+  });
+  return {before: before, after: fastRoundCount(seen)};
+}
+
+// 把这一页的人记进本轮 map，再用本轮前后人数决定停不停。seen 必须是本轮新建的 map。
+function advanceFastRound(seen, page) {
+  page = page || {};
+  var noted = noteFastRound(seen, page.users || []);
+  var raw = page.rawUsers;
+  if (raw == null) raw = page.users && page.users.length ? page.users.length : 0;
+  return {
+    before: noted.before,
+    after: noted.after,
+    reason: fastPageStopReason(noted.before, noted.after, page.prevCursor, page.nextCursor, raw, page.expected)
+  };
+}
+
+function fastRoundStatusText(captured, expected) {
+  var n = countNum(captured);
+  var total = countNum(expected);
+  return "读取中 本轮已读 " + n + " / " + (total > 0 ? "共约 " + total : "总数待核实");
+}
+
+function fastRoundDoneText(people, pages) {
+  var n = countNum(people);
+  var p = pages | 0;
+  if (p < 0) p = 0;
+  return "本轮读了 " + n + " 人、" + p + " 页。";
+}
+
 // 429、任何非 2xx、或 x-rate-limit-remaining 小于等于 2，都立刻停。不自动重试。
-// 快速翻页：已经记过的一页只要游标还在往下，就继续。空页、没有下一页、游标不动、或已接近公开总数，才结束这一份名单。
+// 快速翻页的停止只看本轮去重人数：没有下一页、游标不动、空页，或本轮人数已经不少于公开总数。
+// 不用本地已存人数，也不用 95% 那条「差不多了」。120 页上限在翻页器里另算。
 function fastPageStopReason(beforeCount, afterCount, prevCursor, nextCursor, pageUsers, expected) {
   var added = (afterCount | 0) > (beforeCount | 0);
   var cursor = String(nextCursor || "");
   var prev = String(prevCursor || "");
   var users = pageUsers == null ? -1 : (pageUsers | 0);
   var total = expected | 0;
-  if (cursor && prev && cursor === prev) return "游标没有往下走，这一份名单到头了。已停止。若已记人数还没到公开总数，过一会儿再开一次。";
+  var roundCount = afterCount | 0;
+  if (cursor && prev && cursor === prev) return "游标没有往下走，这一份名单到头了。已停止。若本轮人数还没到公开总数，过一会儿再开一次。";
   if (users === 0 && !prev) return READ_FAIL;
   if (users === 0) return "这一页没有账号。已停止。若还差一点，过一会儿再开一次。";
   if (!cursor) return added
     ? "没有下一页，这一份名单到头了。已停止。"
-    : "没有下一页，这一份名单到头了。已停止。若已记人数还没到公开总数，过一会儿再开一次。";
-  if (total > 0 && ((afterCount | 0) >= total || listIsComplete(afterCount | 0, total))) return "已记人数接近公开总数，差不多了。已停止。";
+    : "没有下一页，这一份名单到头了。已停止。若本轮人数还没到公开总数，过一会儿再开一次。";
+  if (total > 0 && roundCount >= total) return "本轮已读人数达到公开总数。已停止。";
   return "";
 }
 
@@ -3459,6 +3624,17 @@ function attachHooks(page, emit) {
     }
     return "";
   }
+  function decodeViewerCookie(value) {
+    var text = String(value || "");
+    for (var n = 0; n < 2; n++) {
+      var decoded = text;
+      try { decoded = decodeURIComponent(text); } catch (err) { break; }
+      if (decoded === text) break;
+      text = decoded;
+    }
+    var idMatch = text.match(/u=(\d+)/);
+    return idMatch ? idMatch[1] : "";
+  }
   function headerNamed(headers, name) {
     var want = String(name || "").toLowerCase();
     var found = "";
@@ -3526,7 +3702,7 @@ function attachHooks(page, emit) {
   }
   page.__fanAuditEnsureList = function (op, fresh) {
     if (op !== "Following" && op !== "Followers" && op !== "BlueVerifiedFollowers") {
-      return Promise.resolve({queryId: "", viewerId: "", features: {}, captured: false, hasCsrf: false});
+      return Promise.resolve({queryId: "", viewerId: "", twidId: "", capturedViewerId: "", features: {}, captured: false, hasCsrf: false});
     }
     if (fresh) delete discoveredIds[op];
     var tpl = listTemplates[op];
@@ -3536,13 +3712,13 @@ function attachHooks(page, emit) {
       if (found && found[2] === op) capturedId = found[1];
     }
     function pack(id) {
-      var viewer = "";
+      var capturedViewer = "";
       var features = {};
       if (tpl && tpl.url) {
         try {
           var rawVars = (String(tpl.url).split("variables=")[1] || "").split("&")[0];
           var vars = JSON.parse(decodeURIComponent(rawVars));
-          if (vars && /^\d+$/.test(String(vars.userId || ""))) viewer = String(vars.userId);
+          if (vars && /^\d+$/.test(String(vars.userId == null ? "" : vars.userId))) capturedViewer = String(vars.userId);
         } catch (err) {}
         try {
           var rawFeatures = (String(tpl.url).split("features=")[1] || "").split("&")[0];
@@ -3550,15 +3726,16 @@ function attachHooks(page, emit) {
           if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) features = parsed;
         } catch (err2) {}
       }
-      if (!viewer) {
-        var viewerCookie = readPageCookie("twid");
-        try { viewerCookie = decodeURIComponent(viewerCookie); } catch (err3) {}
-        var idMatch = String(viewerCookie).match(/u=(\d+)/);
-        if (idMatch) viewer = idMatch[1];
-      }
+      var cookieText = readPageCookie("twid");
+      var twidViewer = /^\d+$/.test(cookieText) ? cookieText : decodeViewerCookie(cookieText);
+      var viewer = "";
+      if (capturedViewer && twidViewer && capturedViewer !== twidViewer) viewer = "";
+      else viewer = twidViewer || capturedViewer;
       return {
         queryId: id || "",
         viewerId: viewer,
+        twidId: twidViewer,
+        capturedViewerId: capturedViewer,
         features: features,
         captured: !!capturedId && !fresh,
         auth: headerNamed((tpl && tpl.headers) || {}, "authorization") ? "captured" : "public",
@@ -3836,10 +4013,10 @@ function boot() {
     if ((captured.kind === "following" || captured.kind === "followers" || captured.kind === "blue-followers") && !captured.skip && typeof keep === "function") keep(listId);
     else if (typeof drop === "function") drop(listId);
   }
-  function ingest(url, text, body, countTraffic, listId) {
+  function ingest(url, text, body, countTraffic, listId, requestUserId) {
     if (countTraffic) noteTraffic(url);
     var owner = currentOwner();
-    var captured = parseCapture(url, text, {owner: owner, body: body, pageKind: listKindFromPath(location.pathname, owner), pagePath: location.pathname});
+    var captured = parseCapture(url, text, {owner: owner, body: body, pageKind: listKindFromPath(location.pathname, owner), pagePath: location.pathname, requestUserId: requestUserId || ""});
     rememberListTemplate(captured, listId);
     if (captured.skip) {
       diag.skips[captured.skip] = (diag.skips[captured.skip] || 0) + 1;
@@ -4305,10 +4482,25 @@ function boot() {
       widenBtn.textContent = wide ? "退出全屏" : "全屏";
       widenBtn.setAttribute("aria-pressed", wide ? "true" : "false");
     }
-    var fastKnownPages = 0;
     var fastListNotes = [];
     var fastFeatures = {};
     var fastKind = "following";
+    var fastRoundSeen = createFastRound();
+    var fastRoundPages = 0;
+    var fastRoundNoted = false;
+    function fastExpected(kind) {
+      if (kind === "followers") return store.totals.followers || 0;
+      if (kind === "blue-followers") return store.totals.blue || 0;
+      return store.totals.following || 0;
+    }
+    function roundSummary() {
+      return fastRoundDoneText(fastRoundCount(fastRoundSeen), fastRoundPages);
+    }
+    function resetFastRound() {
+      fastRoundSeen = createFastRound();
+      fastRoundPages = 0;
+      fastRoundNoted = false;
+    }
     renderAutoRead = function () {
       var phase = fastReader.running() ? "running" : autoPhase;
       autoRisk.hidden = phase !== "confirm";
@@ -4317,16 +4509,21 @@ function boot() {
       if (phase === "confirm" && autoShown !== "confirm") autoAck.checked = false;
       autoShown = phase;
       var reason = fastReader.stopReason();
-      if (phase === "running") {
-        var total = fastKind === "followers" ? (store.totals.followers || 0) : fastKind === "blue-followers" ? (store.totals.blue || 0) : (store.totals.following || 0);
-        autoStatus.textContent = "读取中 " + progressText(autoReadCount(store, fastKind), total);
-      } else if (phase === "confirm") autoStatus.textContent = "";
+      if (phase === "running") autoStatus.textContent = fastRoundStatusText(fastRoundCount(fastRoundSeen), fastExpected(fastKind));
+      else if (phase === "confirm") autoStatus.textContent = "";
       else if (reason) autoStatus.textContent = reason;
       else autoStatus.textContent = "";
     }
     function haltAuto(reason) {
       autoPhase = "off";
-      fastReader.stop(reason);
+      var text = String(reason || "");
+      var notes = fastListNotes.join(" ");
+      if (notes && text !== notes && text.indexOf(notes) !== 0) text = notes + (text ? " " + text : "");
+      if (!fastRoundNoted) {
+        if (text && !/[。！？]$/.test(text)) text += "。";
+        text += roundSummary();
+      }
+      fastReader.stop(text);
       renderAutoRead();
     }
     var MANUAL_FALLBACK = "自动读取没能开始。请自己打开正在关注页往下翻，脚本会记下页面已经加载的名单。";
@@ -4339,6 +4536,11 @@ function boot() {
           return;
         }
       }
+      if (!String(cursor || "") && !counted) {
+        resetFastRound();
+        fastKind = op === "Following" ? "following" : op === "BlueVerifiedFollowers" ? "blue-followers" : "followers";
+        renderAutoRead();
+      }
       var page = pageWindow();
       if (!page || typeof page.__fanAuditEnsureList !== "function" || typeof page.__fanAuditFetchList !== "function") {
         haltAuto(MANUAL_FALLBACK);
@@ -4347,7 +4549,20 @@ function boot() {
       Promise.resolve(page.__fanAuditEnsureList(op, !!rediscovered)).then(function (info) {
         if (!fastReader.running()) return;
         info = info || {};
-        if (!info.hasCsrf || !info.queryId || !info.viewerId) {
+        if (!info.viewerId) {
+          diag.listRead = listReadReport({
+            op: op,
+            status: 0,
+            auth: info.auth,
+            querySource: info.captured ? "captured" : (info.queryId ? "discovered" : "unknown"),
+            users: 0,
+            rawUsers: 0,
+            ids: idAgreement([info.twidId, info.capturedViewerId])
+          });
+          haltAuto(UNKNOWN_ACCOUNT);
+          return;
+        }
+        if (!info.hasCsrf || !info.queryId) {
           fastListNotes.push(fastListLabel(op) + "：" + MANUAL_FALLBACK);
           done();
           return;
@@ -4358,6 +4573,7 @@ function boot() {
         var tpl = page.__fanAuditListTemplate ? page.__fanAuditListTemplate(op) : null;
         if (tpl && !rediscovered) req = buildListPageRequest(tpl, cursor);
         if (!req) req = buildDiscoveredListRequest({op: op, queryId: info.queryId, viewerId: info.viewerId, cursor: cursor, features: useFeatures, origin: location.origin});
+        req = req ? applyViewerId(req, info.viewerId) : null;
         if (!req) {
           fastListNotes.push(fastListLabel(op) + "：" + MANUAL_FALLBACK);
           done();
@@ -4387,40 +4603,54 @@ function boot() {
           }
           var kind = op === "Following" ? "following" : op === "BlueVerifiedFollowers" ? "blue-followers" : "followers";
           fastKind = kind;
-          var before = autoReadCount(store, kind);
-          ingest(req.url, res.text || "", req.body || "", false, "");
-          var after = autoReadCount(store, kind);
+          var requestUserId = viewerIdFromListRequest(req.url, req.body);
+          ingest(req.url, res.text || "", req.body || "", false, "", requestUserId);
           var next = "";
-          var pageUsers = -1;
+          var parsed = null;
+          var rawUsers = 0;
           try {
-            var parsed = parseCapture(req.url, res.text || "", {owner: currentOwner()});
-            pageUsers = parsed && parsed.users ? parsed.users.length : 0;
+            parsed = parseCapture(req.url, res.text || "", {owner: currentOwner(), requestUserId: requestUserId});
+            rawUsers = parsed && parsed.rawUsers != null ? (parsed.rawUsers | 0) : 0;
+          } catch (err) {
+            rawUsers = 0;
+          }
+          try {
             next = bottomCursor(JSON.parse(res.text || ""));
           } catch (err) {
             next = "";
-            pageUsers = -1;
           }
-          var expected = kind === "following" ? (store.totals.following || 0) : kind === "blue-followers" ? (store.totals.blue || 0) : (store.totals.followers || 0);
-          renderAutoRead();
-          updateBadge();
-          if (panelOpen) render();
-          if ((pageUsers | 0) === 0 && !String(cursor || "")) {
+          var pageUsers = parsed && parsed.users ? parsed.users.length : 0;
+          var expected = fastExpected(kind);
+          if ((parsed && parsed.skip) || ((rawUsers | 0) === 0 && !String(cursor || ""))) {
             diag.listRead = listReadReport({
               op: op,
               status: res.status,
               text: res.text || "",
               auth: info.auth,
               querySource: info.captured ? "captured" : "discovered",
-              users: 0,
-              skip: parsed && parsed.skip
+              users: pageUsers,
+              rawUsers: rawUsers,
+              skip: parsed && parsed.skip,
+              ids: idAgreement([info.twidId, info.capturedViewerId, requestUserId, parsed && parsed.ownerId])
             });
             haltAuto(READ_FAIL);
             return;
           }
-          var pageStop = fastPageStopReason(before, after, cursor, next, pageUsers, expected);
-          if (!pageStop && pageUsers > 0 && after === before) fastKnownPages += 1;
+          var step = advanceFastRound(fastRoundSeen, {
+            users: parsed && parsed.users ? parsed.users : [],
+            prevCursor: cursor,
+            nextCursor: next,
+            rawUsers: rawUsers,
+            expected: expected
+          });
+          fastRoundPages += 1;
+          renderAutoRead();
+          updateBadge();
+          if (panelOpen) render();
+          var pageStop = step.reason;
           if (pageStop) {
-            fastListNotes.push(fastListLabel(op) + "：" + pageStop);
+            fastListNotes.push(fastListLabel(op) + "：" + pageStop + roundSummary());
+            fastRoundNoted = true;
             done();
             return;
           }
@@ -4450,9 +4680,10 @@ function boot() {
         autoStatus.textContent = begun.reason;
         return;
       }
-      fastKnownPages = 0;
+      resetFastRound();
       fastListNotes = [];
       fastFeatures = {};
+      diag.listRead = "";
       autoPhase = "running";
       renderAutoRead();
       function nextOp(index) {
