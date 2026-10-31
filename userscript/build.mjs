@@ -30,7 +30,7 @@ const header = [
   "// ==UserScript==",
   at("name") + "         fan-audit 粉丝体检",
   at("namespace") + "    https://github.com/ratt1e/Xfan-audit",
-  at("version") + "      0.5.1",
+  at("version") + "      0.5.2",
   at("description") + "  在 X 上边逛边记下公开回复和关注名单，也能导入导出的 JSON。默认只记你正在看的页面。可选自动读取默认关闭，由脚本请求自己的名单。本地排除只隐藏，不在 X 上操作。",
   at("author") + "       " + author,
   at("match") + "        *://x.com/*",

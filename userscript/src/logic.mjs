@@ -221,6 +221,7 @@ export function diagnosticsCopy(state) {
 }
 
 export var READ_FAIL = "读取失败，可以点复制诊断发给开发者";
+export var UNKNOWN_ACCOUNT = "没认出是哪个账号";
 
 export function safeDiagText(text) {
   return String(text || "")
@@ -272,6 +273,8 @@ export function listReadReport(input) {
     "listRead auth=" + auth,
     "listRead queryIdSource=" + source,
     "listRead users=" + (input.users | 0),
+    "listRead rawUsers=" + (input.rawUsers == null ? (input.users | 0) : (input.rawUsers | 0)),
+    "listRead ids=" + (input.ids === "一致" || input.ids === "不一致" || input.ids === "缺失" ? input.ids : "缺失"),
     "listRead skip=" + (safeDiagText(input.skip) || "none"),
     "listRead errors=" + (errors.slice(0, 3).join(" | ") || "none"),
     "listRead keys=" + (shape.join(" / ") || "none")
@@ -534,10 +537,32 @@ function collect(instructions) {
   return {tweets: dedupeTweets(tweets), users: dedupeUsers(users)};
 }
 
-function readProfile(json) {
+function digitId(value) {
+  if (value == null) return "";
+  var id = String(value).trim();
+  return /^\d+$/.test(id) ? id : "";
+}
+
+function listOwnerNode(json) {
   var user = json && json.data && json.data.user && json.data.user.result;
-  if (user && user.result && !user.rest_id && !user.restId && !user.core && !user.legacy) user = user.result;
-  return readUser(user);
+  if (!user || typeof user !== "object") return null;
+  if (user.result && !user.rest_id && !user.restId && !user.core && !user.legacy) user = user.result;
+  if (user.__typename === "UserWithVisibilityResults" && user.user) user = user.user;
+  return user && typeof user === "object" ? user : null;
+}
+
+function readProfile(json) {
+  return readUser(listOwnerNode(json));
+}
+
+export function listOwnerId(json) {
+  var user = listOwnerNode(json);
+  if (!user) return "";
+  var legacy = user.legacy || {};
+  var id = digitId(user.rest_id != null && user.rest_id !== "" ? user.rest_id : user.restId);
+  if (!id) id = digitId(legacy.id_str);
+  if (!id) id = digitId(user.id_str);
+  return id;
 }
 
 function looksLikeInstructions(list) {
@@ -778,16 +803,24 @@ export function parseCapture(url, text, options) {
   var instructions = readInstructions(json, kind);
   var collected = collect(instructions);
   if (kind === "following" || kind === "followers" || kind === "blue-followers") {
-    if (!owner) return finish({kind: kind, skip: "还不知道你的用户名", posts: [], users: [], profile: profile});
-    var profileHandle = profile && norm(profile.handle);
-    if (profileHandle && profileHandle !== owner) {
-      return finish({kind: kind, skip: "不是你的关注或粉丝列表", posts: [], users: [], profile: profile});
+    var rawUsers = collected.users.length;
+    var ownerId = listOwnerId(json);
+    function listFinish(skip, users) {
+      return {kind: kind, skip: skip, posts: [], users: users || [], profile: profile, rawUsers: rawUsers, ownerId: ownerId};
     }
-    if (!profileHandle && options.pageKind !== kind) {
-      return finish({kind: kind, skip: "不是你的关注或粉丝列表", posts: [], users: [], profile: profile});
+    if (!owner) return finish(listFinish("还不知道你的用户名", []));
+    var profileHandle = profile && norm(profile.handle);
+    var requestId = digitId(options.requestUserId);
+    // 自己发起的读取：归属看请求里写上的 userId，不看当前打开的是哪一页。
+    if (requestId) {
+      if (ownerId && ownerId !== requestId) return finish(listFinish("不是你的关注或粉丝列表", []));
+      if (profileHandle && profileHandle !== owner && ownerId !== requestId) return finish(listFinish("不是你的关注或粉丝列表", []));
+    } else {
+      if (profileHandle && profileHandle !== owner) return finish(listFinish("不是你的关注或粉丝列表", []));
+      if (!profileHandle && options.pageKind !== kind) return finish(listFinish("不是你的关注或粉丝列表", []));
     }
     var users = collected.users.filter(function (user) { return norm(user.handle) !== owner; });
-    return attachCounts({kind: kind, skip: "", posts: [], users: users, profile: profile});
+    return attachCounts(listFinish("", users));
   }
   if (kind === "replies" || kind === "originals") {
     if (!owner) return finish({kind: kind, skip: "还不知道你的用户名", posts: [], users: [], profile: profile});
@@ -1277,9 +1310,43 @@ export function queryIdFromBundle(source, op) {
 
 export function viewerIdFromTwid(value) {
   var text = String(value || "");
-  try { text = decodeURIComponent(text); } catch (err) {}
+  for (var i = 0; i < 2; i++) {
+    var decoded = text;
+    try { decoded = decodeURIComponent(text); } catch (err) { break; }
+    if (decoded === text) break;
+    text = decoded;
+  }
   var match = text.match(/u=(\d+)/);
   return match ? match[1] : "";
+}
+
+// twid 解出的数字 id，或捕获到的本人数字 id。两边都有但不一样时不确认。
+// agreement 只表示能不能对上，调用方不要把 id 写进诊断。
+export function confirmViewerId(input) {
+  input = input || {};
+  var fromCookie = digitId(input.twid);
+  if (!fromCookie) fromCookie = viewerIdFromTwid(input.twid);
+  var fromCaptured = digitId(input.captured);
+  if (fromCookie && fromCaptured && fromCookie !== fromCaptured) return {id: "", agreement: "不一致"};
+  var id = fromCookie || fromCaptured;
+  if (!id) return {id: "", agreement: "缺失"};
+  return {id: id, agreement: fromCookie && fromCaptured ? "一致" : "缺失"};
+}
+
+export function idAgreement(values) {
+  var present = [];
+  var list = values || [];
+  for (var i = 0; i < list.length; i++) {
+    if (list[i] == null) continue;
+    var id = String(list[i]).trim();
+    if (!id) continue;
+    present.push(/^\d+$/.test(id) ? id : ("x:" + id));
+  }
+  if (present.length < 2) return "缺失";
+  for (var j = 1; j < present.length; j++) {
+    if (present[j] !== present[0]) return "不一致";
+  }
+  return "一致";
 }
 
 export function missingFeatureNames(message) {
@@ -1332,11 +1399,51 @@ export function viewerIdFromListUrl(url) {
   if (!params.variables) return "";
   try {
     var parsed = JSON.parse(params.variables);
-    var id = parsed && parsed.userId != null ? String(parsed.userId) : "";
-    return /^\d+$/.test(id) ? id : "";
+    return digitId(parsed && parsed.userId);
   } catch (err) {
     return "";
   }
+}
+
+export function viewerIdFromListRequest(url, body) {
+  var fromUrl = viewerIdFromListUrl(url);
+  if (fromUrl) return fromUrl;
+  if (!body) return "";
+  try {
+    var parsed = JSON.parse(String(body));
+    var vars = parsed && parsed.variables && typeof parsed.variables === "object" ? parsed.variables : parsed;
+    return digitId(vars && vars.userId);
+  } catch (err) {
+    return "";
+  }
+}
+
+export function applyViewerId(req, viewerId) {
+  var id = digitId(viewerId);
+  if (!req || !req.url || !id) return null;
+  var parts = listUrlParts(req.url);
+  var params = parseQuery(parts.query);
+  var variables = {};
+  if (params.variables) {
+    try { variables = JSON.parse(params.variables); } catch (err) { return null; }
+  }
+  if (!variables || typeof variables !== "object" || Array.isArray(variables)) return null;
+  variables.userId = id;
+  params.variables = JSON.stringify(variables);
+  var method = String(req.method || "GET").toUpperCase() === "POST" ? "POST" : "GET";
+  var body = typeof req.body === "string" ? req.body : "";
+  if (method === "POST" && body) {
+    try {
+      var parsedBody = JSON.parse(body);
+      if (parsedBody && typeof parsedBody === "object" && parsedBody.variables && typeof parsedBody.variables === "object" && !Array.isArray(parsedBody.variables)) {
+        parsedBody.variables.userId = id;
+        body = JSON.stringify(parsedBody);
+      }
+    } catch (err2) {}
+  }
+  var url = parts.path + (Object.keys(params).length ? "?" + encodeQuery(params) : "") + parts.hash;
+  if (!isOwnListApiUrl(url, operationName(url))) return null;
+  return {url: url, method: method, body: method === "POST" ? body : ""};
 }
 
 export function bottomCursor(json) {
@@ -2369,6 +2476,17 @@ function attachHooks(page, emit) {
     }
     return "";
   }
+  function decodeViewerCookie(value) {
+    var text = String(value || "");
+    for (var n = 0; n < 2; n++) {
+      var decoded = text;
+      try { decoded = decodeURIComponent(text); } catch (err) { break; }
+      if (decoded === text) break;
+      text = decoded;
+    }
+    var idMatch = text.match(/u=(\d+)/);
+    return idMatch ? idMatch[1] : "";
+  }
   function headerNamed(headers, name) {
     var want = String(name || "").toLowerCase();
     var found = "";
@@ -2436,7 +2554,7 @@ function attachHooks(page, emit) {
   }
   page.__fanAuditEnsureList = function (op, fresh) {
     if (op !== "Following" && op !== "Followers" && op !== "BlueVerifiedFollowers") {
-      return Promise.resolve({queryId: "", viewerId: "", features: {}, captured: false, hasCsrf: false});
+      return Promise.resolve({queryId: "", viewerId: "", twidId: "", capturedViewerId: "", features: {}, captured: false, hasCsrf: false});
     }
     if (fresh) delete discoveredIds[op];
     var tpl = listTemplates[op];
@@ -2446,13 +2564,13 @@ function attachHooks(page, emit) {
       if (found && found[2] === op) capturedId = found[1];
     }
     function pack(id) {
-      var viewer = "";
+      var capturedViewer = "";
       var features = {};
       if (tpl && tpl.url) {
         try {
           var rawVars = (String(tpl.url).split("variables=")[1] || "").split("&")[0];
           var vars = JSON.parse(decodeURIComponent(rawVars));
-          if (vars && /^\d+$/.test(String(vars.userId || ""))) viewer = String(vars.userId);
+          if (vars && /^\d+$/.test(String(vars.userId == null ? "" : vars.userId))) capturedViewer = String(vars.userId);
         } catch (err) {}
         try {
           var rawFeatures = (String(tpl.url).split("features=")[1] || "").split("&")[0];
@@ -2460,15 +2578,16 @@ function attachHooks(page, emit) {
           if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) features = parsed;
         } catch (err2) {}
       }
-      if (!viewer) {
-        var viewerCookie = readPageCookie("twid");
-        try { viewerCookie = decodeURIComponent(viewerCookie); } catch (err3) {}
-        var idMatch = String(viewerCookie).match(/u=(\d+)/);
-        if (idMatch) viewer = idMatch[1];
-      }
+      var cookieText = readPageCookie("twid");
+      var twidViewer = /^\d+$/.test(cookieText) ? cookieText : decodeViewerCookie(cookieText);
+      var viewer = "";
+      if (capturedViewer && twidViewer && capturedViewer !== twidViewer) viewer = "";
+      else viewer = twidViewer || capturedViewer;
       return {
         queryId: id || "",
         viewerId: viewer,
+        twidId: twidViewer,
+        capturedViewerId: capturedViewer,
         features: features,
         captured: !!capturedId && !fresh,
         auth: headerNamed((tpl && tpl.headers) || {}, "authorization") ? "captured" : "public",

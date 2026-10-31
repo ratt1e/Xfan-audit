@@ -1,4 +1,4 @@
-import { EMPTY_GUIDE, RETENTION_DAYS, SNAPSHOT_WAITING, BOARD_CSS, emptyStore, normalizeStore, prune, parseCapture, applyCapture, coverageReport, toEngineData, snapshotDiffInput, recordSnapshot, exportTimeFromName, maybeSnapshot, addKeep, removeKeep, looksLikeBackup, parseExcludeText, addExclude, addExcludeMany, removeExclude, clearExclude, excludeText, headerListCount, headerVerifiedCount, applyImported, contextProblems, installHooks, pageHookProgram, exportBackup, importBackup, standaloneHtml, norm, operationName, classifyUrl, listKindFromPath, userFromVisible, diagnosticsCopy, sameRealm, pageContext, badgeText, progressText, AUTO_READ_RISK, AUTO_READ_ACK, FAST_READ_MAX_PAGES, READ_FAIL, listReadReport, autoReadPageKind, autoReadCount, buildListPageRequest, buildDiscoveredListRequest, fastRecoverPlan, bottomCursor, fastPageStopReason, createFastReader } from "./logic.mjs";
+import { EMPTY_GUIDE, RETENTION_DAYS, SNAPSHOT_WAITING, BOARD_CSS, emptyStore, normalizeStore, prune, parseCapture, applyCapture, coverageReport, toEngineData, snapshotDiffInput, recordSnapshot, exportTimeFromName, maybeSnapshot, addKeep, removeKeep, looksLikeBackup, parseExcludeText, addExclude, addExcludeMany, removeExclude, clearExclude, excludeText, headerListCount, headerVerifiedCount, applyImported, contextProblems, installHooks, pageHookProgram, exportBackup, importBackup, standaloneHtml, norm, operationName, classifyUrl, listKindFromPath, userFromVisible, diagnosticsCopy, sameRealm, pageContext, badgeText, progressText, AUTO_READ_RISK, AUTO_READ_ACK, FAST_READ_MAX_PAGES, READ_FAIL, UNKNOWN_ACCOUNT, listReadReport, idAgreement, autoReadPageKind, autoReadCount, buildListPageRequest, buildDiscoveredListRequest, applyViewerId, viewerIdFromListRequest, fastRecoverPlan, bottomCursor, fastPageStopReason, createFastReader } from "./logic.mjs";
 
 var STORE_KEY = "fan-audit-v1";
 
@@ -182,10 +182,10 @@ function boot() {
     if ((captured.kind === "following" || captured.kind === "followers" || captured.kind === "blue-followers") && !captured.skip && typeof keep === "function") keep(listId);
     else if (typeof drop === "function") drop(listId);
   }
-  function ingest(url, text, body, countTraffic, listId) {
+  function ingest(url, text, body, countTraffic, listId, requestUserId) {
     if (countTraffic) noteTraffic(url);
     var owner = currentOwner();
-    var captured = parseCapture(url, text, {owner: owner, body: body, pageKind: listKindFromPath(location.pathname, owner), pagePath: location.pathname});
+    var captured = parseCapture(url, text, {owner: owner, body: body, pageKind: listKindFromPath(location.pathname, owner), pagePath: location.pathname, requestUserId: requestUserId || ""});
     rememberListTemplate(captured, listId);
     if (captured.skip) {
       diag.skips[captured.skip] = (diag.skips[captured.skip] || 0) + 1;
@@ -693,7 +693,20 @@ function boot() {
       Promise.resolve(page.__fanAuditEnsureList(op, !!rediscovered)).then(function (info) {
         if (!fastReader.running()) return;
         info = info || {};
-        if (!info.hasCsrf || !info.queryId || !info.viewerId) {
+        if (!info.viewerId) {
+          diag.listRead = listReadReport({
+            op: op,
+            status: 0,
+            auth: info.auth,
+            querySource: info.captured ? "captured" : (info.queryId ? "discovered" : "unknown"),
+            users: 0,
+            rawUsers: 0,
+            ids: idAgreement([info.twidId, info.capturedViewerId])
+          });
+          haltAuto(UNKNOWN_ACCOUNT);
+          return;
+        }
+        if (!info.hasCsrf || !info.queryId) {
           fastListNotes.push(fastListLabel(op) + "：" + MANUAL_FALLBACK);
           done();
           return;
@@ -704,6 +717,7 @@ function boot() {
         var tpl = page.__fanAuditListTemplate ? page.__fanAuditListTemplate(op) : null;
         if (tpl && !rediscovered) req = buildListPageRequest(tpl, cursor);
         if (!req) req = buildDiscoveredListRequest({op: op, queryId: info.queryId, viewerId: info.viewerId, cursor: cursor, features: useFeatures, origin: location.origin});
+        req = req ? applyViewerId(req, info.viewerId) : null;
         if (!req) {
           fastListNotes.push(fastListLabel(op) + "：" + MANUAL_FALLBACK);
           done();
@@ -734,37 +748,45 @@ function boot() {
           var kind = op === "Following" ? "following" : op === "BlueVerifiedFollowers" ? "blue-followers" : "followers";
           fastKind = kind;
           var before = autoReadCount(store, kind);
-          ingest(req.url, res.text || "", req.body || "", false, "");
+          var requestUserId = viewerIdFromListRequest(req.url, req.body);
+          ingest(req.url, res.text || "", req.body || "", false, "", requestUserId);
           var after = autoReadCount(store, kind);
           var next = "";
-          var pageUsers = -1;
+          var parsed = null;
+          var rawUsers = 0;
           try {
-            var parsed = parseCapture(req.url, res.text || "", {owner: currentOwner()});
-            pageUsers = parsed && parsed.users ? parsed.users.length : 0;
+            parsed = parseCapture(req.url, res.text || "", {owner: currentOwner(), requestUserId: requestUserId});
+            rawUsers = parsed && parsed.rawUsers != null ? (parsed.rawUsers | 0) : 0;
+          } catch (err) {
+            rawUsers = 0;
+          }
+          try {
             next = bottomCursor(JSON.parse(res.text || ""));
           } catch (err) {
             next = "";
-            pageUsers = -1;
           }
+          var pageUsers = parsed && parsed.users ? parsed.users.length : 0;
           var expected = kind === "following" ? (store.totals.following || 0) : kind === "blue-followers" ? (store.totals.blue || 0) : (store.totals.followers || 0);
           renderAutoRead();
           updateBadge();
           if (panelOpen) render();
-          if ((pageUsers | 0) === 0 && !String(cursor || "")) {
+          if ((parsed && parsed.skip) || ((rawUsers | 0) === 0 && !String(cursor || ""))) {
             diag.listRead = listReadReport({
               op: op,
               status: res.status,
               text: res.text || "",
               auth: info.auth,
               querySource: info.captured ? "captured" : "discovered",
-              users: 0,
-              skip: parsed && parsed.skip
+              users: pageUsers,
+              rawUsers: rawUsers,
+              skip: parsed && parsed.skip,
+              ids: idAgreement([info.twidId, info.capturedViewerId, requestUserId, parsed && parsed.ownerId])
             });
             haltAuto(READ_FAIL);
             return;
           }
-          var pageStop = fastPageStopReason(before, after, cursor, next, pageUsers, expected);
-          if (!pageStop && pageUsers > 0 && after === before) fastKnownPages += 1;
+          var pageStop = fastPageStopReason(before, after, cursor, next, rawUsers, expected);
+          if (!pageStop && rawUsers > 0 && after === before) fastKnownPages += 1;
           if (pageStop) {
             fastListNotes.push(fastListLabel(op) + "：" + pageStop);
             done();
@@ -799,6 +821,7 @@ function boot() {
       fastKnownPages = 0;
       fastListNotes = [];
       fastFeatures = {};
+      diag.listRead = "";
       autoPhase = "running";
       renderAutoRead();
       function nextOp(index) {

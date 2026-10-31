@@ -9,8 +9,8 @@ import {
   pageContext, badgeText, listIsComplete, exportTimeFromName, recordSnapshot, snapshotDiffInput,
   addKeep, removeKeep, applyImported, headerListCount, headerVerifiedCount, SNAPSHOT_WAITING, looksLikeBackup,
   parseExcludeText, addExclude, addExcludeMany, removeExclude, clearExclude, excludeText,
-  progressText, fastPageStopReason, fastRecoverPlan, READ_FAIL, listReadReport, queryIdFromBundle, viewerIdFromTwid, missingFeatureNames,
-  buildDiscoveredListRequest, PUBLIC_WEB_BEARER,
+  progressText, fastPageStopReason, fastRecoverPlan, READ_FAIL, UNKNOWN_ACCOUNT, listReadReport, idAgreement, confirmViewerId, queryIdFromBundle, viewerIdFromTwid, missingFeatureNames,
+  buildDiscoveredListRequest, applyViewerId, viewerIdFromListRequest, PUBLIC_WEB_BEARER,
   autoReadPageKind, autoReadCount, FAST_READ_PAGE_SIZE, FAST_READ_MAX_PAGES,
   FAST_READ_REMAINING_FLOOR, buildListPageRequest, bottomCursor, fastReadStopReason, createFastReader,
   isOwnListApiUrl
@@ -61,7 +61,7 @@ check(built.split("不能保证安全").length === 2, "只写明不能保证安�
 check(!/Bearer [A-Za-z0-9_\-.]{20,}/.test(built.replace(PUBLIC_WEB_BEARER, "")), "除了网页公开令牌，没有别的硬编码 Bearer");
 check(built.includes(EMPTY_GUIDE), "空状态文案在安装文件里");
 const meta = "// " + "@";
-check(built.includes(meta + "version      0.5.1"), "版本号");
+check(built.includes(meta + "version      0.5.2"), "版本号");
 check(built.includes("只在本地隐藏，不会在 X 上操作"), "排除说明写明只在本地隐藏");
 check(built.includes("/mutes") === false && built.includes("friendships/destroy") === false && built.includes("blocks/create") === false, "排除不会调用屏蔽或取关接口");
 check(built.includes(meta + "sandbox      raw"), "要求页面环境");
@@ -673,6 +673,13 @@ check(!("autoRead" in emptyStore().prefs), "自动读取不写入本地偏好");
 check(queryIdFromBundle('queryId:"abc123XYZ",operationName:"Following"', "Following") === "abc123XYZ", "能从页面代码里认出正在关注的接口编号");
 check(queryIdFromBundle('queryId:"abc123XYZ",operationName:"Following"', "Followers") === "", "别的接口编号不会认错");
 check(viewerIdFromTwid("u%3D424242") === "424242", "从 twid 里取出自己的数字 ID");
+check(viewerIdFromTwid("u%253D4242") === "4242", "twid 被编码两次也能取出数字 ID");
+check(confirmViewerId({twid: "u%3D4242", captured: 4242}).id === "4242" && confirmViewerId({twid: "u%3D4242", captured: 4242}).agreement === "一致", "编码过的 twid 和数字 id 对得上");
+check(confirmViewerId({twid: "u%253D1111", captured: "2222"}).id === "" && confirmViewerId({twid: "u%253D1111", captured: "2222"}).agreement === "不一致", "两种 id 对不上就不确认账号");
+check(confirmViewerId({twid: "u%3D4242"}).id === "4242" && confirmViewerId({twid: "u%3D4242"}).agreement === "缺失", "只有 twid 时仍能确认账号");
+check(confirmViewerId({}).id === "" && confirmViewerId({}).agreement === "缺失", "两个来源都没有就认不出账号");
+check(idAgreement(["4242", "demo_owner"]) === "不一致", "数字 id 和用户名对不上算不一致");
+check(idAgreement(["4242"]) === "缺失" && idAgreement(["4242", "4242", ""]) === "一致", "要有两个相同的 id 才算一致");
 check(missingFeatureNames("cannot be null: responsive_web_graphql_exclude_directive_enabled, verified_phone_label_enabled").length === 2, "缺参数时能补上字段名");
 const discovered = buildDiscoveredListRequest({op: "Following", queryId: "discoveredId1", viewerId: "99", cursor: "", features: {responsive: true}});
 check(discovered && discovered.url.indexOf("/graphql/discoveredId1/Following") >= 0 && discovered.url.indexOf("Bearer") < 0, "没有捕获请求时用查到的接口编号，地址里不带令牌");
@@ -697,6 +704,7 @@ check(maskedFacts.indexOf("重点维护") < 0 && maskedFacts.indexOf("建议动�
 check(built.includes("更多") && built.includes("一键打码") && built.includes("全屏") && built.includes("自动读取名单"), "主界面留打码和全屏，自动读取只有一个按钮");
 check(built.includes("查看风险并决定是否开启") === false && built.includes(">开始读取<") === false, "不再多一步开启和开始");
 check(built.includes("脚本会自己连续请求你的正在关注列表") && built.includes("不能保证安全") && built.includes("风险比滚动更高") === false, "风险提示写自动请求，不再提滚动方式");
+check(built.includes(UNKNOWN_ACCOUNT), "认不出账号时直接说明");
 const listUrl = "https://x.com/i/api/graphql/capturedHash/Following?variables=" + encodeURIComponent(JSON.stringify({userId: "1", count: 20, cursor: "old"})) + "&features=" + encodeURIComponent(JSON.stringify({responsive: true}));
 check(isOwnListApiUrl(listUrl, "Following") && !isOwnListApiUrl(listUrl, "Followers"), "只认自己捕获到的关注或粉丝接口");
 const blueUrl = "https://x.com/i/api/graphql/capturedHash/BlueVerifiedFollowers?variables=" + encodeURIComponent(JSON.stringify({userId: "1", count: 20}));
@@ -809,7 +817,37 @@ barePage.fetch = function (input, init) {
 };
 installHooks(barePage, function () {});
 const ensured = await barePage.__fanAuditEnsureList("Following", false);
-check(ensured.queryId === "foundQuery1" && ensured.viewerId === "4242" && ensured.hasCsrf === true && ensured.captured === false, "没捕获请求时从页面代码和 twid 找出接口");
+check(ensured.queryId === "foundQuery1" && ensured.viewerId === "4242" && ensured.twidId === "4242" && ensured.hasCsrf === true && ensured.captured === false, "没捕获请求时从页面代码和 twid 找出接口");
+const encodedPage = makePage();
+encodedPage.document = {cookie: "ct0=csrf-value; twid=u%253D4242", scripts: [{src: "https://abs.twimg.com/responsive-web/client-web/main.js"}]};
+encodedPage.bodies["https://abs.twimg.com/responsive-web/client-web/main.js"] = 'queryId:"foundQuery2",operationName:"Following"';
+encodedPage.fetch = function (input) {
+  const key = typeof input === "string" ? input : "";
+  const text = encodedPage.bodies[key] || "";
+  return Promise.resolve({
+    status: 200,
+    ok: true,
+    headers: {get: function () { return ""; }},
+    text: function () { return Promise.resolve(text); },
+    clone: function () { return {text: function () { return Promise.resolve(text); }}; }
+  });
+};
+installHooks(encodedPage, function () {});
+const encodedInfo = await encodedPage.__fanAuditEnsureList("Following", false);
+check(encodedInfo.viewerId === "4242" && encodedInfo.twidId === "4242" && encodedInfo.capturedViewerId === "", "页面里的 twid 双重编码也能解出数字 id");
+const clashPage = makePage();
+clashPage.document = {cookie: "ct0=csrf-value; twid=u%3D1111", scripts: []};
+let clashId = "";
+installHooks(clashPage, function (url, text, body, listId) { if (listId) clashId = String(listId); });
+const clashUrl = "https://x.com/i/api/graphql/capturedHash/Following?variables=" + encodeURIComponent(JSON.stringify({userId: "2222", count: 20}));
+const clashXhr = new clashPage.XMLHttpRequest();
+clashXhr.open("GET", clashUrl);
+clashXhr.responseText = "{}";
+clashXhr.send(null);
+clashXhr.listeners.load.forEach(function (fn) { fn(); });
+check(clashId && clashPage.__fanAuditKeepListTemplate(clashId) === true, "不一致测试先留下捕获请求");
+const clashInfo = await clashPage.__fanAuditEnsureList("Following", false);
+check(clashInfo.viewerId === "" && clashInfo.twidId === "1111" && clashInfo.capturedViewerId === "2222", "twid 和捕获到的 id 不一致时不给出可用的 userId");
 const bareReq = buildDiscoveredListRequest({op: "Following", queryId: ensured.queryId, viewerId: ensured.viewerId, features: {}});
 const bareResult = await barePage.__fanAuditFetchList("Following", bareReq.url, "GET", "");
 check(bareResult.status === 200 && bareInit && bareInit.headers.authorization === "Bearer " + PUBLIC_WEB_BEARER && bareInit.headers.cookie == null, "没有捕获令牌时用网页公开令牌，仍不带 cookie 头");
@@ -939,6 +977,34 @@ const dirtyReport = listReadReport({
   users: 0
 });
 check(dirtyReport.indexOf("user_01") < 0 && dirtyReport.indexOf("supersecretvalue") < 0, "诊断抹掉账号和 cookie 值");
+const followerPage = parseCapture("https://x.com/i/api/graphql/h/Following", JSON.stringify(listPage(oldUser, "timeline")), {owner: "demo_owner", pageKind: "followers"});
+check(followerPage.skip === "不是你的关注或粉丝列表" && followerPage.users.length === 0 && followerPage.rawUsers === 1, "粉丝页上的正在关注响应，被动采集仍整页不收");
+const selfRead = parseCapture("https://x.com/i/api/graphql/h/Following", JSON.stringify(listPage(oldUser, "timeline")), {owner: "demo_owner", pageKind: "followers", requestUserId: "4242"});
+check(selfRead.skip === "" && selfRead.users.length === 1 && selfRead.users[0].handle === "user_11" && selfRead.ownerId === "", "在粉丝页启动读正在关注，按请求里的 userId 收下");
+const numbered = listPage(oldUser, "v2");
+numbered.data.user.result.rest_id = 4242;
+const numberedRead = parseCapture("https://x.com/i/api/graphql/h/Following", JSON.stringify(numbered), {owner: "demo_owner", pageKind: "followers", requestUserId: "4242"});
+check(numberedRead.skip === "" && numberedRead.ownerId === "4242" && numberedRead.users.length === 1, "响应里的 rest_id 是数字也能和请求对上");
+const otherOwner = parseCapture("https://x.com/i/api/graphql/h/Following", JSON.stringify(numbered), {owner: "demo_owner", pageKind: "following", requestUserId: "1111"});
+check(otherOwner.skip === "不是你的关注或粉丝列表" && otherOwner.rawUsers === 1 && otherOwner.users.length === 0, "响应里的 id 和请求不一致就整页不收");
+const stamped = applyViewerId(buildDiscoveredListRequest({op: "Following", queryId: "discoveredId1", viewerId: "7", features: {}}), 4242);
+const stampedId = viewerIdFromListRequest(stamped.url, stamped.body);
+check(stampedId === "4242", "发出去的请求写上确认过的数字 id");
+const ownReport = listReadReport({
+  op: "Following",
+  status: 200,
+  text: JSON.stringify(listPage(oldUser, "timeline")),
+  auth: "public",
+  querySource: "discovered",
+  users: selfRead.users.length,
+  rawUsers: selfRead.rawUsers,
+  skip: selfRead.skip,
+  ids: idAgreement(["4242", "", "4242", selfRead.ownerId])
+});
+check(ownReport.indexOf("listRead ids=一致") >= 0 && ownReport.indexOf("listRead rawUsers=1") >= 0 && ownReport.indexOf("listRead users=1") >= 0, "诊断写出是否一致和过滤前人数");
+check(ownReport.indexOf("4242") < 0 && ownReport.indexOf("user_11") < 0 && ownReport.indexOf("demo_owner") < 0, "诊断不写 id 和账号名");
+const hiddenId = listReadReport({op: "Following", status: 200, users: 0, rawUsers: 2, ids: "4242"});
+check(hiddenId.indexOf("4242") < 0 && hiddenId.indexOf("listRead ids=缺失") >= 0 && hiddenId.indexOf("listRead rawUsers=2") >= 0, "诊断遇到 id 原文就改写成缺失");
 
 if (failed) {
   console.error(failed + " checks failed");
