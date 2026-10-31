@@ -10,6 +10,7 @@ import {
   addKeep, removeKeep, applyImported, headerListCount, headerVerifiedCount, SNAPSHOT_WAITING, looksLikeBackup,
   parseExcludeText, addExclude, addExcludeMany, removeExclude, clearExclude, excludeText,
   progressText, fastPageStopReason, fastRecoverPlan, READ_FAIL, UNKNOWN_ACCOUNT, listReadReport, idAgreement, confirmViewerId, queryIdFromBundle, viewerIdFromTwid, missingFeatureNames,
+  createFastRound, fastRoundCount, advanceFastRound, fastRoundStatusText, fastRoundDoneText,
   buildDiscoveredListRequest, applyViewerId, viewerIdFromListRequest, PUBLIC_WEB_BEARER,
   autoReadPageKind, autoReadCount, FAST_READ_PAGE_SIZE, FAST_READ_MAX_PAGES,
   FAST_READ_REMAINING_FLOOR, buildListPageRequest, bottomCursor, fastReadStopReason, createFastReader,
@@ -61,7 +62,7 @@ check(built.split("不能保证安全").length === 2, "只写明不能保证安�
 check(!/Bearer [A-Za-z0-9_\-.]{20,}/.test(built.replace(PUBLIC_WEB_BEARER, "")), "除了网页公开令牌，没有别的硬编码 Bearer");
 check(built.includes(EMPTY_GUIDE), "空状态文案在安装文件里");
 const meta = "// " + "@";
-check(built.includes(meta + "version      0.5.2"), "版本号");
+check(built.includes(meta + "version      0.5.3"), "版本号");
 check(built.includes("只在本地隐藏，不会在 X 上操作"), "排除说明写明只在本地隐藏");
 check(built.includes("/mutes") === false && built.includes("friendships/destroy") === false && built.includes("blocks/create") === false, "排除不会调用屏蔽或取关接口");
 check(built.includes(meta + "sandbox      raw"), "要求页面环境");
@@ -743,7 +744,79 @@ check(fastPageStopReason(10, 10, "c1", "", 0).indexOf("没有账号") >= 0, "后
 check(fastPageStopReason(10, 12, "c1", "c1").indexOf("游标没有往下走") >= 0, "游标不变就停");
 check(fastPageStopReason(10, 12, "c1", "c2") === "", "有新账号并且游标前进才继续");
 check(fastPageStopReason(10, 12, "c1", "").indexOf("没有下一页") >= 0, "没有下一页就结束这一份名单");
-check(fastPageStopReason(95, 95, "c1", "c2", 10, 100).indexOf("差不多了") >= 0, "接近公开总数就停");
+check(fastPageStopReason(95, 95, "c1", "c2", 10, 100) === "", "本轮未到公开总数，有下一页就继续");
+check(fastPageStopReason(100, 100, "c1", "c2", 10, 100).indexOf("达到公开总数") >= 0, "本轮人数达到公开总数才停");
+check(fastPageStopReason(100, 100, "c1", "", 10, 100).indexOf("没有下一页") >= 0, "没有下一页优先于达到公开总数");
+check(built.includes("已记人数接近公开总数") === false, "不再用已记人数接近公开总数来停");
+check(built.includes("autoReadCount(store, fastKind)") === false && built.includes("progressText(autoReadCount") === false, "快速读取的进度不再用已存人数");
+check(built.includes("advanceFastRound(fastRoundSeen"), "停止判断走本轮新建的 map");
+check(built.includes("读取中 本轮已读 ") && built.includes("本轮读了 "), "进度和结束语都写本轮");
+function peoplePage(start, count) {
+  const users = [];
+  for (let i = 0; i < count; i++) {
+    const n = start + i + 1;
+    users.push({id: String(n), handle: "user_" + n});
+  }
+  return users;
+}
+function readRoundToEnd(expected, pageSize) {
+  const seen = createFastRound();
+  let cursor = "";
+  let pages = 0;
+  let reason = "";
+  let early = "";
+  while (pages < 40) {
+    const start = pages * pageSize;
+    const left = expected - start;
+    if (left <= 0) break;
+    const count = Math.min(pageSize, left);
+    const next = start + count < expected ? "p" + (pages + 1) : "";
+    const step = advanceFastRound(seen, {
+      users: peoplePage(start, count),
+      prevCursor: cursor,
+      nextCursor: next,
+      rawUsers: count,
+      expected: expected
+    });
+    pages += 1;
+    if (step.after !== Math.min(pages * pageSize, expected)) {
+      early = "人数 " + step.after;
+      break;
+    }
+    if (step.reason) {
+      reason = step.reason;
+      if (next) early = "第 " + pages + " 页还有下一页却停了";
+      break;
+    }
+    if (!next) break;
+    cursor = next;
+  }
+  return {pages: pages, reason: reason, count: fastRoundCount(seen), early: early};
+}
+const storedNear = emptyStore();
+storedNear.totals.following = 2100;
+for (let i = 1; i <= 2017; i++) storedNear.following[String(i)] = {id: String(i), handle: "user_" + i};
+const storedCount = autoReadCount(storedNear, "following");
+check(storedCount === 2017 && listIsComplete(storedCount, 2100) === true, "本地已存 2017 人，按快照口径已接近公开总数");
+check(fastPageStopReason(storedCount, storedCount, "", "p1", 100, 2100) === "", "把已存人数传进去也不会因接近而停");
+check(fastPageStopReason(2100, 2100, "", "p1", 100, 2100).indexOf("达到公开总数") >= 0, "已存人数若被当成这一轮并且已经达到公开总数，第一页就会停");
+const reread = readRoundToEnd(2100, 100);
+check(reread.early === "" && reread.pages === 21 && reread.count === 2100 && reread.reason.indexOf("没有下一页") >= 0, "已存人数接近公开总数时，重新读仍翻到末页");
+const storedFull = emptyStore();
+storedFull.totals.following = 2000;
+for (let i = 1; i <= 2000; i++) storedFull.following[String(i)] = {id: String(i), handle: "user_" + i};
+check(autoReadCount(storedFull, "following") >= storedFull.totals.following, "本地已存人数已经达到公开总数");
+const againFull = readRoundToEnd(2000, 100);
+check(againFull.early === "" && againFull.pages === 20 && againFull.count === 2000 && againFull.reason.indexOf("没有下一页") >= 0, "已存人数达到公开总数时，重新读仍翻到末页");
+const roundOnly = createFastRound();
+const page1 = advanceFastRound(roundOnly, {users: peoplePage(0, 100), prevCursor: "", nextCursor: "p1", rawUsers: 100, expected: 2000});
+check(page1.before === 0 && page1.after === 100 && page1.reason === "", "第一页只记本轮 100 人");
+const dupRound = advanceFastRound(roundOnly, {users: peoplePage(0, 100), prevCursor: "p1", nextCursor: "p2", rawUsers: 100, expected: 2000});
+check(dupRound.before === 100 && dupRound.after === 100 && dupRound.reason === "", "本轮重复的人不再累加，有下一页仍继续");
+check(fastRoundStatusText(page1.after, 2100) === "读取中 本轮已读 100 / 共约 2100", "进度一行是本轮已读 N / 共约 M");
+check(fastRoundStatusText(0, 0) === "读取中 本轮已读 0 / 总数待核实", "没有公开总数时进度不编造");
+check(fastRoundStatusText(2017, 2100).indexOf("差不多了") < 0, "本轮进度不因接近公开总数说差不多了");
+check(fastRoundDoneText(reread.count, reread.pages) === "本轮读了 2100 人、21 页。", "结束语写本轮人数和页数");
 check(built.includes("概览") && built.includes("名单") && built.includes("采集") && built.includes("这一页没有新账号，已停止") === false, "面板分成标签，不再因为一页没有新账号就停");
 const fastIdle = createFastReader();
 check(fastIdle.notePage().action === "stop", "没点开始不会发快速请求");

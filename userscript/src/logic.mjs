@@ -1474,21 +1474,79 @@ export function bottomCursor(json) {
   return found;
 }
 
+// 本轮扫描自己的去重名单。每次快速读取一份名单时新建，不读 store 里已经存过的人数。
+export function createFastRound() {
+  return {};
+}
+
+function fastRoundKey(user) {
+  if (!user || typeof user !== "object") return "";
+  var id = String(user.id || "");
+  if (id && !/^\d+$/.test(id)) id = "";
+  if (id) return "id:" + id;
+  var handle = norm(user.handle);
+  return handle ? "h:" + handle : "";
+}
+
+export function fastRoundCount(seen) {
+  if (!seen || typeof seen !== "object" || Array.isArray(seen)) return 0;
+  return Object.keys(seen).length;
+}
+
+export function noteFastRound(seen, users) {
+  var before = fastRoundCount(seen);
+  if (!seen || typeof seen !== "object" || Array.isArray(seen)) return {before: 0, after: 0};
+  (users || []).forEach(function (user) {
+    var key = fastRoundKey(user);
+    if (!key || seen[key]) return;
+    seen[key] = 1;
+  });
+  return {before: before, after: fastRoundCount(seen)};
+}
+
+// 把这一页的人记进本轮 map，再用本轮前后人数决定停不停。seen 必须是本轮新建的 map。
+export function advanceFastRound(seen, page) {
+  page = page || {};
+  var noted = noteFastRound(seen, page.users || []);
+  var raw = page.rawUsers;
+  if (raw == null) raw = page.users && page.users.length ? page.users.length : 0;
+  return {
+    before: noted.before,
+    after: noted.after,
+    reason: fastPageStopReason(noted.before, noted.after, page.prevCursor, page.nextCursor, raw, page.expected)
+  };
+}
+
+export function fastRoundStatusText(captured, expected) {
+  var n = countNum(captured);
+  var total = countNum(expected);
+  return "读取中 本轮已读 " + n + " / " + (total > 0 ? "共约 " + total : "总数待核实");
+}
+
+export function fastRoundDoneText(people, pages) {
+  var n = countNum(people);
+  var p = pages | 0;
+  if (p < 0) p = 0;
+  return "本轮读了 " + n + " 人、" + p + " 页。";
+}
+
 // 429、任何非 2xx、或 x-rate-limit-remaining 小于等于 2，都立刻停。不自动重试。
-// 快速翻页：已经记过的一页只要游标还在往下，就继续。空页、没有下一页、游标不动、或已接近公开总数，才结束这一份名单。
+// 快速翻页的停止只看本轮去重人数：没有下一页、游标不动、空页，或本轮人数已经不少于公开总数。
+// 不用本地已存人数，也不用 95% 那条「差不多了」。120 页上限在翻页器里另算。
 export function fastPageStopReason(beforeCount, afterCount, prevCursor, nextCursor, pageUsers, expected) {
   var added = (afterCount | 0) > (beforeCount | 0);
   var cursor = String(nextCursor || "");
   var prev = String(prevCursor || "");
   var users = pageUsers == null ? -1 : (pageUsers | 0);
   var total = expected | 0;
-  if (cursor && prev && cursor === prev) return "游标没有往下走，这一份名单到头了。已停止。若已记人数还没到公开总数，过一会儿再开一次。";
+  var roundCount = afterCount | 0;
+  if (cursor && prev && cursor === prev) return "游标没有往下走，这一份名单到头了。已停止。若本轮人数还没到公开总数，过一会儿再开一次。";
   if (users === 0 && !prev) return READ_FAIL;
   if (users === 0) return "这一页没有账号。已停止。若还差一点，过一会儿再开一次。";
   if (!cursor) return added
     ? "没有下一页，这一份名单到头了。已停止。"
-    : "没有下一页，这一份名单到头了。已停止。若已记人数还没到公开总数，过一会儿再开一次。";
-  if (total > 0 && ((afterCount | 0) >= total || listIsComplete(afterCount | 0, total))) return "已记人数接近公开总数，差不多了。已停止。";
+    : "没有下一页，这一份名单到头了。已停止。若本轮人数还没到公开总数，过一会儿再开一次。";
+  if (total > 0 && roundCount >= total) return "本轮已读人数达到公开总数。已停止。";
   return "";
 }
 
