@@ -9,7 +9,7 @@ import {
   pageContext, badgeText, listIsComplete, exportTimeFromName, recordSnapshot, snapshotDiffInput,
   addKeep, removeKeep, applyImported, headerListCount, headerVerifiedCount, SNAPSHOT_WAITING, looksLikeBackup,
   parseExcludeText, addExclude, addExcludeMany, removeExclude, clearExclude, excludeText,
-  progressText, fastPageStopReason, fastRecoverPlan, queryIdFromBundle, viewerIdFromTwid, missingFeatureNames,
+  progressText, fastPageStopReason, fastRecoverPlan, READ_FAIL, listReadReport, queryIdFromBundle, viewerIdFromTwid, missingFeatureNames,
   buildDiscoveredListRequest, PUBLIC_WEB_BEARER,
   autoReadPageKind, autoReadCount, FAST_READ_PAGE_SIZE, FAST_READ_MAX_PAGES,
   FAST_READ_REMAINING_FLOOR, buildListPageRequest, bottomCursor, fastReadStopReason, createFastReader,
@@ -61,7 +61,7 @@ check(built.split("不能保证安全").length === 2, "只写明不能保证安�
 check(!/Bearer [A-Za-z0-9_\-.]{20,}/.test(built.replace(PUBLIC_WEB_BEARER, "")), "除了网页公开令牌，没有别的硬编码 Bearer");
 check(built.includes(EMPTY_GUIDE), "空状态文案在安装文件里");
 const meta = "// " + "@";
-check(built.includes(meta + "version      0.5.0"), "版本号");
+check(built.includes(meta + "version      0.5.1"), "版本号");
 check(built.includes("只在本地隐藏，不会在 X 上操作"), "排除说明写明只在本地隐藏");
 check(built.includes("/mutes") === false && built.includes("friendships/destroy") === false && built.includes("blocks/create") === false, "排除不会调用屏蔽或取关接口");
 check(built.includes(meta + "sandbox      raw"), "要求页面环境");
@@ -694,7 +694,8 @@ check(fan.revisitText({O_raw: 4, I_raw: 0}) === "0%", "我发过、对方没回�
 const maskedFacts = fan.boardHtml([{account: "user_01", tier: "银牌", status: "ok", score: 40, stars: 3, O_raw: 2, I_raw: 1, raw: 3, rounds: 1}], {masked: true});
 check(maskedFacts.indexOf("user_01") < 0 && maskedFacts.indexOf("回访 50%") >= 0, "打码后账号名隐藏，数据仍显示");
 check(maskedFacts.indexOf("重点维护") < 0 && maskedFacts.indexOf("建议动作") < 0, "名单不写建议");
-check(built.includes("更多") && built.includes("一键打码") && built.includes("全屏") && built.includes("查看风险并决定是否开启"), "主界面留打码和全屏，其余收进更多");
+check(built.includes("更多") && built.includes("一键打码") && built.includes("全屏") && built.includes("自动读取名单"), "主界面留打码和全屏，自动读取只有一个按钮");
+check(built.includes("查看风险并决定是否开启") === false && built.includes(">开始读取<") === false, "不再多一步开启和开始");
 check(built.includes("脚本会自己连续请求你的正在关注列表") && built.includes("不能保证安全") && built.includes("风险比滚动更高") === false, "风险提示写自动请求，不再提滚动方式");
 const listUrl = "https://x.com/i/api/graphql/capturedHash/Following?variables=" + encodeURIComponent(JSON.stringify({userId: "1", count: 20, cursor: "old"})) + "&features=" + encodeURIComponent(JSON.stringify({responsive: true}));
 check(isOwnListApiUrl(listUrl, "Following") && !isOwnListApiUrl(listUrl, "Followers"), "只认自己捕获到的关注或粉丝接口");
@@ -729,7 +730,8 @@ check(fastReadStopReason(200, String(FAST_READ_REMAINING_FLOOR)).indexOf("接近
 check(fastReadStopReason(200, "20") === "", "额度还够就继续");
 check(fastPageStopReason(10, 10, "", "c2", 8, 0) === "", "第一页全是已记账号，只要有下一页就继续");
 check(fastPageStopReason(10, 10, "c1", "c2", 20, 0) === "", "中间页没有新人但游标往下，继续翻");
-check(fastPageStopReason(10, 10, "", "", 0).indexOf("没有下一页") >= 0 || fastPageStopReason(10, 10, "", "", 0).indexOf("没有账号") >= 0, "空页没有下一页就停");
+check(fastPageStopReason(10, 10, "", "", 0) === READ_FAIL, "第一页 0 个用户是读取失败，不是名单到头");
+check(fastPageStopReason(10, 10, "c1", "", 0).indexOf("没有账号") >= 0, "后面的空页才当成这一份名单到头");
 check(fastPageStopReason(10, 12, "c1", "c1").indexOf("游标没有往下走") >= 0, "游标不变就停");
 check(fastPageStopReason(10, 12, "c1", "c2") === "", "有新账号并且游标前进才继续");
 check(fastPageStopReason(10, 12, "c1", "").indexOf("没有下一页") >= 0, "没有下一页就结束这一份名单");
@@ -877,6 +879,66 @@ check(snapInput.prevFollowerAccounts.every(function (person) { return person.han
 check(excludeStore.snapshots[0].people.some(function (person) { return person.handle === "user_02"; }), "原始快照不删");
 clearExclude(excludeStore);
 check(excludeText(excludeStore) === "" && addExcludeMany(excludeStore, "@user_04\nuser_05").total === 2, "清空和批量添加");
+
+function listPage(user, mode) {
+  var entry = {
+    entryId: "user-" + user.rest_id,
+    content: mode === "bare" ? {
+      __typename: "TimelineUser",
+      user_results: {result: user}
+    } : {
+      entryType: "TimelineTimelineItem",
+      itemContent: {__typename: "TimelineUser", user_results: {result: user}}
+    }
+  };
+  var timeline = {timeline: {instructions: [{type: "TimelineAddEntries", entries: [entry]}]}};
+  var result = {};
+  if (mode === "v2") result.timeline_v2 = timeline;
+  else result.timeline = timeline;
+  return {data: {user: {result: result}}};
+}
+const oldUser = {
+  __typename: "User",
+  rest_id: "11",
+  legacy: {screen_name: "user_11", name: "旧结构", followers_count: 4, followed_by: false}
+};
+const oldList = parseCapture("https://x.com/i/api/graphql/h/Following", JSON.stringify(listPage(oldUser, "timeline")), {owner: "demo_owner", pageKind: "following"});
+check(oldList.users.length === 1 && oldList.users[0].handle === "user_11" && oldList.users[0].followsMe === false, "旧用户对象能解析出账号和是否关注我");
+const newUser = {
+  __typename: "User",
+  rest_id: "12",
+  is_blue_verified: true,
+  avatar: {image_url: "https://example.invalid/a.jpg"},
+  core: {created_at: "Wed Jan 01 00:00:00 +0000 2020", name: "新结构", screen_name: "user_12"},
+  verification: {verified: true},
+  privacy: {protected: false},
+  relationship_perspectives: {followed_by: true, following: false},
+  profile_bio: {description: ""}
+};
+const newList = parseCapture("https://x.com/i/api/graphql/h/Following", JSON.stringify(listPage(newUser, "v2")), {owner: "demo_owner", pageKind: "following"});
+check(newList.users.length === 1 && newList.users[0].handle === "user_12" && newList.users[0].followsMe === true && newList.users[0].verified === true, "新用户对象和 timeline_v2 能解析");
+const bareList = parseCapture("https://x.com/i/api/graphql/h/Following", JSON.stringify(listPage(newUser, "bare")), {owner: "demo_owner", pageKind: "following"});
+check(bareList.users.length === 1 && bareList.users[0].handle === "user_12", "用户对象不在 itemContent 里也能解析");
+const errorBody = JSON.stringify({
+  errors: [{message: "Dependency: Unspecified", code: 0}],
+  data: {user: null}
+});
+const errorList = parseCapture("https://x.com/i/api/graphql/h/Following", errorBody, {owner: "demo_owner", pageKind: "following"});
+check(errorList.users.length === 0, "200 且带 errors、data 为空时解析不到用户");
+const errorReport = listReadReport({op: "Following", status: 200, text: errorBody, auth: "public", querySource: "discovered", users: 0});
+check(errorReport.indexOf("listRead op=Following") >= 0 && errorReport.indexOf("listRead status=200") >= 0, "诊断有操作名和状态码");
+check(errorReport.indexOf("listRead auth=public") >= 0 && errorReport.indexOf("listRead queryIdSource=discovered") >= 0, "诊断有令牌来源和 queryId 来源");
+check(errorReport.indexOf("Dependency") >= 0 && errorReport.indexOf("data") >= 0, "诊断有 errors 的 message 和顶层 key");
+check(errorReport.indexOf(PUBLIC_WEB_BEARER) < 0 && errorReport.indexOf("@") < 0, "诊断不写令牌或账号");
+const dirtyReport = listReadReport({
+  op: "Following",
+  status: 200,
+  text: JSON.stringify({errors: [{message: "bad @" + "user_01 " + "ct0=" + "supersecretvalue"}], data: {}}),
+  auth: "captured",
+  querySource: "captured",
+  users: 0
+});
+check(dirtyReport.indexOf("user_01") < 0 && dirtyReport.indexOf("supersecretvalue") < 0, "诊断抹掉账号和 cookie 值");
 
 if (failed) {
   console.error(failed + " checks failed");

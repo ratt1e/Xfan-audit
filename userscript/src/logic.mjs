@@ -217,6 +217,64 @@ export function diagnosticsCopy(state) {
     "storedFollowing=" + (state.storedFollowing | 0),
     "storedFollowers=" + (state.storedFollowers | 0),
     "skips=" + (skips.join(",") || "none")
+  ].join("\n") + (state.listRead ? "\n" + String(state.listRead) : "");
+}
+
+export var READ_FAIL = "读取失败，可以点复制诊断发给开发者";
+
+export function safeDiagText(text) {
+  return String(text || "")
+    .replace(/https?:\/\/\S+/g, "")
+    .replace(/@\w+/g, "")
+    .replace(/\bct0=[^;\s]+/gi, "")
+    .replace(/Bearer\s+\S+/gi, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 180);
+}
+
+function outlineKeys(node, prefix, depth, out) {
+  if (!node || typeof node !== "object" || Array.isArray(node) || depth > 2) return;
+  var keys = Object.keys(node).filter(function (key) {
+    return !/token|cookie|auth|ct0|bearer|secret/i.test(key);
+  }).slice(0, 8);
+  if (!keys.length) return;
+  out.push((prefix ? prefix + ":" : "") + keys.join(","));
+  if (depth === 2) return;
+  ["data", "user", "result", "timeline", "timeline_v2"].forEach(function (key) {
+    if (node[key] && typeof node[key] === "object" && !Array.isArray(node[key])) {
+      outlineKeys(node[key], prefix ? prefix + "." + key : key, depth + 1, out);
+    }
+  });
+}
+
+export function listReadReport(input) {
+  input = input || {};
+  var json = input.json;
+  if (!json && input.text) {
+    try { json = JSON.parse(String(input.text)); } catch (err) { json = null; }
+  }
+  var errors = [];
+  if (json && Array.isArray(json.errors)) {
+    json.errors.forEach(function (err) {
+      var msg = safeDiagText(err && (err.message || err.code || ""));
+      if (msg && errors.indexOf(msg) < 0) errors.push(msg);
+    });
+  }
+  var auth = input.auth === "captured" ? "captured" : input.auth === "public" ? "public" : "unknown";
+  var source = input.querySource === "captured" ? "captured" : input.querySource === "discovered" ? "discovered" : "unknown";
+  var op = String(input.op || "").replace(/[^A-Za-z]/g, "") || "unknown";
+  var shape = [];
+  outlineKeys(json, "", 0, shape);
+  return [
+    "listRead op=" + op,
+    "listRead status=" + (Number(input.status) || 0),
+    "listRead auth=" + auth,
+    "listRead queryIdSource=" + source,
+    "listRead users=" + (input.users | 0),
+    "listRead skip=" + (safeDiagText(input.skip) || "none"),
+    "listRead errors=" + (errors.slice(0, 3).join(" | ") || "none"),
+    "listRead keys=" + (shape.join(" / ") || "none")
   ].join("\n");
 }
 
@@ -274,8 +332,10 @@ function readUser(user) {
   if (user.__typename === "UserWithVisibilityResults" && user.user) return readUser(user.user);
   var core = user.core || {};
   var legacy = user.legacy || {};
-  var handle = core.screen_name || core.screenName || legacy.screen_name || legacy.screenName || user.screen_name || "";
+  var profile = user.profile || {};
+  var handle = core.screen_name || core.screenName || legacy.screen_name || legacy.screenName || profile.screen_name || profile.screenName || user.screen_name || user.screenName || "";
   var id = String(user.rest_id || user.restId || legacy.id_str || "");
+  if (!/^\d+$/.test(id) && /^\d+$/.test(String(user.id_str || ""))) id = String(user.id_str);
   if (!handle && !id) return null;
   var counts = user.relationship_counts || {};
   var followers = counts.followers;
@@ -427,6 +487,27 @@ function dedupeUsers(list) {
   return out;
 }
 
+function harvestUsers(node, users, depth) {
+  if (!node || depth > 8 || typeof node !== "object") return;
+  if (Array.isArray(node)) {
+    for (var i = 0; i < node.length; i++) harvestUsers(node[i], users, depth + 1);
+    return;
+  }
+  var entryId = String(node.entryId || "");
+  if (entryId.indexOf("cursor") >= 0) return;
+  var userNode = node.user_results || node.userResults;
+  if (userNode) {
+    var user = readUser(userNode.result || userNode);
+    if (user && (user.handle || user.id)) users.push(user);
+  }
+  var keys = Object.keys(node);
+  for (var k = 0; k < keys.length; k++) {
+    if (keys[k] === "user_results" || keys[k] === "userResults") continue;
+    var child = node[keys[k]];
+    if (child && typeof child === "object") harvestUsers(child, users, depth + 1);
+  }
+}
+
 function collect(instructions) {
   var tweets = [];
   var users = [];
@@ -434,14 +515,21 @@ function collect(instructions) {
   for (var i = 0; i < list.length; i++) {
     var ins = list[i];
     if (!ins) continue;
-    if (ins.entry && String(ins.entry.entryId || "").indexOf("cursor") < 0) takeNode(ins.entry, tweets, users);
+    if (ins.entry && String(ins.entry.entryId || "").indexOf("cursor") < 0) {
+      takeNode(ins.entry, tweets, users);
+      harvestUsers(ins.entry, users, 0);
+    }
     var entries = ins.entries || [];
     for (var e = 0; e < entries.length; e++) {
       if (String(entries[e].entryId || "").indexOf("cursor") >= 0) continue;
       takeNode(entries[e], tweets, users);
+      harvestUsers(entries[e], users, 0);
     }
     var modules = ins.moduleItems || [];
-    for (var m = 0; m < modules.length; m++) takeNode(modules[m], tweets, users);
+    for (var m = 0; m < modules.length; m++) {
+      takeNode(modules[m], tweets, users);
+      harvestUsers(modules[m], users, 0);
+    }
   }
   return {tweets: dedupeTweets(tweets), users: dedupeUsers(users)};
 }
@@ -494,8 +582,10 @@ function readInstructions(json, kind) {
     var noteTimeline = viewer && (viewer.notification_timeline || viewer.notifications_timeline);
     specific = (noteTimeline && noteTimeline.timeline && noteTimeline.timeline.instructions) || [];
   } else {
-    var direct = data.user && data.user.result && data.user.result.timeline && data.user.result.timeline.timeline;
-    specific = (direct && direct.instructions) || [];
+    var result = data.user && data.user.result;
+    var direct = result && result.timeline && result.timeline.timeline;
+    var v2 = result && result.timeline_v2 && result.timeline_v2.timeline;
+    specific = (direct && direct.instructions) || (v2 && v2.instructions) || [];
   }
   if (specific.length) return specific;
   return findInstructions(data, 0) || [];
@@ -1286,6 +1376,7 @@ export function fastPageStopReason(beforeCount, afterCount, prevCursor, nextCurs
   var users = pageUsers == null ? -1 : (pageUsers | 0);
   var total = expected | 0;
   if (cursor && prev && cursor === prev) return "游标没有往下走，这一份名单到头了。已停止。若已记人数还没到公开总数，过一会儿再开一次。";
+  if (users === 0 && !prev) return READ_FAIL;
   if (users === 0) return "这一页没有账号。已停止。若还差一点，过一会儿再开一次。";
   if (!cursor) return added
     ? "没有下一页，这一份名单到头了。已停止。"
@@ -2375,7 +2466,14 @@ function attachHooks(page, emit) {
         var idMatch = String(viewerCookie).match(/u=(\d+)/);
         if (idMatch) viewer = idMatch[1];
       }
-      return {queryId: id || "", viewerId: viewer, features: features, captured: !!capturedId && !fresh, hasCsrf: !!readPageCookie("ct0")};
+      return {
+        queryId: id || "",
+        viewerId: viewer,
+        features: features,
+        captured: !!capturedId && !fresh,
+        auth: headerNamed((tpl && tpl.headers) || {}, "authorization") ? "captured" : "public",
+        hasCsrf: !!readPageCookie("ct0")
+      };
     }
     if (capturedId && !fresh) return Promise.resolve(pack(capturedId));
     return discoverQueryId(op).then(function (id) { return pack(id || capturedId); });
