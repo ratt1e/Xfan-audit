@@ -167,6 +167,24 @@ def action(x):
     return "；".join(parts)
 
 
+def apply_followed_by(following, followers):
+    """正在关注的行若带 followed_by，用它判断对方是否关注我。没有这一列时原样返回。"""
+    followers = dict(followers or {})
+    if not following:
+        return followers
+    for handle, row in following.items():
+        if not isinstance(row, dict) or "followed_by" not in row:
+            continue
+        raw = str(row.get("followed_by") or "").strip().lower()
+        if raw not in ("true", "false", "1", "0", "yes", "no"):
+            continue
+        if raw in ("true", "1", "yes"):
+            followers.setdefault(handle, {"handle": handle})
+        else:
+            followers.pop(handle, None)
+    return followers
+
+
 def analyze(data, conf, cfg, end=None, days=None, all_days=False, hide=()):
     win = conf.get("window", {})
     tz_name = rs.resolve_timezone_name(configured=win.get("timezone"))
@@ -202,6 +220,7 @@ def analyze(data, conf, cfg, end=None, days=None, all_days=False, hide=()):
         if r.get("obs_dt"):
             observed.add(r["obs_dt"].date())
     fol, fer, prof = data["following"], data["followers"], data["profiles"]
+    fer = apply_followed_by(fol, fer)
     accounts = set(by) | set(fol) | set(fer)
     accounts -= excl
     accounts -= hide
