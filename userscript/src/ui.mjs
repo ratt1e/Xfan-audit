@@ -1,4 +1,4 @@
-import { EMPTY_GUIDE, RETENTION_DAYS, SNAPSHOT_WAITING, BOARD_CSS, emptyStore, normalizeStore, prune, parseCapture, applyCapture, coverageReport, toEngineData, snapshotDiffInput, recordSnapshot, exportTimeFromName, maybeSnapshot, addKeep, removeKeep, looksLikeBackup, parseExcludeText, addExclude, addExcludeMany, removeExclude, clearExclude, excludeText, headerListCount, headerVerifiedCount, applyImported, contextProblems, installHooks, pageHookProgram, exportBackup, importBackup, standaloneHtml, norm, operationName, classifyUrl, listKindFromPath, userFromVisible, diagnosticsCopy, sameRealm, pageContext, badgeText, progressText, AUTO_READ_RISK, AUTO_READ_ACK, FAST_READ_MAX_PAGES, autoReadPageKind, autoReadCount, buildListPageRequest, buildDiscoveredListRequest, fastRecoverPlan, bottomCursor, fastPageStopReason, createFastReader } from "./logic.mjs";
+import { EMPTY_GUIDE, RETENTION_DAYS, SNAPSHOT_WAITING, BOARD_CSS, emptyStore, normalizeStore, prune, parseCapture, applyCapture, coverageReport, toEngineData, snapshotDiffInput, recordSnapshot, exportTimeFromName, maybeSnapshot, addKeep, removeKeep, looksLikeBackup, parseExcludeText, addExclude, addExcludeMany, removeExclude, clearExclude, excludeText, headerListCount, headerVerifiedCount, applyImported, contextProblems, installHooks, pageHookProgram, exportBackup, importBackup, standaloneHtml, norm, operationName, classifyUrl, listKindFromPath, userFromVisible, diagnosticsCopy, sameRealm, pageContext, badgeText, progressText, AUTO_READ_RISK, AUTO_READ_ACK, FAST_READ_MAX_PAGES, READ_FAIL, listReadReport, autoReadPageKind, autoReadCount, buildListPageRequest, buildDiscoveredListRequest, fastRecoverPlan, bottomCursor, fastPageStopReason, createFastReader } from "./logic.mjs";
 
 var STORE_KEY = "fan-audit-v1";
 
@@ -537,59 +537,41 @@ function boot() {
     var autoShown = "off";
     var autoBox = el("section");
     autoBox.id = "auto-read";
-    autoBox.appendChild(el("p", "", "自动读取我自己的名单"));
-    autoBox.appendChild(el("p", "muted", "默认关闭。开启后脚本自己请求列表，单次最多 " + FAST_READ_MAX_PAGES + " 页。自己往下翻时，脚本仍会记下页面已经加载的内容。刷新后回到关闭。"));
-    var autoOpen = el("button", "ctrl", "查看风险并决定是否开启");
-    autoOpen.type = "button";
-    autoOpen.id = "auto-read-open";
+    var autoToggle = el("button", "ctrl", "自动读取名单");
+    autoToggle.type = "button";
+    autoToggle.id = "auto-read-toggle";
     var autoRisk = el("div");
     autoRisk.id = "auto-read-risk";
     autoRisk.hidden = true;
     autoRisk.appendChild(el("p", "risk", AUTO_READ_RISK));
-    var autoFollowingOnlyLabel = el("label");
-    var autoFollowingOnly = el("input");
-    autoFollowingOnly.type = "checkbox";
-    autoFollowingOnly.id = "auto-following-only";
-    autoFollowingOnly.checked = true;
-    autoFollowingOnlyLabel.appendChild(autoFollowingOnly);
-    autoFollowingOnlyLabel.appendChild(document.createTextNode(" 只读正在关注，用对方是否关注我来判断互关（默认）"));
-    autoRisk.appendChild(autoFollowingOnlyLabel);
     var autoAckLabel = el("label");
     var autoAck = el("input");
     autoAck.type = "checkbox";
     autoAck.id = "auto-read-ack";
     autoAckLabel.appendChild(autoAck);
     autoAckLabel.appendChild(document.createTextNode(AUTO_READ_ACK));
-    var autoStart = el("button", "ctrl", "开始读取");
-    autoStart.type = "button";
-    autoStart.id = "auto-read-start";
-    autoStart.setAttribute("aria-disabled", "true");
-    var autoNeed = el("p", "", "开始读取还不能点：没勾确认。");
-    autoNeed.id = "auto-need";
-    var autoCancel = el("button", "ctrl", "先用手动滑动");
-    autoCancel.type = "button";
-    autoCancel.id = "auto-read-cancel";
-    var autoRiskRow = el("div", "row");
-    autoRiskRow.appendChild(autoStart);
-    autoRiskRow.appendChild(autoCancel);
     autoRisk.appendChild(autoAckLabel);
-    autoRisk.appendChild(autoRiskRow);
-    autoRisk.appendChild(autoNeed);
-    var autoStatus = el("p", "muted", "默认关闭。不点开始就不会请求名单。");
+    var autoStatus = el("p", "muted", "");
     autoStatus.id = "auto-read-status";
-    var autoStop = el("button", "ctrl danger", "停止");
-    autoStop.type = "button";
-    autoStop.id = "auto-read-stop";
-    autoStop.hidden = true;
-    autoBox.appendChild(autoOpen);
+    var autoFollowingOnly = el("input");
+    autoFollowingOnly.type = "checkbox";
+    autoFollowingOnly.id = "auto-following-only";
+    autoFollowingOnly.checked = true;
+    var autoFollowingOnlyLabel = el("label");
+    autoFollowingOnlyLabel.appendChild(autoFollowingOnly);
+    autoFollowingOnlyLabel.appendChild(document.createTextNode(" 只读正在关注，用对方是否关注我来判断互关"));
+    var autoAbout = el("details");
+    autoAbout.id = "capture-about";
+    autoAbout.appendChild(el("summary", "", "采集说明"));
+    autoAbout.appendChild(el("p", "muted", "默认关闭，刷新后仍关闭。自己往下翻时仍会记下页面已经加载的内容。单次最多 " + FAST_READ_MAX_PAGES + " 页。"));
+    autoAbout.appendChild(autoFollowingOnlyLabel);
+    var captureDetail = el("div");
+    captureDetail.id = "capture-detail";
+    autoAbout.appendChild(captureDetail);
+    autoBox.appendChild(autoToggle);
     autoBox.appendChild(autoRisk);
     autoBox.appendChild(autoStatus);
-    autoBox.appendChild(autoStop);
-    var autoFloat = el("button", "", "停止读取");
-    autoFloat.type = "button";
-    autoFloat.id = "auto-stop";
-    autoFloat.hidden = true;
-    shadow.appendChild(autoFloat);
+    autoBox.appendChild(autoAbout);
 
     var tzLine = el("p", "sub");
     tzLine.id = "tz-label";
@@ -634,15 +616,12 @@ function boot() {
         tabButtons[key].setAttribute("aria-selected", on ? "true" : "false");
       });
     }
-    var captureDetail = el("div");
-    captureDetail.id = "capture-detail";
     tabPanels.overview.appendChild(row1);
     tabPanels.overview.appendChild(warnings);
     tabPanels.overview.appendChild(coverage);
     tabPanels.overview.appendChild(tzLine);
     tabPanels.lists.appendChild(results);
     tabPanels.capture.appendChild(autoBox);
-    tabPanels.capture.appendChild(captureDetail);
     tabPanels.more.appendChild(more);
     showTab("overview");
     tabBar.addEventListener("click", function (event) {
@@ -675,33 +654,25 @@ function boot() {
     var fastKnownPages = 0;
     var fastListNotes = [];
     var fastFeatures = {};
+    var fastKind = "following";
     renderAutoRead = function () {
       var phase = fastReader.running() ? "running" : autoPhase;
-      autoOpen.hidden = phase === "running";
       autoRisk.hidden = phase !== "confirm";
-      autoStop.hidden = phase !== "running";
-      autoFloat.hidden = phase !== "running";
-      if (phase === "confirm" && autoShown !== "confirm") {
-        autoAck.checked = false;
-        autoFollowingOnly.checked = true;
-        refreshStartGate();
-      }
+      autoToggle.textContent = phase === "running" ? "停止" : "自动读取名单";
+      autoToggle.classList.toggle("danger", phase === "running");
+      if (phase === "confirm" && autoShown !== "confirm") autoAck.checked = false;
       autoShown = phase;
       var reason = fastReader.stopReason();
-      if (phase === "running") autoStatus.textContent = "正在读取。已请求 " + fastReader.pages() + " 页" + (fastKnownPages ? "，" + fastKnownPages + " 页全是已记账号，会继续往下翻" : "") + "。可以随时停止。";
-      else if (phase === "confirm") autoStatus.textContent = "先看完上面的提示并勾选后才能开始。现在还没有发请求。";
-      else if (reason) autoStatus.textContent = reason + " 自动读取已关闭。";
-      else autoStatus.textContent = "默认关闭。不点开始就不会请求名单。";
-    }
-    function refreshStartGate() {
-      var blocked = !autoAck.checked;
-      autoStart.setAttribute("aria-disabled", blocked ? "true" : "false");
-      autoNeed.textContent = blocked ? "开始读取还不能点：没勾确认。" : "可以点开始读取。";
+      if (phase === "running") {
+        var total = fastKind === "followers" ? (store.totals.followers || 0) : fastKind === "blue-followers" ? (store.totals.blue || 0) : (store.totals.following || 0);
+        autoStatus.textContent = "读取中 " + progressText(autoReadCount(store, fastKind), total);
+      } else if (phase === "confirm") autoStatus.textContent = "";
+      else if (reason) autoStatus.textContent = reason;
+      else autoStatus.textContent = "";
     }
     function haltAuto(reason) {
       autoPhase = "off";
       fastReader.stop(reason);
-      if (reason) status.textContent = reason;
       renderAutoRead();
     }
     var MANUAL_FALLBACK = "自动读取没能开始。请自己打开正在关注页往下翻，脚本会记下页面已经加载的名单。";
@@ -710,7 +681,6 @@ function boot() {
       if (!counted) {
         var decision = fastReader.notePage();
         if (decision.action !== "continue") {
-          status.textContent = decision.reason;
           haltAuto(decision.reason);
           return;
         }
@@ -762,6 +732,7 @@ function boot() {
             return;
           }
           var kind = op === "Following" ? "following" : op === "BlueVerifiedFollowers" ? "blue-followers" : "followers";
+          fastKind = kind;
           var before = autoReadCount(store, kind);
           ingest(req.url, res.text || "", req.body || "", false, "");
           var after = autoReadCount(store, kind);
@@ -779,6 +750,19 @@ function boot() {
           renderAutoRead();
           updateBadge();
           if (panelOpen) render();
+          if ((pageUsers | 0) === 0 && !String(cursor || "")) {
+            diag.listRead = listReadReport({
+              op: op,
+              status: res.status,
+              text: res.text || "",
+              auth: info.auth,
+              querySource: info.captured ? "captured" : "discovered",
+              users: 0,
+              skip: parsed && parsed.skip
+            });
+            haltAuto(READ_FAIL);
+            return;
+          }
           var pageStop = fastPageStopReason(before, after, cursor, next, pageUsers, expected);
           if (!pageStop && pageUsers > 0 && after === before) fastKnownPages += 1;
           if (pageStop) {
@@ -809,16 +793,13 @@ function boot() {
       var ops = autoFollowingOnly.checked ? ["Following"] : ["Following", "Followers", "BlueVerifiedFollowers"];
       var begun = fastReader.start();
       if (!begun.ok) {
-        status.textContent = begun.reason;
+        autoStatus.textContent = begun.reason;
         return;
       }
       fastKnownPages = 0;
       fastListNotes = [];
       fastFeatures = {};
       autoPhase = "running";
-      status.textContent = autoFollowingOnly.checked
-        ? "已开始读取正在关注。已经记过的页会继续往下翻。互关用对方是否关注我来判断。"
-        : "已开始读取正在关注、关注者和认证粉丝。已经记过的页会继续往下翻。";
       renderAutoRead();
       function nextOp(index) {
         if (!fastReader.running()) return;
@@ -830,34 +811,23 @@ function boot() {
       }
       nextOp(0);
     }
-    autoOpen.addEventListener("click", function () {
-      if (fastReader.running()) return;
+    autoToggle.addEventListener("click", function () {
+      if (fastReader.running()) {
+        haltAuto("已手动停止");
+        return;
+      }
+      if (autoPhase === "confirm") {
+        autoPhase = "off";
+        renderAutoRead();
+        return;
+      }
       autoPhase = "confirm";
       renderAutoRead();
     });
-    function syncStartGate() {
-      refreshStartGate();
-    }
-    autoAck.addEventListener("change", syncStartGate);
-    autoCancel.addEventListener("click", function () {
-      haltAuto("先不读。没有发请求。");
-    });
-    autoStart.addEventListener("click", function () {
-      if (fastReader.running()) {
-        autoStatus.textContent = "已经在读。可以点停止。";
-        return;
-      }
-      if (!autoAck.checked) {
-        autoStatus.textContent = "请先勾选确认";
-        status.textContent = "请先勾选确认";
-        refreshStartGate();
-        return;
-      }
+    autoAck.addEventListener("change", function () {
+      if (!autoAck.checked || autoPhase !== "confirm" || fastReader.running()) return;
       startFastRead();
     });
-    autoStop.addEventListener("click", function () { haltAuto("已手动停止"); });
-    autoFloat.addEventListener("click", function () { haltAuto("已手动停止"); });
-    refreshStartGate();
     renderAutoRead();
 
     launcher.addEventListener("click", function () {
@@ -885,7 +855,8 @@ function boot() {
         storedFollowing: Object.keys(store.following).length,
         storedFollowers: Object.keys(store.followers).length,
         skips: diag.skips,
-        skipsByOp: diag.skipsByOp
+        skipsByOp: diag.skipsByOp,
+        listRead: diag.listRead || ""
       });
       function copied(ok) {
         status.textContent = ok ? "已复制诊断。里面只有接口名和次数，没有账号名。" : "没能复制，请再点一次。";
@@ -1683,28 +1654,24 @@ function boot() {
     }
     ui.coverage.appendChild(captureChecklist(norm(ui.owner.value), report));
     if (ui.captureDetail) {
-      var about = el("details");
-      about.id = "capture-about";
-      about.appendChild(el("summary", "", "采集说明"));
       if (empty) {
-        about.appendChild(el("p", "muted", norm(ui.owner.value)
+        ui.captureDetail.appendChild(el("p", "muted", norm(ui.owner.value)
           ? "打开自己的关注、粉丝或主页回复页，再往下翻。诊断在「更多」。默认保留 " + RETENTION_DAYS + " 天。"
           : "先填用户名，或打开自己的主页。默认保留 " + RETENTION_DAYS + " 天。"));
       } else {
-        about.appendChild(el("p", "muted", "别人回我 " + report.inbound + " 条 / " + report.inboundDays + " 天。我发出的回复 " + report.outbound + " 条 / " + report.outboundDays + " 天。"));
+        ui.captureDetail.appendChild(el("p", "muted", "别人回我 " + report.inbound + " 条 / " + report.inboundDays + " 天。我发出的回复 " + report.outbound + " 条 / " + report.outboundDays + " 天。"));
         var totals = report.totals || {};
-        about.appendChild(el("p", "muted", "正在关注 " + progressText(report.following, totals.following) + "。关注者 " + progressText(report.followers, totals.followers) + "。认证粉丝 " + progressText(report.blueFollowers, totals.blue) + "。"));
+        ui.captureDetail.appendChild(el("p", "muted", "正在关注 " + progressText(report.following, totals.following) + "。关注者 " + progressText(report.followers, totals.followers) + "。认证粉丝 " + progressText(report.blueFollowers, totals.blue) + "。"));
         if (report.sawBlueFollowers && !report.sawFollowers) {
-          about.appendChild(el("p", "warn", "目前只有认证粉丝。再打开普通粉丝页，没回关才不会偏多。"));
+          ui.captureDetail.appendChild(el("p", "warn", "目前只有认证粉丝。再打开普通粉丝页，没回关才不会偏多。"));
         }
-        if (!report.inboundDays) about.appendChild(el("p", "warn", "还没记到「别人回我」，金银牌会偏少。"));
+        if (!report.inboundDays) ui.captureDetail.appendChild(el("p", "warn", "还没记到「别人回我」，金银牌会偏少。"));
         var completeFollowers = (store.snapshots || []).filter(function (snap) { return snap.kind === "followers" && snap.complete; }).length;
         var completeFollowing = (store.snapshots || []).filter(function (snap) { return snap.kind === "following" && snap.complete; }).length;
         var snapText = "完整快照：关注 " + completeFollowing + " 份，粉丝 " + completeFollowers + " 份。两份完整快照才对比关注变化。";
         if (completeFollowers < 2 && completeFollowing < 2) snapText += SNAPSHOT_WAITING + "。";
-        about.appendChild(el("p", "muted", snapText + " 默认保留 " + RETENTION_DAYS + " 天。"));
+        ui.captureDetail.appendChild(el("p", "muted", snapText + " 默认保留 " + RETENTION_DAYS + " 天。"));
       }
-      ui.captureDetail.appendChild(about);
     }
     if (!norm(ui.owner.value)) {
       ui.results.innerHTML = "";
